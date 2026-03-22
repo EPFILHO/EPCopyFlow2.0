@@ -1,9 +1,10 @@
 # gui/main_menu.py
-# Versão 1.0.9.i - envio 1
+# Versão 1.0.10 - Envio 1
 # Ajustes:
 # - (1.0.9.b): Adicionada ação "Boleta de Trades" no menu "Ferramentas" para abrir BoletaTraderGui.
 # - (1.0.9.i): Adicionado mt5_monitor no construtor e passado ao StatusGui em open_status_window.
 # - [FIX 2] Remove o argumento 'key' das chamadas a _populate_broker_tabs da BoletaTraderGui.
+# - (1.0.10): Adicionada ação "Visualizador Multi-Gráficos" no menu "Ferramentas" para abrir MultiChartViewerGui.
 
 import logging
 from PySide6.QtWidgets import QMenu, QMessageBox, QMenuBar
@@ -13,6 +14,7 @@ from gui.commands_dialog import CommandsDialog
 from gui.status_gui import StatusGui
 from gui.mt5_trader_gui import MT5TraderGui
 from gui.boleta_trader_gui import BoletaTraderGui
+from gui.multi_chart_viewer_gui import MultiChartViewerGui # NOVO IMPORT
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +32,7 @@ class MainMenu:
         self._status_dialog = None
         self._trader_dialog = None
         self._boleta_dialog = None
+        self._multi_chart_viewer_dialog = None # NOVO: Variável para o MultiChartViewerGui
         self._create_menus()
         logger.info("Classe MainMenu inicializada.")
 
@@ -67,6 +70,8 @@ class MainMenu:
         trader_action.triggered.connect(self.open_trader_window)
         boleta_trades_action = tools_menu.addAction("Boleta de Trades")
         boleta_trades_action.triggered.connect(self.open_boleta_window)
+        multi_chart_viewer_action = tools_menu.addAction("Visualizador Multi-Gráficos") # NOVO ITEM DE MENU
+        multi_chart_viewer_action.triggered.connect(self.open_multi_chart_viewer_window) # CONEXÃO DO NOVO ITEM
         logger.debug("Menu Ferramentas criado.")
 
     def _create_exit_menu(self):
@@ -120,6 +125,21 @@ class MainMenu:
         self._boleta_dialog.raise_()
         self._boleta_dialog.activateWindow()
         logger.info("Janela Boleta de Trades aberta.")
+
+    def open_multi_chart_viewer_window(self): # NOVO MÉTODO
+        """Abre a janela do visualizador multi-gráfico."""
+        if self._multi_chart_viewer_dialog is None:
+            self._multi_chart_viewer_dialog = MultiChartViewerGui(
+                self.config,
+                self.broker_manager,
+                self.zmq_router,
+                self.main_window.zmq_message_handler,
+                self.main_window # Passa a main_window como parent para acesso a broker_status, etc.
+            )
+        self._multi_chart_viewer_dialog.show()
+        self._multi_chart_viewer_dialog.raise_()
+        self._multi_chart_viewer_dialog.activateWindow()
+        logger.info("Janela Visualizador Multi-Gráficos aberta.")
 
     @Slot()
     def quit(self):
@@ -188,6 +208,3 @@ class MainMenu:
                 self._boleta_dialog._populate_broker_tabs()
         else:
             logger.error(f"Falha ao desconectar corretora: {key}")
-
-# ------------ término do arquivo gui/main_menu.py ------------
-# Versão 1.0.9.i - envio 1
