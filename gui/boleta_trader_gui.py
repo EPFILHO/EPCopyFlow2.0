@@ -1,5 +1,6 @@
 # Arquivo: gui/boleta_trader_gui.py
-# Versão: 1.0.9.k - Envio 5
+# Versão: 1.0.9.o - Envio 2 (Correção: Remove chamada redundante de requisição de dados e garante importações de tabs)
+
 # Objetivo: Implementa a interface de boleta de trading com abas ordenadas alfabeticamente
 # e sub-abas para ordens abertas, posições pendentes e histórico de trades.
 # Ajustes:
@@ -10,37 +11,38 @@
 # - [FIX 1, 2] Lógica de seleção de abas aprimorada: mantém a aba atual OU foca na aba da corretora recém-registrada.
 # - [FIX 3] Corrigido problema de posições não aparecerem após reinício do MT5 (reset da flag positions_requested).
 # - [FIX 4] Atualização automática da tabela de posições/histórico ao receber eventos de trade via stream.
+# - [NOVO] Modularização das abas de ordens abertas, pendentes e histórico em arquivos separados.
+# - [CORREÇÃO] Solicitação de dados de POSITIONS, ORDERS e HISTORY_TRADES ao EA.
+# - [NOVO] Integração com a lógica de requisição de histórico da BoletaHistoryTradesTab.
+# - [CORREÇÃO] Passa partial_close_callback para BoletaOpenOrdersTab.
+# - [CORREÇÃO ADICIONAL]: Removida chamada redundante de requisição inicial de dados.
+# - [CORREÇÃO ADICIONAL]: Garantidas as importações das classes de abas e remoção de setup de logging duplicado.
 
 # Bloco 1 - Importações e Configuração Inicial
-# Objetivo: Importar bibliotecas necessárias e configurar o logging para depuração e monitoramento.
-# Este bloco define as dependências do sistema e o formato de logs para rastrear eventos e erros.
 import sys
 import json
 import time
 import asyncio
+from datetime import datetime, timedelta
 from PySide6.QtWidgets import (
-    QDialog, QWidget, QVBoxLayout, QHBoxLayout, QTabWidget, QTableWidget,
+    QDialog, QWidget, QVBoxLayout, QHBoxLayout, QTabWidget,
     QTableWidgetItem, QPushButton, QTextEdit, QLabel, QDoubleSpinBox,
-    QAbstractItemView,
+    QAbstractItemView, QMessageBox
 )
 from PySide6.QtCore import Slot, Qt
 import logging
-from core.config_manager import ConfigManager  # [FIX 3] Importar ConfigManager
+from core.config_manager import ConfigManager # Mantido para importação, mas não cria instância aqui.
 
-# [FIX 3] Configuração de logging para registrar eventos e erros em detalhes.
-# Obtém o nível de log do config.ini.
-config_for_logging = ConfigManager()
-log_level_str = config_for_logging.get('General', 'log_level', fallback='INFO').upper()
-log_level = getattr(logging, log_level_str, logging.INFO)
+# Importações das novas classes de abas - ESTAS FORAM MANTIDAS/RECOLOCADAS!
+from gui.widgets.boleta_open_orders_tab import BoletaOpenOrdersTab
+from gui.widgets.boleta_pending_orders_tab import BoletaPendingOrdersTab
+from gui.widgets.boleta_history_trades_tab import BoletaHistoryTradesTab
 
-logging.basicConfig(level=log_level, format='%(asctime)s - %(levelname)s - %(message)s')
+# O logger agora é configurado UMA VEZ no main.py, este apenas o pega.
 logger = logging.getLogger(__name__)
 
 
 # Bloco 2 - Definição da Classe BoletaTraderGui
-# Objetivo: Inicializar a classe principal da boleta de trading, seus atributos e chamar métodos de setup.
-# Este bloco serve como ponto de entrada para a interface gráfica da boleta, armazenando referências
-# a configurações, gerenciadores de corretoras, roteadores ZMQ e o manipulador de mensagens.
 class BoletaTraderGui(QDialog):
     def __init__(self, config, broker_manager, zmq_router, zmq_message_handler, main_window, parent=None):
         """
@@ -50,7 +52,7 @@ class BoletaTraderGui(QDialog):
             config: Instância do gerenciador de configurações.
             broker_manager: Instância do gerenciador de corretoras.
             zmq_router: Instância do roteador ZMQ para comunicação com o EA.
-            zmq_message_handler: Instância do manipulador de mensagens ZMQ.
+            zmq_message_handler: Manipulador de mensagens ZMQ.
             main_window: Referência à janela principal da aplicação.
             parent: Widget pai (opcional, padrão None).
         """
@@ -70,7 +72,7 @@ class BoletaTraderGui(QDialog):
         self.positions_requested = {}
         self.pending_tickets = {}
 
-        # [FIX 1, 2] Armazena a chave da corretora da aba atualmente selecionada.
+        # Armazena a chave da corretora da aba atualmente selecionada.
         self.current_selected_broker_key = None
 
         self.setWindowTitle("Boleta Trader GUI")
@@ -82,16 +84,15 @@ class BoletaTraderGui(QDialog):
         self.setup_ui()
         self._connect_signals()
 
-        # Popula as abas das corretoras e solicita posições iniciais.
-        # [FIX 1, 2] Não passa select_key aqui, pois a seleção inicial será baseada na aba salva ou na primeira.
+        # Popula as abas das corretoras.
         self._populate_broker_tabs()
-        self._request_positions_for_registered_brokers()
+        # REMOVIDO: A chamada _request_data_for_registered_brokers() foi removida daqui.
+        # Agora, a requisição inicial de dados será tratada EXCLUSIVAMENTE pelo _on_broker_status_updated
+        # quando uma corretora for recém-registrada/conectada. Isso evita requisições duplicadas.
 
         logger.info("Bloco 2 - BoletaTraderGui inicializado.")
 
     # Bloco 3 - Configuração da Interface Gráfica (UI Setup)
-    # Objetivo: Definir o layout da interface gráfica, widgets (abas, tabelas, botões, área de log)
-    # e organizar a estrutura visual da GUI.
     def setup_ui(self):
         """
         Configura a interface gráfica da boleta.
@@ -105,7 +106,7 @@ class BoletaTraderGui(QDialog):
             QTabBar::tab:selected {
                 font-weight: bold;
             }
-        """)  # Negrito na aba selecionada
+        """)
         layout.addWidget(self.broker_tabs)
 
         # Área de log para exibir mensagens de atividades.
@@ -120,7 +121,7 @@ class BoletaTraderGui(QDialog):
 
         # Botão para atualizar as posições.
         update_btn = QPushButton("Atualizar Agora")
-        update_btn.clicked.connect(self._request_positions)
+        update_btn.clicked.connect(self._request_all_data)
         update_btn.setStyleSheet("""
             QPushButton {
                 background-color: #4CAF50;
@@ -155,8 +156,6 @@ class BoletaTraderGui(QDialog):
         logger.debug("Bloco 3 - Interface configurada.")
 
     # Bloco 4 - Gerenciamento de Status e Sinais
-    # Objetivo: Conectar os sinais do Qt para eventos de interface e sinais personalizados para
-    # atualização de dados recebidos do EA. Lida também com a atualização inicial do status das corretoras.
     def _update_broker_status_initial(self):
         """
         Atualiza o status inicial das corretoras a partir da main_window.
@@ -185,9 +184,7 @@ class BoletaTraderGui(QDialog):
         nesta classe para atualização da interface.
         """
         self.zmq_message_handler.log_message_received.connect(self.update_log)
-        self.zmq_message_handler.positions_received.connect(self._update_positions)
         self.zmq_message_handler.trade_response_received.connect(self._update_trade_response)
-        self.zmq_message_handler.history_trades_received.connect(self._update_history_trades)
 
         # Sinais da main_window para atualização de status de corretoras.
         self.main_window.broker_status_updated.connect(self._on_broker_status_updated)
@@ -255,20 +252,22 @@ class BoletaTraderGui(QDialog):
                     logger.warning(
                         f"Bloco 4 - Não foi possível selecionar a aba para {newly_registered_broker_key} (recém-registrada, mas não encontrada).")
 
-            # Solicita posições para corretoras recém-registradas (se ainda não solicitadas)
+            # Solicita todos os dados para corretoras recém-registradas (se ainda não solicitados)
             for broker_key in self.broker_status:
                 if (self.broker_connected.get(broker_key, False) and
                         self.broker_status[broker_key] and not self.positions_requested.get(broker_key, False)):
-                    self._request_positions_for_broker(broker_key)
+                    # Solicitação inicial de 7 dias para o histórico
+                    end_time_ts = int(time.time())
+                    start_time_ts = end_time_ts - (7 * 24 * 60 * 60) # 7 dias atrás
+                    self._request_broker_data(broker_key, history_start_ts=start_time_ts, history_end_ts=end_time_ts)
                     self.positions_requested[broker_key] = True
-                    self.update_log(f"Solicitando posições para {broker_key}...")
+                    self.update_log(f"Solicitando dados para {broker_key}...")
 
             logger.info(f"Bloco 4 - Status de corretoras atualizado: {self.broker_status}")
         except Exception as e:
             logger.error(f"Bloco 4 - Erro ao atualizar status de corretoras: {str(e)}")
             self.update_log(f"Erro ao atualizar status de corretoras: {str(e)}")
 
-    # [FIX 2] O sinal broker_connected agora passa a chave da corretora.
     @Slot(str)
     def _on_broker_connected(self, broker_key: str):
         """
@@ -279,12 +278,10 @@ class BoletaTraderGui(QDialog):
         for key in self.broker_manager.get_brokers():  # Itera sobre todas as corretoras para atualizar o status de conexão.
             self.broker_connected[key] = key in connected_brokers
 
-        # [FIX 1] Chama _populate_broker_tabs sem argumento, a seleção será tratada no _on_broker_status_updated.
         self._populate_broker_tabs()
 
         logger.info(f"Bloco 4 - Status de conexão atualizado: {self.broker_connected}")
 
-    # [FIX 1] Novo slot para armazenar a chave da corretora da aba selecionada.
     @Slot(int)
     def _on_tab_changed(self, index: int):
         """
@@ -301,7 +298,6 @@ class BoletaTraderGui(QDialog):
             self.current_selected_broker_key = None
             logger.debug("Bloco 4 - Nenhuma aba selecionada.")
 
-    # [FIX 4] Novo slot para lidar com eventos de trade recebidos via stream.
     @Slot(dict)
     def _on_trade_event_received(self, trade_event_data: dict):
         """
@@ -321,20 +317,20 @@ class BoletaTraderGui(QDialog):
         # Verifica se o retcode indica sucesso ou um estado que requer atualização.
         # O EA envia TRADE_EVENT para TRADE_RETCODE_DONE, REJECT, INVALID, INVALID_PRICE.
         # Vamos atualizar a GUI para DONE, e logar os outros.
-        if result_retcode == 0 or result_retcode == 10009:  # 0 é o código de sucesso padrão, 10009 é TRADE_RETCODE_DONE
+        if result_retcode == 0 or result_retcode == 10009:
             logger.info(
-                f"Bloco 4 - Evento de trade bem-sucedido recebido para {broker_key}. Solicitando atualização de posições.")
-            self._request_positions_for_broker(broker_key)
-            self.update_log(f"Evento de trade: Operação bem-sucedida para {broker_key}. Atualizando posições.")
+                f"Bloco 4 - Evento de trade bem-sucedido recebido para {broker_key}. Solicitando atualização de dados.")
+            # Ao receber um evento de trade, solicitamos o histórico para 7 dias novamente
+            end_time_ts = int(time.time())
+            start_time_ts = end_time_ts - (7 * 24 * 60 * 60) # 7 dias atrás
+            self._request_broker_data(broker_key, history_start_ts=start_time_ts, history_end_ts=end_time_ts)
+            self.update_log(f"Evento de trade: Operação bem-sucedida para {broker_key}. Atualizando dados.")
         else:
             logger.warning(
                 f"Bloco 4 - Evento de trade com erro/aviso recebido para {broker_key} (Retcode: {result_retcode}). Não solicitando atualização automática.")
             self.update_log(f"Evento de trade: Erro/Aviso para {broker_key} (Retcode: {result_retcode}).")
 
     # Bloco 5 - Gerenciamento de Abas e Sub-abas de Corretoras
-    # Objetivo: Popular e gerenciar as abas das corretoras, incluindo a criação de sub-abas para
-    # ordens abertas, posições pendentes e histórico de trades.
-    # [FIX 1, 2] Remove o argumento select_key_candidate.
     def _populate_broker_tabs(self):
         """
         Popula e atualiza as abas das corretoras na interface, ordenando-as alfabeticamente.
@@ -356,7 +352,7 @@ class BoletaTraderGui(QDialog):
         key_to_select_after_update = None
         if self.broker_tabs.currentIndex() >= 0:
             current_tab_text = self.broker_tabs.tabText(self.broker_tabs.currentIndex())
-            key_to_select_after_update = current_tab_text.split(' ')[0]  # Extrai a chave da corretora.
+            key_to_select_after_update = current_tab_text.split(' ')[0]
 
         # Mapeia chaves de corretoras para seus índices de aba atuais.
         current_tab_map = {}
@@ -402,13 +398,34 @@ class BoletaTraderGui(QDialog):
                 tab_layout = QVBoxLayout(tab)
                 sub_tabs = QTabWidget()
 
-                open_orders_tab = self._create_open_orders_tab(broker_key)
+                open_orders_tab = BoletaOpenOrdersTab(
+                    broker_key=broker_key,
+                    zmq_message_handler=self.zmq_message_handler,
+                    broker_status=self.broker_status,
+                    broker_modes=self.broker_modes,
+                    pending_tickets=self.pending_tickets,
+                    close_order_callback=self._close_order,
+                    modify_order_callback=self._modify_order,
+                    partial_close_callback=self._partial_close
+                )
                 sub_tabs.addTab(open_orders_tab, "Ordens Abertas")
 
-                pending_orders_tab = self._create_pending_orders_tab(broker_key)
+                pending_orders_tab = BoletaPendingOrdersTab(
+                    broker_key=broker_key,
+                    zmq_message_handler=self.zmq_message_handler,
+                    broker_status=self.broker_status,
+                    broker_modes=self.broker_modes,
+                    pending_tickets=self.pending_tickets,
+                    close_order_callback=self._close_order,
+                    modify_order_callback=self._modify_order
+                )
                 sub_tabs.addTab(pending_orders_tab, "Posições Pendentes")
 
-                history_tab = self._create_history_tab(broker_key)
+                history_tab = BoletaHistoryTradesTab(
+                    broker_key=broker_key,
+                    zmq_message_handler=self.zmq_message_handler,
+                    request_new_history_from_ea_callback=self._trigger_new_history_fetch_from_ea
+                )
                 sub_tabs.addTab(history_tab, "Histórico de Trades")
 
                 tab_layout.addWidget(sub_tabs)
@@ -449,7 +466,7 @@ class BoletaTraderGui(QDialog):
                 logger.info(f"Bloco 5 - Aba para {key_to_select_after_update} selecionada (mantendo seleção).")
             else:
                 logger.warning(
-                    f"Bloco 5 - Não foi possível selecionar a aba para {key_to_select_after_update} (não encontrada após atualização).")
+                    f"Bloco 5 - Não foi possível selecionar a aba para {key_to_select_after_update} (recém-registrada, mas não encontrada).")
         elif self.broker_tabs.count() > 0:
             # Se nenhuma chave específica para selecionar, e há abas, seleciona a primeira.
             self.broker_tabs.setCurrentIndex(0)
@@ -462,155 +479,32 @@ class BoletaTraderGui(QDialog):
         logger.info(f"Bloco 5 - Abas de corretoras atualizadas: {self.broker_tabs.count()} corretoras listadas. "
                     f"Removidas: {removed_count}, Adicionadas/Atualizadas: {added_or_updated_count}.")
 
-    def _create_open_orders_tab(self, broker_key: str) -> QWidget:
-        """
-        Cria a sub-aba de ordens abertas com uma tabela para exibir as posições ativas.
-        Configura as colunas da tabela e o estilo visual.
-        """
-        logger.debug(f"Bloco 5 - Criando sub-aba de ordens abertas para {broker_key}.")
-        tab = QWidget()
-        layout = QVBoxLayout(tab)
-        table = QTableWidget()
-        table.setColumnCount(11)
-        table.setHorizontalHeaderLabels(
-            ["Ticket", "Símbolo", "Tipo", "Volume", "Preço Entrada", "SL", "TP", "Lucro/Prejuízo", "Fechar",
-             "Modificar", "Parcial"])
-
-        # Define larguras de coluna para melhor visualização.
-        table.setColumnWidth(0, 80)
-        table.setColumnWidth(1, 100)
-        table.setColumnWidth(2, 80)
-        table.setColumnWidth(3, 80)
-        table.setColumnWidth(4, 100)
-        table.setColumnWidth(5, 80)
-        table.setColumnWidth(6, 80)
-        table.setColumnWidth(7, 120)
-        table.setColumnWidth(8, 70)
-        table.setColumnWidth(9, 70)
-        table.setColumnWidth(10, 70)
-
-        table.setMinimumHeight(400)
-        table.setRowHeight(0, 30)  # Define uma altura padrão para as linhas.
-        table.setEditTriggers(QAbstractItemView.NoEditTriggers)  # Impede edição direta na tabela.
-        table.setSelectionMode(QAbstractItemView.NoSelection)  # Desabilita seleção de itens.
-        table.setAlternatingRowColors(True)  # Habilita cores alternadas para as linhas.
-        table.setStyleSheet("""
-            QTableWidget {
-                alternate-background-color: #f0f0f0;
-            }
-        """)
-        table.setObjectName(f"open_orders_{broker_key}")  # Define um nome de objeto para fácil identificação.
-        layout.addWidget(table)
-        tab.setLayout(layout)
-        logger.debug(f"Bloco 5 - Sub-aba de ordens abertas criada para {broker_key}.")
-        return tab
-
-    def _create_pending_orders_tab(self, broker_key: str) -> QWidget:
-        """
-        Cria a sub-aba de posições pendentes com uma tabela para exibir as ordens pendentes.
-        Configura as colunas da tabela e o estilo visual.
-        """
-        logger.debug(f"Bloco 5 - Criando sub-aba de posições pendentes para {broker_key}.")
-        tab = QWidget()
-        layout = QVBoxLayout(tab)
-        table = QTableWidget()
-        table.setColumnCount(9)
-        table.setHorizontalHeaderLabels(
-            ["Ticket", "Símbolo", "Tipo", "Volume", "Preço", "SL", "TP", "Fechar", "Modificar"])
-
-        # Define larguras de coluna para melhor visualização.
-        table.setColumnWidth(0, 80)
-        table.setColumnWidth(1, 100)
-        table.setColumnWidth(2, 80)
-        table.setColumnWidth(3, 80)
-        table.setColumnWidth(4, 100)
-        table.setColumnWidth(5, 80)
-        table.setColumnWidth(6, 80)
-        table.setColumnWidth(7, 70)
-        table.setColumnWidth(8, 70)
-
-        table.setMinimumHeight(400)
-        table.setRowHeight(0, 30)
-        table.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        table.setSelectionMode(QAbstractItemView.NoSelection)
-        table.setAlternatingRowColors(True)
-        table.setStyleSheet("""
-            QTableWidget {
-                alternate-background-color: #f0f0f0;
-            }
-        """)
-        table.setObjectName(f"pending_orders_{broker_key}")
-        layout.addWidget(table)
-        tab.setLayout(layout)
-        logger.debug(f"Bloco 5 - Sub-aba de posições pendentes criada para {broker_key}.")
-        return tab
-
-    def _create_history_tab(self, broker_key: str) -> QWidget:
-        """
-        Cria a sub-aba de histórico de trades com uma tabela para exibir os trades passados.
-        Configura as colunas da tabela e o estilo visual.
-        """
-        logger.debug(f"Bloco 5 - Criando sub-aba de histórico de trades para {broker_key}.")
-        tab = QWidget()
-        layout = QVBoxLayout(tab)
-        table = QTableWidget()
-        table.setColumnCount(8)
-        table.setHorizontalHeaderLabels(
-            ["Ticket", "Símbolo", "Tipo", "Volume", "Preço", "Lucro", "Tempo", "Comentário"])
-
-        # Define larguras de coluna para melhor visualização.
-        table.setColumnWidth(0, 80)
-        table.setColumnWidth(1, 100)
-        table.setColumnWidth(2, 80)
-        table.setColumnWidth(3, 80)
-        table.setColumnWidth(4, 100)
-        table.setColumnWidth(5, 80)
-        table.setColumnWidth(6, 120)
-        table.setColumnWidth(7, 150)
-
-        table.setMinimumHeight(400)
-        table.setRowHeight(0, 30)
-        table.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        table.setSelectionMode(QAbstractItemView.NoSelection)
-        table.setAlternatingRowColors(True)
-        table.setStyleSheet("""
-            QTableWidget {
-                alternate-background-color: #f0f0f0;
-            }
-        """)
-        table.setObjectName(f"history_{broker_key}")
-        layout.addWidget(table)
-        tab.setLayout(layout)
-        logger.debug(f"Bloco 5 - Sub-aba de histórico de trades criada para {broker_key}.")
-        return tab
-
     # Bloco 6 - Solicitação e Atualização de Dados (Posições e Histórico)
-    # Objetivo: Gerenciar a solicitação de posições e histórico de trades do EA,
-    # e atualizar as tabelas correspondentes na interface.
-    def _request_positions_for_registered_brokers(self):
+    def _request_data_for_registered_brokers(self):
         """
-        Solicita posições para todas as corretoras que estão registradas e conectadas
-        ao iniciar a BoletaTraderGui.
+        Solicita dados (posições, ordens, histórico) para todas as corretoras registradas
+        e conectadas ao iniciar a BoletaTraderGui.
         """
         if hasattr(self.main_window, 'broker_status'):
             self.broker_status.update(self.main_window.broker_status)
             connected_brokers = self.broker_manager.get_connected_brokers()
             for broker_key in connected_brokers:
                 if broker_key in self.broker_status and self.broker_status[broker_key]:
-                    self._request_positions_for_broker(broker_key)
+                    # Solicitação inicial de 7 dias para o histórico
+                    end_time_ts = int(time.time())
+                    start_time_ts = end_time_ts - (7 * 24 * 60 * 60) # 7 dias atrás
+                    self._request_broker_data(broker_key, history_start_ts=start_time_ts, history_end_ts=end_time_ts)
                     self.positions_requested[broker_key] = True
-                    logger.info(
-                        f"Bloco 6 - Posições solicitadas para corretora registrada {broker_key} ao iniciar BoletaTraderGui.")
-                    self.update_log(f"Solicitando posições para {broker_key}...")
+                    self.update_log(f"Solicitando dados para {broker_key}...")
                 else:
-                    logger.info(f"Bloco 6 - Aguardando registro de {broker_key} ao iniciar BoletaTraderGui.")
+                    logger.info(f"Bloco 6 - Aguardando registro de {broker_key} antes de solicitar dados.")
         else:
             logger.warning("Bloco 6 - main_window não possui broker_status ao iniciar BoletaTraderGui.")
 
     @Slot()
-    def _request_positions(self):
+    def _request_all_data(self):
         """
-        Solicita posições para todas as corretoras conectadas e registradas.
+        Solicita dados (posições, ordens, histórico) para todas as corretoras conectadas e registradas.
         Este método é tipicamente chamado pelo botão "Atualizar Agora".
         """
         # Reseta o status de posições solicitadas para todas as corretoras.
@@ -620,283 +514,72 @@ class BoletaTraderGui(QDialog):
         connected_brokers = self.broker_manager.get_connected_brokers()
         for broker_key in connected_brokers:
             if broker_key in self.broker_status and self.broker_status[broker_key]:
-                self._request_positions_for_broker(broker_key)
+                # Solicitação de 7 dias para o histórico ao clicar em "Atualizar Agora"
+                end_time_ts = int(time.time())
+                start_time_ts = end_time_ts - (7 * 24 * 60 * 60) # 7 dias atrás
+                self._request_broker_data(broker_key, history_start_ts=start_time_ts, history_end_ts=end_time_ts)
                 self.positions_requested[broker_key] = True
-                self.update_log(f"Solicitando posições para {broker_key}...")
+                self.update_log(f"Solicitando dados para {broker_key}...")
             else:
-                self.update_log(f"Aguardando registro de {broker_key} antes de solicitar posições.")
-                logger.info(f"Bloco 6 - Aguardando registro de {broker_key} antes de solicitar posições.")
+                self.update_log(f"Aguardando registro de {broker_key} antes de solicitar dados.")
+                logger.info(f"Bloco 6 - Aguardando registro de {broker_key} antes de solicitar dados.")
 
-    def _request_positions_for_broker(self, broker_key):
+    def _request_broker_data(self, broker_key, history_start_ts=None, history_end_ts=None):
         """
-        Envia o comando ZMQ para solicitar as posições de uma corretora específica.
+        Envia os comandos ZMQ para solicitar posições, ordens e histórico de uma corretora específica.
+        Permite especificar um período para o histórico.
         """
-        command = "POSITIONS"
-        payload = {}
-        request_id = f"positions_{broker_key}_{int(time.time())}"
-        self._send_async_command(broker_key, command, payload, request_id)
-        logger.info(
-            f"Bloco 6 - Comando agendado: Solicitar posições ({command}) para {broker_key} com request_id {request_id}")
+        # Solicita POSITIONS (ordens abertas)
+        positions_request_id = f"positions_{broker_key}_{int(time.time())}"
+        self._send_async_command(broker_key, "POSITIONS", {}, positions_request_id)
+        logger.info(f"Bloco 6 - Comando agendado: Solicitar POSITIONS para {broker_key} com request_id {positions_request_id}")
+        # Solicita ORDERS (ordens pendentes)
+        orders_request_id = f"orders_{broker_key}_{int(time.time())}"
+        self._send_async_command(broker_key, "ORDERS", {}, orders_request_id)
+        logger.info(f"Bloco 6 - Comando agendado: Solicitar ORDERS para {broker_key} com request_id {orders_request_id}")
 
-    @Slot(dict)
-    def _update_positions(self, positions_data):
+        # Solicita HISTORY_TRADES
+        if history_start_ts is None: # Se não for passado um período específico, usa o padrão de 7 dias
+            history_end_ts = int(time.time())
+            history_start_ts = history_end_ts - (7 * 24 * 60 * 60) # Padrão de 7 dias
+            logger.debug(f"Bloco 6 - Usando período padrão de 7 dias para o histórico de {broker_key}.")
+
+        history_payload = {
+            "start_time": history_start_ts,
+            "end_time": history_end_ts
+        }
+        history_request_id = f"history_trades_{broker_key}_{int(time.time())}"
+        self._send_async_command(broker_key, "HISTORY_TRADES", history_payload, history_request_id)
+        logger.info(f"Bloco 6 - Comando agendado: Solicitar HISTORY_TRADES para {broker_key} de {self._format_timestamp(history_start_ts)} a {self._format_timestamp(history_end_ts)} com request_id {history_request_id}")
+
+    @Slot(str, int, int)
+    def _trigger_new_history_fetch_from_ea(self, broker_key: str, start_ts: int, end_ts: int):
         """
-        Atualiza as tabelas de ordens abertas e posições pendentes com os dados recebidos do EA.
-        Separa as posições em abertas e pendentes e popula as tabelas correspondentes.
+        Callback para solicitar um novo período de histórico ao EA, respeitando o limite de 60 dias.
+        Chamado pela BoletaHistoryTradesTab.
         """
-        try:
-            broker_key = positions_data.get("broker_key", "")
-            # Tenta obter os dados da chave "data" ou da chave vazia (fallback).
-            positions = positions_data.get("data", positions_data.get("", []))
-            logger.info(f"Bloco 6 - Atualizando posições na GUI para {broker_key}, {len(positions)} ordens recebidas.")
+        start_dt = datetime.fromtimestamp(start_ts)
+        end_dt = datetime.fromtimestamp(end_ts)
 
-            # Separa posições abertas e pendentes com base no tipo.
-            open_positions = [pos for pos in positions if "PENDING" not in pos.get("type", "").upper()]
-            pending_positions = [pos for pos in positions if "PENDING" in pos.get("type", "").upper()]
+        # Aplicar limite de 60 dias
+        if (end_dt - start_dt).days > 60:
+            adjusted_end_dt = start_dt + timedelta(days=60)
+            adjusted_end_ts = int(adjusted_end_dt.timestamp())
+            QMessageBox.warning(self, "Período de Histórico Excedido",
+                                f"O período selecionado excede 60 dias. Ajustando para {start_dt.strftime('%d/%m/%Y')} a {adjusted_end_dt.strftime('%d/%m/%Y')}.")
+            logger.warning(f"Bloco 6 - Período de histórico para {broker_key} ajustado de {start_dt.strftime('%d/%m/%Y')} a {end_dt.strftime('%d/%m/%Y')} para {start_dt.strftime('%d/%m/%Y')} a {adjusted_end_dt.strftime('%d/%m/%Y')} devido ao limite de 60 dias.")
+        else:
+            adjusted_end_ts = end_ts
 
-            # Itera sobre as abas para encontrar a corretora correta e atualizar suas tabelas.
-            for i in range(self.broker_tabs.count()):
-                if self.broker_tabs.tabText(i).startswith(broker_key):
-                    tab = self.broker_tabs.widget(i)
-                    # Acessa o QTabWidget das sub-abas dentro da aba da corretora.
-                    sub_tabs = tab.layout().itemAt(0).widget()
-
-                    # Atualiza tabela de ordens abertas.
-                    open_table = sub_tabs.findChild(QTableWidget, f"open_orders_{broker_key}")
-                    if open_table:
-                        open_table.clearContents()
-                        open_table.setRowCount(len(open_positions))
-                        for row, pos in enumerate(open_positions):
-                            self._populate_position_row(open_table, row, pos, broker_key)
-                        logger.debug(
-                            f"Bloco 6 - Tabela de ordens abertas atualizada para {broker_key} com {len(open_positions)} linhas.")
-                    else:
-                        logger.warning(f"Bloco 6 - Tabela de ordens abertas não encontrada para {broker_key}.")
-
-                    # Atualiza tabela de posições pendentes.
-                    pending_table = sub_tabs.findChild(QTableWidget, f"pending_orders_{broker_key}")
-                    if pending_table:
-                        pending_table.clearContents()
-                        pending_table.setRowCount(len(pending_positions))
-                        for row, pos in enumerate(pending_positions):
-                            self._populate_pending_row(pending_table, row, pos, broker_key)
-                        logger.debug(
-                            f"Bloco 6 - Tabela de posições pendentes atualizada para {broker_key} com {len(pending_positions)} linhas.")
-                    else:
-                        logger.warning(f"Bloco 6 - Tabela de posições pendentes não encontrada para {broker_key}.")
-                    break  # Sai do loop após encontrar e atualizar a aba da corretora.
-            else:
-                logger.warning(f"Bloco 6 - Aba não encontrada para corretora {broker_key}.")
-                self.update_log(f"Erro: Aba não encontrada para corretora {broker_key}.")
-
-            self.update_log(
-                f"Lista de posições atualizada para {broker_key}: {len(open_positions)} abertas, {len(pending_positions)} pendentes.")
-        except Exception as e:
-            logger.error(f"Bloco 6 - Erro ao atualizar posições na GUI: {str(e)}")
-            self.update_log(f"Erro ao atualizar posições na GUI: {str(e)}")
-
-    @Slot(dict)
-    def _update_history_trades(self, history_data):
-        """
-        Atualiza a tabela de histórico de trades com os dados recebidos do EA.
-        """
-        try:
-            broker_key = history_data.get("broker_key", "")
-            # Tenta obter os dados da chave "data" ou da chave vazia (fallback).
-            trades = history_data.get("data", history_data.get("", []))
-            logger.info(f"Bloco 6 - Atualizando histórico de trades para {broker_key}, {len(trades)} trades recebidos.")
-
-            # Itera sobre as abas para encontrar a corretora correta e atualizar sua tabela de histórico.
-            for i in range(self.broker_tabs.count()):
-                if self.broker_tabs.tabText(i).startswith(broker_key):
-                    tab = self.broker_tabs.widget(i)
-                    # Acessa o QTabWidget das sub-abas dentro da aba da corretora.
-                    sub_tabs = tab.layout().itemAt(0).widget()
-
-                    history_table = sub_tabs.findChild(QTableWidget, f"history_{broker_key}")
-                    if history_table:
-                        history_table.clearContents()
-                        history_table.setRowCount(len(trades))
-                        for row, trade in enumerate(trades):
-                            # Popula cada célula da linha com os dados do trade.
-                            ticket_item = QTableWidgetItem(str(trade.get("ticket", "")))
-                            ticket_item.setTextAlignment(Qt.AlignCenter)
-                            history_table.setItem(row, 0, ticket_item)
-
-                            symbol_item = QTableWidgetItem(str(trade.get("symbol", "")))
-                            symbol_item.setTextAlignment(Qt.AlignCenter)
-                            history_table.setItem(row, 1, symbol_item)
-
-                            type_item = QTableWidgetItem(str(trade.get("type", "")))
-                            type_item.setTextAlignment(Qt.AlignCenter)
-                            history_table.setItem(row, 2, type_item)
-
-                            volume_item = QTableWidgetItem(f"{float(trade.get('volume', 0.0)):.2f}")
-                            volume_item.setTextAlignment(Qt.AlignCenter)
-                            history_table.setItem(row, 3, volume_item)
-
-                            price_item = QTableWidgetItem(f"{float(trade.get('price', 0.0)):.2f}")
-                            price_item.setTextAlignment(Qt.AlignCenter)
-                            history_table.setItem(row, 4, price_item)
-
-                            profit_item = QTableWidgetItem(f"{float(trade.get('profit', 0.0)):.2f}")
-                            profit_item.setTextAlignment(Qt.AlignCenter)
-                            history_table.setItem(row, 5, profit_item)
-
-                            time_item = QTableWidgetItem(self._format_timestamp(trade.get("time", 0)))
-                            time_item.setTextAlignment(Qt.AlignCenter)
-                            history_table.setItem(row, 6, time_item)
-
-                            comment_item = QTableWidgetItem(str(trade.get("comment", "")))
-                            comment_item.setTextAlignment(Qt.AlignCenter)
-                            history_table.setItem(row, 7, comment_item)
-                        logger.debug(
-                            f"Bloco 6 - Tabela de histórico atualizada para {broker_key} com {len(trades)} linhas.")
-                    else:
-                        logger.warning(f"Bloco 6 - Tabela de histórico não encontrada para {broker_key}.")
-                    break  # Sai do loop após encontrar e atualizar a aba da corretora.
-            else:
-                logger.warning(f"Bloco 6 - Aba não encontrada para corretora {broker_key}.")
-                self.update_log(f"Erro: Aba não encontrada para corretora {broker_key}.")
-
-            self.update_log(f"Histórico de trades atualizado para {broker_key} com {len(trades)} trades.")
-        except Exception as e:
-            logger.error(f"Bloco 6 - Erro ao atualizar histórico de trades: {str(e)}")
-            self.update_log(f"Erro ao atualizar histórico de trades: {str(e)}")
+        # Agora, faça a requisição ao EA com o período ajustado
+        self._request_broker_data(broker_key, history_start_ts=start_ts, history_end_ts=adjusted_end_ts)
+        self.update_log(f"Solicitando NOVO período de histórico para {broker_key}: {self._format_timestamp(start_ts)} a {self._format_timestamp(adjusted_end_ts)}...")
 
     # Bloco 7 - Preenchimento de Linhas da Tabela e Ações de Botões
-    # Objetivo: Preencher as linhas das tabelas de ordens abertas e pendentes,
-    # e configurar os botões de ação (Fechar, Modificar, Parcial) para cada linha.
-    def _populate_position_row(self, table, row, pos, broker_key):
-        """
-        Preenche uma linha na tabela de ordens abertas com os dados da posição e adiciona botões de ação.
-        """
-        # Preenche as células da tabela com os dados da posição.
-        ticket_item = QTableWidgetItem(str(pos.get("ticket", "")))
-        ticket_item.setTextAlignment(Qt.AlignCenter)
-        table.setItem(row, 0, ticket_item)
-
-        symbol_item = QTableWidgetItem(str(pos.get("symbol", "")))
-        symbol_item.setTextAlignment(Qt.AlignCenter)
-        table.setItem(row, 1, symbol_item)
-
-        type_item = QTableWidgetItem(str(pos.get("type", "")))
-        type_item.setTextAlignment(Qt.AlignCenter)
-        table.setItem(row, 2, type_item)
-
-        volume_item = QTableWidgetItem(f"{float(pos.get('volume', 0.0)):.2f}")
-        volume_item.setTextAlignment(Qt.AlignCenter)
-        table.setItem(row, 3, volume_item)
-
-        price_open_item = QTableWidgetItem(f"{float(pos.get('price_open', 0.0)):.2f}")
-        price_open_item.setTextAlignment(Qt.AlignCenter)
-        table.setItem(row, 4, price_open_item)
-
-        sl_item = QTableWidgetItem(f"{float(pos.get('sl', 0.0)):.2f}")
-        sl_item.setTextAlignment(Qt.AlignCenter)
-        table.setItem(row, 5, sl_item)
-
-        tp_item = QTableWidgetItem(f"{float(pos.get('tp', 0.0)):.2f}")
-        tp_item.setTextAlignment(Qt.AlignCenter)
-        table.setItem(row, 6, tp_item)
-
-        profit_item = QTableWidgetItem(f"{float(pos.get('profit', 0.0)):.2f}")
-        profit_item.setTextAlignment(Qt.AlignCenter)
-        table.setItem(row, 7, profit_item)
-
-        # Cria e configura o botão "Fechar".
-        close_btn = QPushButton("✕")
-        close_btn.setMinimumHeight(30)
-        close_btn.setStyleSheet("color: red; padding: 0px; margin: 0px;")
-        # Conecta o botão à função _close_order, passando a linha, chave da corretora e a tabela.
-        close_btn.clicked.connect(lambda checked, r=row, bk=broker_key: self._close_order(r, bk, table))
-
-        # Cria e configura o botão "Modificar".
-        modify_btn = QPushButton("⚠")
-        modify_btn.setMinimumHeight(30)
-        modify_btn.setStyleSheet("padding: 0px; margin: 0px;")
-        # Conecta o botão à função _modify_order.
-        modify_btn.clicked.connect(lambda checked, r=row, bk=broker_key: self._modify_order(r, bk, table))
-
-        # Cria e configura o botão "Parcial".
-        partial_btn = QPushButton("½")
-        partial_btn.setMinimumHeight(30)
-        partial_btn.setStyleSheet("padding: 0px; margin: 0px;")
-        # Conecta o botão à função _partial_close.
-        partial_btn.clicked.connect(lambda checked, r=row, bk=broker_key: self._partial_close(r, bk, table))
-
-        # Habilita/desabilita os botões com base no status de registro da corretora.
-        enabled = broker_key in self.broker_status and self.broker_status[broker_key]
-        close_btn.setEnabled(enabled)
-        modify_btn.setEnabled(enabled)
-        partial_btn.setEnabled(enabled)
-
-        # Adiciona os botões à tabela.
-        table.setCellWidget(row, 8, close_btn)
-        table.setCellWidget(row, 9, modify_btn)
-        table.setCellWidget(row, 10, partial_btn)
-        logger.debug(f"Bloco 7 - Botões de ação adicionados para ordem na linha {row} de {broker_key}.")
-
-    def _populate_pending_row(self, table, row, pos, broker_key):
-        """
-        Preenche uma linha na tabela de posições pendentes com os dados da ordem e adiciona botões de ação.
-        """
-        # Preenche as células da tabela com os dados da ordem pendente.
-        ticket_item = QTableWidgetItem(str(pos.get("ticket", "")))
-        ticket_item.setTextAlignment(Qt.AlignCenter)
-        table.setItem(row, 0, ticket_item)
-
-        symbol_item = QTableWidgetItem(str(pos.get("symbol", "")))
-        symbol_item.setTextAlignment(Qt.AlignCenter)
-        table.setItem(row, 1, symbol_item)
-
-        type_item = QTableWidgetItem(str(pos.get("type", "")))
-        type_item.setTextAlignment(Qt.AlignCenter)
-        table.setItem(row, 2, type_item)
-
-        volume_item = QTableWidgetItem(f"{float(pos.get('volume', 0.0)):.2f}")
-        volume_item.setTextAlignment(Qt.AlignCenter)
-        table.setItem(row, 3, volume_item)
-
-        price_item = QTableWidgetItem(f"{float(pos.get('price_open', 0.0)):.2f}")
-        price_item.setTextAlignment(Qt.AlignCenter)
-        table.setItem(row, 4, price_item)
-
-        sl_item = QTableWidgetItem(f"{float(pos.get('sl', 0.0)):.2f}")
-        sl_item.setTextAlignment(Qt.AlignCenter)
-        table.setItem(row, 5, sl_item)
-
-        tp_item = QTableWidgetItem(f"{float(pos.get('tp', 0.0)):.2f}")
-        tp_item.setTextAlignment(Qt.AlignCenter)
-        table.setItem(row, 6, tp_item)
-
-        # Cria e configura o botão "Fechar".
-        close_btn = QPushButton("✕")
-        close_btn.setMinimumHeight(30)
-        close_btn.setStyleSheet("color: red; padding: 0px; margin: 0px;")
-        # Conecta o botão à função _close_order.
-        close_btn.clicked.connect(lambda checked, r=row, bk=broker_key: self._close_order(r, bk, table))
-
-        # Cria e configura o botão "Modificar".
-        modify_btn = QPushButton("⚠")
-        modify_btn.setMinimumHeight(30)
-        modify_btn.setStyleSheet("padding: 0px; margin: 0px;")
-        # Conecta o botão à função _modify_order.
-        modify_btn.clicked.connect(lambda checked, r=row, bk=broker_key: self._modify_order(r, bk, table))
-
-        # Habilita/desabilita os botões com base no status de registro da corretora.
-        enabled = broker_key in self.broker_status and self.broker_status[broker_key]
-        close_btn.setEnabled(enabled)
-        modify_btn.setEnabled(enabled)
-
-        # Adiciona os botões à tabela.
-        table.setCellWidget(row, 7, close_btn)
-        table.setCellWidget(row, 8, modify_btn)
-        logger.debug(f"Bloco 7 - Botões de ação adicionados para ordem pendente na linha {row} de {broker_key}.")
+    # REMOVIDOS: _populate_position_row e _populate_pending_row
+    # A lógica de preenchimento das linhas agora está nas classes BoletaOpenOrdersTab e BoletaPendingOrdersTab.
 
     # Bloco 8 - Operações de Trading (Fechar, Modificar, Fechamento Parcial)
-    # Objetivo: Implementar a lógica para fechar, modificar e realizar fechamento parcial de ordens/posições,
-    # incluindo a interação com o EA via ZMQ e o tratamento de diferentes modos de operação (Hedge/Netting).
     def _close_order(self, row, broker_key, table):
         """
         Envia um comando para fechar uma ordem ou posição pendente.
@@ -904,14 +587,13 @@ class BoletaTraderGui(QDialog):
         """
         ticket = table.item(row, 0).text() if table.item(row, 0) else ""
         if ticket:
-            # Escolhe o comando ZMQ apropriado com base na tabela.
             command = "TRADE_POSITION_CLOSE_ID" if table.objectName().startswith(
                 "open_orders") else "TRADE_ORDER_CLOSE_ID"
             payload = {"ticket": int(ticket)}
             request_id = f"close_{broker_key}_{int(time.time())}"
-            self.pending_tickets[request_id] = ticket  # Armazena o ticket para rastrear a resposta.
+            self.pending_tickets[request_id] = ticket
 
-            self._send_async_command(broker_key, command, payload, request_id)
+            self._send_async_command(broker_key, command, payload, request_id, use_trade_port=True)
             self.update_log(
                 f"Comando enviado: Fechar ordem #{ticket} para {broker_key} às {time.strftime('%H:%M:%S', time.localtime())}.")
             logger.info(
@@ -936,25 +618,22 @@ class BoletaTraderGui(QDialog):
         modify_dialog.setWindowTitle(f"Modificar Ordem #{ticket}")
         layout = QVBoxLayout(modify_dialog)
 
-        # Campo para Stop Loss (SL).
         sl_input = QDoubleSpinBox()
         sl_input.setDecimals(2)
         sl_input.setMinimum(0.0)
         sl_input.setMaximum(999999.99)
-        sl_input.setValue(float(table.item(row, 5).text() or 0.0))  # Preenche com o valor atual.
+        sl_input.setValue(float(table.item(row, 5).text() or 0.0))
         layout.addWidget(QLabel("Stop Loss (SL):"))
         layout.addWidget(sl_input)
 
-        # Campo para Take Profit (TP).
         tp_input = QDoubleSpinBox()
         tp_input.setDecimals(2)
         tp_input.setMinimum(0.0)
         tp_input.setMaximum(999999.99)
-        tp_input.setValue(float(table.item(row, 6).text() or 0.0))  # Preenche com o valor atual.
+        tp_input.setValue(float(table.item(row, 6).text() or 0.0))
         layout.addWidget(QLabel("Take Profit (TP):"))
         layout.addWidget(tp_input)
 
-        # Campos adicionais para volume e preço, se for uma ordem pendente.
         vol_input = None
         price_input = None
         if table.objectName().startswith("pending_orders"):
@@ -975,7 +654,6 @@ class BoletaTraderGui(QDialog):
             layout.addWidget(QLabel("Preço:"))
             layout.addWidget(price_input)
 
-        # Botão de confirmação para enviar o comando de modificação.
         confirm_btn = QPushButton("Confirmar")
         confirm_btn.clicked.connect(lambda: self._send_modify_command(
             broker_key, ticket, symbol, sl_input.value(), tp_input.value(),
@@ -1009,9 +687,9 @@ class BoletaTraderGui(QDialog):
             payload = {"ticket": int(ticket), "symbol": symbol, "sl": sl, "tp": tp}
 
         request_id = f"modify_{broker_key}_{int(time.time())}"
-        self.pending_tickets[request_id] = ticket  # Armazena o ticket para rastrear a resposta.
+        self.pending_tickets[request_id] = ticket
 
-        self._send_async_command(broker_key, command, payload, request_id)
+        self._send_async_command(broker_key, command, payload, request_id, use_trade_port=True)
         self.update_log(
             f"Comando enviado: Modificar ordem #{ticket} para {broker_key} às {time.strftime('%H:%M:%S', time.localtime())}.")
         logger.info(
@@ -1043,16 +721,14 @@ class BoletaTraderGui(QDialog):
         partial_dialog.setWindowTitle(f"Fechamento Parcial - Ordem #{ticket}")
         layout = QVBoxLayout(partial_dialog)
 
-        # Campo para o volume a ser fechado parcialmente.
         volume_input = QDoubleSpinBox()
         volume_input.setDecimals(2)
         volume_input.setMinimum(0.01)
-        volume_input.setMaximum(current_volume)  # O volume a fechar não pode ser maior que o volume atual.
-        volume_input.setValue(current_volume / 2)  # Valor padrão: metade do volume atual.
+        volume_input.setMaximum(current_volume)
+        volume_input.setValue(current_volume / 2)
         layout.addWidget(QLabel("Volume a Fechar:"))
         layout.addWidget(volume_input)
 
-        # Botão de confirmação para enviar o comando de fechamento parcial.
         confirm_btn = QPushButton("Confirmar")
         confirm_btn.clicked.connect(lambda: self._send_partial_command(
             broker_key, ticket, position_type, symbol, volume_input.value(), partial_dialog
@@ -1072,9 +748,8 @@ class BoletaTraderGui(QDialog):
             command = "TRADE_POSITION_PARTIAL"
             payload = {"ticket": int(ticket), "volume": volume}
             request_id = f"partial_{broker_key}_{int(time.time())}"
-            self.pending_tickets[request_id] = ticket  # Armazena o ticket para rastrear a resposta.
-
-            self._send_async_command(broker_key, command, payload, request_id)
+            self.pending_tickets[request_id] = ticket
+            self._send_async_command(broker_key, command, payload, request_id, use_trade_port=True)
             self.update_log(
                 f"Comando enviado: Fechamento parcial da ordem #{ticket} ({volume}) para {broker_key} às {time.strftime('%H:%M:%S', time.localtime())}.")
             logger.info(
@@ -1082,11 +757,10 @@ class BoletaTraderGui(QDialog):
         else:  # Lógica para modo Netting (redução de posição via ordem oposta).
             opposite_type = "SELL" if position_type == "BUY" else "BUY"
             command = f"TRADE_ORDER_TYPE_{opposite_type}"
-            payload = {"symbol": symbol, "type": opposite_type, "volume": volume}
+            payload = {"symbol": symbol, "volume": volume} # Note: type is implicit in command, no price for market order
             request_id = f"partial_netting_{broker_key}_{int(time.time())}"
-            self.pending_tickets[request_id] = ticket  # Armazena o ticket para rastrear a resposta.
-
-            self._send_async_command(broker_key, command, payload, request_id)
+            self.pending_tickets[request_id] = ticket
+            self._send_async_command(broker_key, command, payload, request_id, use_trade_port=True)
             self.update_log(
                 f"Comando enviado: Redução de posição #{ticket} via ordem oposta ({opposite_type} {volume}) para {broker_key} às {time.strftime('%H:%M:%S', time.localtime())}.")
             logger.info(
@@ -1096,16 +770,16 @@ class BoletaTraderGui(QDialog):
             dialog.close()
 
     # Bloco 9 - Comunicação ZMQ e Tratamento de Respostas
-    # Objetivo: Enviar comandos assíncronos ao EA via ZMQ e processar as respostas recebidas,
-    # atualizando a interface e o log de atividades.
-    def _send_async_command(self, broker_key, command, payload, request_id):
+    def _send_async_command(self, broker_key, command, payload, request_id,
+                            use_trade_port=False):
         """
         Envia um comando assíncrono para o EA via ZMQ.
         Cria uma tarefa asyncio para enviar o comando sem bloquear a interface.
         """
         try:
             asyncio.create_task(
-                self.zmq_router.send_command_to_broker(broker_key, command, payload, request_id)
+                self.zmq_router.send_command_to_broker(broker_key, command, payload, request_id,
+                                                       use_trade_port=use_trade_port)
             )
             logger.info(f"Bloco 9 - Comando {command} enviado para {broker_key} com request_id: {request_id}")
         except Exception as e:
@@ -1135,7 +809,6 @@ class BoletaTraderGui(QDialog):
                     f"{operation} ordem #{ticket} para {broker_key} às {time.strftime('%H:%M:%S', time.localtime())}.")
                 logger.info(
                     f"Bloco 9 - Solicitando atualização de posições para {broker_key} após operação bem-sucedida com request_id {request_id}.")
-                self._request_positions_for_broker(broker_key)  # Solicita atualização das posições.
             else:
                 self.update_log(f"Sucesso ({broker_key}): {message}")
                 logger.debug(
@@ -1150,8 +823,6 @@ class BoletaTraderGui(QDialog):
             del self.pending_tickets[request_id]
 
     # Bloco 10 - Gerenciamento de Log e Funções Auxiliares
-    # Objetivo: Gerenciar a exibição de mensagens no log da interface e fornecer funções auxiliares,
-    # como a formatação de timestamps.
     @Slot(str)
     def update_log(self, message):
         """
@@ -1161,7 +832,7 @@ class BoletaTraderGui(QDialog):
         # Filtra as mensagens para exibir apenas as que contêm certas palavras-chave.
         if any(key in message for key in
                ["Fechada", "Fechamento Parcial", "Modificada", "Reduzida", "Lista de posições atualizada",
-                "Solicitando posições", "Erro"]):
+                "Solicitando posições", "Erro", "Solicitando dados", "Solicitando NOVO período"]):
             self.log_area.append(message)
 
             # Limita o número de linhas no log para 500.
@@ -1175,32 +846,13 @@ class BoletaTraderGui(QDialog):
         Formata um timestamp UNIX (inteiro) para uma string de data e hora legível.
         Retorna uma string vazia em caso de erro na formatação.
         """
+        if timestamp <= 0:
+            return ""
         try:
-            return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(timestamp))
+            return datetime.fromtimestamp(timestamp).strftime("%Y-%m-%d %H:%M:%S")
         except Exception as e:
-            logger.error(f"Bloco 10 - Erro ao formatar timestamp {timestamp}: {str(e)}")
+            logger.error(f"Erro ao formatar timestamp {timestamp}: {str(e)}")
             return ""
 
-
-# Bloco 11 - Execução Direta (Apenas para Testes/Desenvolvimento)
-# Objetivo: Permitir a execução direta deste arquivo para testes isolados da GUI.
-# Este bloco não é executado quando o arquivo é importado como um módulo.
-if __name__ == "__main__":
-    from PySide6.QtWidgets import QApplication
-
-    app = QApplication(sys.argv)
-    # Instâncias mock para permitir a execução isolada.
-    # Em um ambiente real, estas seriam instâncias válidas dos seus objetos.
-    mock_config = None
-    mock_broker_manager = None
-    mock_zmq_router = None
-    mock_zmq_message_handler = None
-    mock_main_window = None
-
-    window = BoletaTraderGui(mock_config, mock_broker_manager, mock_zmq_router, mock_zmq_message_handler,
-                             mock_main_window)
-    window.show()
-    sys.exit(app.exec())
-
 # Arquivo: gui/boleta_trader_gui.py
-# Versão: 1.0.9.k - Envio 5
+# Versão: 1.0.9.o - Envio 2 (Correção: Remove chamada redundante de requisição de dados e garante importações de tabs)
