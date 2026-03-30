@@ -289,16 +289,14 @@ if __name__ == "__main__":
         loop = QAsyncioEventLoop(app)
         asyncio.set_event_loop(loop)
         logger.info("Usando PySide6.QtAsyncio (solução oficial).")
-        with loop:
-            loop.run_until_complete(main_application_flow(initial_app_config))
+        loop.run_until_complete(main_application_flow(initial_app_config))
     except ImportError:
         # Fallback para qasync se PySide6.QtAsyncio não disponível
         logger.warning("PySide6.QtAsyncio não disponível. Usando qasync como fallback.")
         import qasync
         loop = qasync.QEventLoop(app)
         asyncio.set_event_loop(loop)
-        with loop:
-            loop.run_until_complete(main_application_flow(initial_app_config))
+        loop.run_until_complete(main_application_flow(initial_app_config))
     except KeyboardInterrupt:
         if not shutdown_event.is_set():
             shutdown_event.set()
