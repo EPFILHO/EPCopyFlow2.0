@@ -39,6 +39,31 @@ class BrokersDialog(QDialog):
         self.broker_manager = broker_manager
         self.setWindowTitle("Cadastro de Corretoras")
         self.setMinimumWidth(450)
+        self.setStyleSheet("""
+            QDialog { background-color: #1e1e2e; }
+            QLabel { color: #cdd6f4; }
+            QLineEdit, QComboBox, QDoubleSpinBox {
+                color: #cdd6f4;
+                background-color: #313244;
+                border: 1px solid #45475a;
+                border-radius: 4px;
+                padding: 4px;
+            }
+            QPushButton {
+                color: #cdd6f4;
+                background-color: #45475a;
+                border: 1px solid #585b70;
+                border-radius: 4px;
+                padding: 6px 12px;
+            }
+            QPushButton:hover { background-color: #585b70; }
+            QPushButton:disabled { color: #6c7086; }
+            QComboBox QAbstractItemView {
+                color: #cdd6f4;
+                background-color: #313244;
+                selection-background-color: #45475a;
+            }
+        """)
         self._init_ui()
         self._populate_brokers()
         self._clear_fields()
