@@ -1,12 +1,11 @@
 # EPCopyFlow 2.0 - Versão 0.0.1 - Claude Code Parte 000
 # main.py
 # Ponto de entrada principal da aplicação EPCopyFlow 2.0.
+# Usa PySide6.QtAsyncio (solução oficial Qt) ao invés de qasync.
 
 import sys
 import asyncio
-import platform
 import warnings
-import qasync
 import logging
 import signal
 import subprocess
@@ -27,19 +26,10 @@ logger = logging.getLogger(__name__)
 
 
 # ── Bloco 1 - Configuração Inicial ──
-def configure_asyncio_policy():
-    if platform.system() == "Windows":
-        try:
-            if sys.version_info < (3, 14):
-                asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
-        except Exception as e:
-            logger.warning(f"Falha ao definir WindowsSelectorEventLoopPolicy: {e}")
-
-
 def filter_warnings():
     warnings.filterwarnings("ignore", category=RuntimeWarning, module="zmq.*")
     warnings.filterwarnings("ignore", message="not a socket")
-    warnings.filterwarnings("ignore", message="Proactor event loop does not implement add_reader family of methods")
+    warnings.filterwarnings("ignore", category=DeprecationWarning, module="asyncio.*")
 
 
 # ── Bloco 2 - Patch ZMQ ──
@@ -107,7 +97,7 @@ def setup_logging(config_manager_instance: ConfigManager):
     logger.info(f"Logging configurado. Log file: {log_filename}")
 
 
-# ── Bloco 5 - Variáveis Globais ──
+# ── Bloco 4 - Variáveis Globais ──
 shutdown_event = asyncio.Event()
 zmq_task = None
 zmq_router_instance = None
@@ -117,7 +107,7 @@ mt5_monitor = None
 copytrade_manager = None
 
 
-# ── Bloco 6 - Encerramento ──
+# ── Bloco 5 - Encerramento ──
 async def shutdown_cleanup():
     global zmq_task, zmq_router_instance, mt5_processes, broker_manager, mt5_monitor
     logger.info("Iniciando shutdown_cleanup...")
@@ -171,7 +161,7 @@ def sigint_handler(*args):
         shutdown_event.set()
 
 
-# ── Bloco 7 - Fluxo Principal ──
+# ── Bloco 6 - Splash Screen Async ──
 async def show_splash_async(duration):
     """Exibe splash screen como coroutine sem bloquear o event loop."""
     app = QApplication.instance()
@@ -220,6 +210,7 @@ async def show_splash_async(duration):
     splash_widget.close()
 
 
+# ── Bloco 7 - Fluxo Principal ──
 async def main_application_flow(config: ConfigManager):
     global zmq_task, zmq_router_instance, shutdown_event, mt5_processes
     global broker_manager, mt5_monitor, copytrade_manager
@@ -261,16 +252,14 @@ async def main_application_flow(config: ConfigManager):
     main_window.zmq_message_handler.set_copytrade_manager(copytrade_manager)
 
     zmq_task = asyncio.create_task(zmq_router_instance.run(main_window.zmq_message_handler))
-    try:
-        await asyncio.sleep(0.1)
-    except asyncio.CancelledError:
-        pass
 
     logger.info("Setup concluído. Aguardando shutdown_event...")
-    try:
-        await shutdown_event.wait()
-    except asyncio.CancelledError:
-        pass
+
+    # Manter o event loop vivo até o app fechar
+    app = QApplication.instance()
+    app.aboutToQuit.connect(lambda: shutdown_event.set())
+
+    await shutdown_event.wait()
 
     logger.info("Sinal de encerramento recebido.")
     try:
@@ -287,22 +276,29 @@ if __name__ == "__main__":
     setup_logging(initial_app_config)
     logger.info("Iniciando EPCopyFlow 2.0.")
 
-    configure_asyncio_policy()
     filter_warnings()
     apply_zmq_patch()
 
+    app = QApplication.instance()
+    if app is None:
+        app = QApplication(sys.argv)
+
     try:
-        app = QApplication.instance()
-        if app is None:
-            app = QApplication(sys.argv)
-
-        # Use qasync's QEventLoop to properly integrate asyncio + Qt
-        loop = qasync.QEventLoop(app)
+        # PySide6.QtAsyncio - solução oficial do Qt para asyncio + Qt
+        from PySide6.QtAsyncio import QAsyncioEventLoop
+        loop = QAsyncioEventLoop(app)
         asyncio.set_event_loop(loop)
-
+        logger.info("Usando PySide6.QtAsyncio (solução oficial).")
         with loop:
             loop.run_until_complete(main_application_flow(initial_app_config))
-
+    except ImportError:
+        # Fallback para qasync se PySide6.QtAsyncio não disponível
+        logger.warning("PySide6.QtAsyncio não disponível. Usando qasync como fallback.")
+        import qasync
+        loop = qasync.QEventLoop(app)
+        asyncio.set_event_loop(loop)
+        with loop:
+            loop.run_until_complete(main_application_flow(initial_app_config))
     except KeyboardInterrupt:
         if not shutdown_event.is_set():
             shutdown_event.set()

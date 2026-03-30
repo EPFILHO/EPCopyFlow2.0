@@ -9,7 +9,7 @@ from PySide6.QtWidgets import (
     QPushButton, QStackedWidget, QFrame, QSizePolicy, QMessageBox
 )
 from PySide6.QtGui import QCloseEvent, QFont, QIcon
-from PySide6.QtCore import Slot, Qt, QTimer, Signal, QSize
+from PySide6.QtCore import Slot, Qt, Signal
 
 from core.config_manager import ConfigManager
 from core.broker_manager import BrokerManager
@@ -92,7 +92,6 @@ QWidget#main-area {
 class MainWindow(QMainWindow):
     broker_status_updated = Signal(dict, dict)
     broker_connected = Signal(str)
-    _system_status_signal = Signal(dict)  # thread-safe bridge for InternetMonitor
 
     def __init__(self,
                  config: ConfigManager,
@@ -128,9 +127,9 @@ class MainWindow(QMainWindow):
         self._init_ui()
         self._connect_signals()
 
-        # Internet monitor (callback runs in background thread → emit signal → GUI thread)
-        self._system_status_signal.connect(self._on_system_status)
-        self.internet_monitor = InternetMonitor(self._emit_system_status)
+        # Internet monitor (QTimer-based, runs in GUI thread - thread-safe)
+        self.internet_monitor = InternetMonitor(check_interval=5, parent=self)
+        self.internet_monitor.status_updated.connect(self._on_system_status)
         self.internet_monitor.start()
 
         logger.info("MainWindow inicializada.")
@@ -286,14 +285,8 @@ class MainWindow(QMainWindow):
             self.brokers_page.refresh_brokers()
 
     # ── System Monitor ──
-    def _emit_system_status(self, status=None):
-        """Called from InternetMonitor background thread. Emits signal to GUI thread."""
-        if status is not None:
-            self._system_status_signal.emit(status)
-
     @Slot(dict)
     def _on_system_status(self, status):
-        """Runs in GUI thread via signal. Safe to update widgets."""
         online = status.get("internet", "Offline")
         color = "#a6e3a1" if online == "Online" else "#f38ba8"
         self.internet_label.setText(f"Internet: <span style='color:{color}'>{online}</span>")
