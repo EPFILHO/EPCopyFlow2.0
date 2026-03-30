@@ -8,10 +8,9 @@
         "server": "XYZ-Server",
         "type": "Demo",
         "mode": "Hedge",
-        "admin_port": 15555,
-        "data_port": 15556,
-        "trade_port": 15559,
-        "live_port": 15557,
-        "stream_port": 15558
+        "role": "master",
+        "lot_multiplier": 1.0,
+        "command_port": 15555,
+        "event_port": 15556
     }
 }
