@@ -103,7 +103,7 @@ class ZmqMessageHandler(QObject):
                 "broker_key": identified_broker_key,
                 "timestamp_mql": message.get("timestamp_mql", 0),
                 "request": message.get("request", {}),
-                "result": message.get("", {}),
+                "result": message.get("result", {}),
             }
             self.trade_event_received.emit(trade_event_data)
             logger.info(f"TRADE_EVENT de {identified_broker_key}")
@@ -184,7 +184,7 @@ class ZmqMessageHandler(QObject):
         elif "positions_" in request_id:
             if status == "OK":
                 self.positions_received.emit({
-                    "data": message.get("", []),
+                    "positions": message.get("positions", []),
                     "broker_key": broker_key
                 })
 

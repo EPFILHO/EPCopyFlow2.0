@@ -246,9 +246,11 @@ class CopyTradeManager(QObject):
                 errors.append(f"{broker_key}: falha ao obter posições")
                 continue
 
-            positions = response.get("", [])
+            positions = response.get("positions", [])
             if not positions:
                 positions = response.get("data", [])
+            if not positions:
+                positions = response.get("result", [])
 
             for pos in positions:
                 ticket = pos.get("ticket", 0)

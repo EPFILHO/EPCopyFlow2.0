@@ -117,7 +117,7 @@ class HistoryPage(QWidget):
 
         filtered = []
         for row in rows:
-            status = row[10] if len(row) > 10 else ""
+            status = row.get("status", "")
             if filter_text == "Sucesso" and status != "SUCCESS":
                 continue
             if filter_text == "Falha" and status != "FAILED":
@@ -126,20 +126,19 @@ class HistoryPage(QWidget):
 
         self.table.setRowCount(len(filtered))
         for i, row in enumerate(filtered):
-            # row = (id, timestamp, master_broker, master_ticket, symbol, action, master_lot,
-            #        slave_broker, slave_ticket, slave_lot, status, error_message)
-            ts = datetime.fromtimestamp(row[1]).strftime("%Y-%m-%d %H:%M:%S") if row[1] else ""
+            ts_val = row.get("timestamp", 0)
+            ts = datetime.fromtimestamp(ts_val).strftime("%Y-%m-%d %H:%M:%S") if ts_val else ""
             values = [
-                ts,              # Data/Hora
-                str(row[2]),     # Master
-                str(row[3]),     # Ticket M
-                str(row[4]),     # Simbolo
-                str(row[5]),     # Acao
-                str(row[6]),     # Lote M
-                str(row[7]),     # Slave
-                str(row[8]),     # Ticket S
-                str(row[9]),     # Lote S
-                str(row[10]),    # Status
+                ts,                                  # Data/Hora
+                str(row.get("master_broker", "")),   # Master
+                str(row.get("master_ticket", "")),   # Ticket M
+                str(row.get("symbol", "")),          # Simbolo
+                str(row.get("action", "")),          # Acao
+                str(row.get("master_lot", "")),      # Lote M
+                str(row.get("slave_broker", "")),    # Slave
+                str(row.get("slave_ticket", "")),    # Ticket S
+                str(row.get("slave_lot", "")),       # Lote S
+                str(row.get("status", "")),          # Status
             ]
             for j, val in enumerate(values):
                 item = QTableWidgetItem(val)
