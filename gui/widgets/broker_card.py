@@ -181,12 +181,12 @@ class BrokerCard(QFrame):
                 btn = QPushButton("Desconectar")
                 btn.setProperty("class", "card-disconnect")
                 if self._on_disconnect:
-                    btn.clicked.connect(self._on_disconnect)
+                    btn.clicked.connect(lambda _checked=False: self._on_disconnect())
             else:
                 btn = QPushButton("Conectar")
                 btn.setProperty("class", "card-connect")
                 if self._on_connect:
-                    btn.clicked.connect(self._on_connect)
+                    btn.clicked.connect(lambda _checked=False: self._on_connect())
             btn_row.addWidget(btn)
             layout.addLayout(btn_row)
 
