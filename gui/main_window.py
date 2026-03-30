@@ -1,43 +1,95 @@
+# EPCopyFlow 2.0 - Versão 0.0.1 - Claude Code Parte 000
 # gui/main_window.py
-# Versão 1.0.9.i - envio 5
-# Ajustes:
-# - (1.0.9.h): Estrutura inicial com menu, lista de corretoras e logs.
-# - (1.0.9.i): Adicionado mt5_monitor no construtor para passar ao MainMenu e StatusGui.
-# - (envio 5): Restaurado layout original com painel de logs (log_text_edit) que foi removido indevidamente.
+# Janela principal com sidebar de navegação e header com monitor de sistema.
 
-# Bloco 1 - Configuração Inicial da Classe MainWindow
-# Objetivo: Definir a classe principal da janela, seus sinais e inicializar atributos essenciais.
 import logging
 import asyncio
-import os
-import time
 from PySide6.QtWidgets import (
-    QMainWindow, QVBoxLayout, QHBoxLayout, QWidget, QListWidget,
-    QPushButton, QTextEdit, QLabel, QSplitter, QListWidgetItem, QStatusBar, QMessageBox
+    QMainWindow, QVBoxLayout, QHBoxLayout, QWidget, QLabel,
+    QPushButton, QStackedWidget, QFrame, QSizePolicy, QMessageBox
 )
-from PySide6.QtGui import QCloseEvent
-from PySide6.QtCore import Slot, Qt, QTimer, Signal
+from PySide6.QtGui import QCloseEvent, QFont, QIcon
+from PySide6.QtCore import Slot, Qt, QTimer, Signal, QSize
+
 from core.config_manager import ConfigManager
 from core.broker_manager import BrokerManager
 from core.zmq_router import ZmqRouter
-from gui.main_menu import MainMenu
-from gui.brokers_dialog import BrokersDialog
 from core.zmq_message_handler import ZmqMessageHandler
 from internet_monitor import InternetMonitor
 
+from gui.pages.dashboard_page import DashboardPage
+from gui.pages.brokers_page import BrokersPage
+from gui.pages.history_page import HistoryPage
+from gui.pages.logs_page import LogsPage
+from gui.pages.settings_page import SettingsPage
+
 logger = logging.getLogger(__name__)
 
+SIDEBAR_STYLE = """
+QFrame#sidebar {
+    background-color: #1e1e2e;
+    border-right: 1px solid #313244;
+}
+QPushButton.nav-btn {
+    background-color: transparent;
+    color: #cdd6f4;
+    border: none;
+    text-align: left;
+    padding: 12px 16px;
+    font-size: 14px;
+    border-radius: 8px;
+    margin: 2px 8px;
+}
+QPushButton.nav-btn:hover {
+    background-color: #313244;
+}
+QPushButton.nav-btn:checked {
+    background-color: #45475a;
+    color: #89b4fa;
+    font-weight: bold;
+}
+"""
+
+HEADER_STYLE = """
+QFrame#header {
+    background-color: #1e1e2e;
+    border-bottom: 1px solid #313244;
+    padding: 4px 16px;
+}
+QLabel.header-title {
+    color: #89b4fa;
+    font-size: 16px;
+    font-weight: bold;
+}
+QLabel.header-status {
+    color: #a6adc8;
+    font-size: 12px;
+}
+QPushButton#emergency-btn {
+    background-color: #f38ba8;
+    color: #1e1e2e;
+    border: none;
+    border-radius: 6px;
+    padding: 8px 16px;
+    font-weight: bold;
+    font-size: 13px;
+}
+QPushButton#emergency-btn:hover {
+    background-color: #eba0ac;
+}
+QPushButton#emergency-btn:pressed {
+    background-color: #f38ba8;
+}
+"""
+
+MAIN_STYLE = """
+QWidget#main-area {
+    background-color: #181825;
+}
+"""
+
+
 class MainWindow(QMainWindow):
-    """
-    Janela principal da aplicação MT5 ZMQ Trader.
-
-    Gerencia a interface do usuário, exibe informações sobre corretoras conectadas,
-    logs de sistema e fornece acesso às funcionalidades através de menus.
-
-    Sinais:
-        broker_status_updated: Emitido quando o status de uma corretora muda
-        broker_connected: Emitido quando uma nova corretora é conectada
-    """
     broker_status_updated = Signal(dict, dict)
     broker_connected = Signal(str)
 
@@ -47,186 +99,172 @@ class MainWindow(QMainWindow):
                  zmq_router: ZmqRouter,
                  shutdown_event_ref: asyncio.Event,
                  root_path: str,
-                 mt5_monitor):
-        """
-        Inicializa a janela principal da aplicação.
-
-        Args:
-            config: Gerenciador de configurações do sistema
-            broker_manager: Gerenciador de corretoras
-            zmq_router: Roteador ZMQ para comunicação com MT5
-            shutdown_event_ref: Referência ao evento de encerramento global
-            root_path: Caminho raiz da aplicação
-            mt5_monitor: Monitor de processos MT5
-        """
+                 mt5_monitor,
+                 copytrade_manager=None):
         super().__init__()
-        logger.info("Bloco 1 - Inicializando MainWindow...")
         self.config = config
         self.broker_manager = broker_manager
         self.zmq_router = zmq_router
         self.shutdown_event_ref = shutdown_event_ref
         self.root_path = root_path
         self.mt5_monitor = mt5_monitor
-        self.zmq_message_handler = ZmqMessageHandler(config, zmq_router, self)
+        self.copytrade_manager = copytrade_manager
+        self.zmq_message_handler = ZmqMessageHandler(
+            config, zmq_router, broker_manager=broker_manager,
+            copytrade_manager=copytrade_manager
+        )
 
-        # Configuração da janela
-        self.setWindowTitle("MT5 ZMQ Trader")
-        self.setGeometry(100, 100, 900, 600)
-
-        # Carrega informações das corretoras
         self.brokers = self.broker_manager.load_brokers()
         self.broker_status = {}
         self.broker_modes = {}
-
-        # Inicializa os modos de operação das corretoras
         for key, broker in self.brokers.items():
             self.broker_modes[key] = broker.get("mode", "Hedge")
-            logger.debug(f"Bloco 1 - Corretora {key} tem modo: {self.broker_modes[key]}")
 
-        logger.info(f"Bloco 1 - Modos de corretoras carregados: {self.broker_modes}")
+        self.setWindowTitle("EPCopyFlow 2.0")
+        self.setGeometry(50, 50, 1200, 750)
+        self.setMinimumSize(900, 550)
 
-        # Inicializa a interface do usuário
         self._init_ui()
         self._connect_signals()
-        self._create_menu()
 
-        # Bloco 6 - Monitoramento e Barra de Status
-        self.internet_monitor = InternetMonitor(self._update_status_bar_timer)
+        # Internet monitor
+        self.internet_monitor = InternetMonitor(self._on_system_status)
         self.internet_monitor.start()
-        logger.info("Bloco 6 - InternetMonitor iniciado.")
 
-        self.status_timer = QTimer()
-        self.status_timer.timeout.connect(self._update_status_bar_timer)
-        self.status_timer.start(5000)
-        logger.info("Bloco 6 - Timer de status iniciado.")
+        logger.info("MainWindow inicializada.")
 
-        logger.info("Bloco 1 - MainWindow inicializada. ZmqRouter configurado para portas dinâmicas.")
-        self.broker_status_updated.emit(self.broker_status, self.broker_modes)
-        logger.debug("Bloco 1 - Sinal broker_status_updated emitido na inicialização.")
-
-    # Bloco 2 - Inicialização da Interface do Usuário (_init_ui)
+    # ── UI Setup ──
     def _init_ui(self):
-        """
-        Inicializa os componentes da interface do usuário.
+        central = QWidget()
+        central.setObjectName("main-area")
+        central.setStyleSheet(MAIN_STYLE)
+        self.setCentralWidget(central)
 
-        Cria o layout principal, painéis, lista de corretoras, área de logs
-        e barra de status.
-        """
-        logger.info("Bloco 2 - Configurando a interface do usuário...")
-        central_widget = QWidget()
-        self.setCentralWidget(central_widget)
+        root_layout = QVBoxLayout(central)
+        root_layout.setContentsMargins(0, 0, 0, 0)
+        root_layout.setSpacing(0)
 
-        main_layout = QVBoxLayout(central_widget)
-        splitter = QSplitter(Qt.Orientation.Horizontal)
-        main_layout.addWidget(splitter)
+        # Header
+        self.header = self._create_header()
+        root_layout.addWidget(self.header)
 
-        left_panel = QWidget()
-        left_layout = QVBoxLayout(left_panel)
-        splitter.addWidget(left_panel)
+        # Body = sidebar + stacked pages
+        body = QWidget()
+        body_layout = QHBoxLayout(body)
+        body_layout.setContentsMargins(0, 0, 0, 0)
+        body_layout.setSpacing(0)
 
-        left_layout.addWidget(QLabel("Corretoras Conectadas:"))
-        self.broker_list_widget = QListWidget()
-        self.broker_list_widget.currentItemChanged.connect(self._on_broker_selected)
-        left_layout.addWidget(self.broker_list_widget)
+        self.sidebar = self._create_sidebar()
+        body_layout.addWidget(self.sidebar)
 
-        right_panel = QWidget()
-        right_layout = QVBoxLayout(right_panel)
-        splitter.addWidget(right_panel)
+        self.pages = QStackedWidget()
+        self.pages.setStyleSheet("background-color: #181825;")
 
-        right_layout.addWidget(QLabel("Logs e Mensagens ZMQ:"))
-        self.log_text_edit = QTextEdit()
-        self.log_text_edit.setReadOnly(True)
-        right_layout.addWidget(self.log_text_edit)
+        # Create pages
+        self.dashboard_page = DashboardPage(self.broker_manager, self.copytrade_manager)
+        self.brokers_page = BrokersPage(self.config, self.broker_manager, self.zmq_router, self.mt5_monitor)
+        self.history_page = HistoryPage(self.copytrade_manager)
+        self.logs_page = LogsPage()
+        self.settings_page = SettingsPage(self.config)
 
-        splitter.setSizes([300, 600])
+        self.pages.addWidget(self.dashboard_page)   # 0
+        self.pages.addWidget(self.brokers_page)      # 1
+        self.pages.addWidget(self.history_page)      # 2
+        self.pages.addWidget(self.logs_page)         # 3
+        self.pages.addWidget(self.settings_page)     # 4
 
-        self.status_bar = QStatusBar()
-        self.setStatusBar(self.status_bar)
+        body_layout.addWidget(self.pages, 1)
+        root_layout.addWidget(body, 1)
 
-        self.system_status_label = QLabel("Iniciando...")
-        self.status_bar.addPermanentWidget(self.system_status_label, 1)
+        # Select dashboard by default
+        self.nav_buttons[0].setChecked(True)
 
-        self.internet_status_label = QLabel()
-        self.status_bar.addPermanentWidget(self.internet_status_label)
-        logger.info("Bloco 2 - Interface do usuário configurada.")
+    def _create_header(self):
+        header = QFrame()
+        header.setObjectName("header")
+        header.setStyleSheet(HEADER_STYLE)
+        header.setFixedHeight(52)
 
-    # Bloco 3 - Gerenciamento de Eventos da Janela
-    def showEvent(self, event):
-        super().showEvent(event)
-        logger.info("Bloco 3 - Janela principal exibida.")
-        QTimer.singleShot(500, lambda: self.system_status_label.setText("Pronto"))
+        layout = QHBoxLayout(header)
+        layout.setContentsMargins(16, 4, 16, 4)
 
-    def closeEvent(self, event: QCloseEvent):
-        logger.info("Bloco 3 - Evento de fechamento da janela principal recebido.")
-        self.shutdown_event_ref.set()
-        logger.debug("Bloco 3 - shutdown_event_ref setado.")
-        self.internet_monitor.stop()
-        self.status_timer.stop()
-        logger.info("Bloco 3 - InternetMonitor e status_timer parados.")
-        event.accept()
+        title = QLabel("EPCopyFlow 2.0")
+        title.setProperty("class", "header-title")
+        layout.addWidget(title)
 
-    # Bloco 4 - Gerenciamento da Lista de Corretoras
-    def _populate_brokers(self):
-        logger.info("Bloco 4 - Populando lista de corretoras...")
-        previous_brokers = set(self.broker_list_widget.item(i).text() for i in range(self.broker_list_widget.count()))
-        self.broker_list_widget.clear()
+        layout.addStretch()
 
-        connected = self.broker_manager.get_connected_brokers()
+        # System status labels
+        self.internet_label = QLabel("Internet: --")
+        self.internet_label.setProperty("class", "header-status")
+        self.cpu_label = QLabel("CPU: --%")
+        self.cpu_label.setProperty("class", "header-status")
+        self.mem_label = QLabel("RAM: --%")
+        self.mem_label.setProperty("class", "header-status")
 
-        for key in list(self.broker_status.keys()):
-            if key not in connected:
-                self.broker_status[key] = False
-                logger.info(f"Bloco 4 - Corretora {key} não está mais conectada. Status definido como False.")
+        for lbl in (self.internet_label, self.cpu_label, self.mem_label):
+            layout.addWidget(lbl)
+            layout.addSpacing(12)
 
-        for key in sorted(connected):
-            item = QListWidgetItem(key)
-            self.broker_list_widget.addItem(item)
+        # Emergency button
+        self.emergency_btn = QPushButton("EMERGENCIA - Fechar Tudo")
+        self.emergency_btn.setObjectName("emergency-btn")
+        self.emergency_btn.clicked.connect(self._on_emergency)
+        layout.addWidget(self.emergency_btn)
 
-            if key not in self.broker_status:
-                self.broker_status[key] = False
-                logger.info(f"Bloco 4 - Nova corretora {key} adicionada ao broker_status com status False.")
+        return header
 
-            if key not in previous_brokers:
-                self.broker_connected.emit(key)
-                logger.debug(f"Bloco 4 - Sinal broker_connected emitido para {key}.")
+    def _create_sidebar(self):
+        sidebar = QFrame()
+        sidebar.setObjectName("sidebar")
+        sidebar.setStyleSheet(SIDEBAR_STYLE)
+        sidebar.setFixedWidth(200)
 
-        self._on_broker_selected(self.broker_list_widget.currentItem(), None)
-        self.broker_status_updated.emit(self.broker_status, self.broker_modes)
-        logger.info("Bloco 4 - Lista de corretoras populada e sinal broker_status_updated emitido.")
+        layout = QVBoxLayout(sidebar)
+        layout.setContentsMargins(0, 12, 0, 12)
+        layout.setSpacing(2)
 
-    @Slot()
-    def _update_brokers_list(self):
-        logger.info("Bloco 4 - Solicitando atualização da lista de corretoras.")
-        self._populate_brokers()
+        pages = [
+            ("Dashboard", 0),
+            ("Corretoras", 1),
+            ("Historico", 2),
+            ("Logs", 3),
+            ("Configuracoes", 4),
+        ]
 
-    def _get_selected_broker_key(self) -> str | None:
-        current_item = self.broker_list_widget.currentItem()
-        selected_key = current_item.text() if current_item else None
-        logger.debug(f"Bloco 4 - Corretora selecionada: {selected_key}.")
-        return selected_key
+        self.nav_buttons = []
+        for label, index in pages:
+            btn = QPushButton(label)
+            btn.setProperty("class", "nav-btn")
+            btn.setCheckable(True)
+            btn.clicked.connect(lambda checked, idx=index: self._navigate(idx))
+            layout.addWidget(btn)
+            self.nav_buttons.append(btn)
 
-    # Bloco 5 - Conexão de Sinais e Manipulação de Mensagens ZMQ
+        layout.addStretch()
+
+        # Version label at bottom
+        ver = QLabel("v0.0.1")
+        ver.setStyleSheet("color: #585b70; font-size: 11px; padding: 8px 16px;")
+        layout.addWidget(ver)
+
+        return sidebar
+
+    def _navigate(self, index):
+        self.pages.setCurrentIndex(index)
+        for i, btn in enumerate(self.nav_buttons):
+            btn.setChecked(i == index)
+
+    # ── Signals ──
     def _connect_signals(self):
-        logger.info("Bloco 5 - Conectando sinais...")
-        self.zmq_message_handler.log_message_received.connect(self._update_log_display)
+        self.zmq_message_handler.log_message_received.connect(self.logs_page.append_log)
         self.zmq_message_handler.log_message_received.connect(self._handle_zmq_messages)
-        logger.info("Bloco 5 - Sinais conectados.")
-
-    @Slot(QListWidgetItem, QListWidgetItem)
-    def _on_broker_selected(self, current_item: QListWidgetItem | None, previous_item: QListWidgetItem | None):
-        selected_key = self._get_selected_broker_key()
-        if selected_key:
-            logger.debug(f"Bloco 5 - Corretora selecionada na lista: {selected_key}.")
-        else:
-            logger.debug("Bloco 5 - Nenhuma corretora selecionada na lista.")
-
-    @Slot(str)
-    def _update_log_display(self, message: str):
-        try:
-            self.log_text_edit.append(message)
-            logger.debug(f"Bloco 5 - Log display atualizado com mensagem: {message[:50]}...")
-        except Exception as e:
-            logger.error(f"Bloco 5 - Falha ao atualizar log display: {e}")
+        self.zmq_message_handler.positions_received.connect(self.dashboard_page.update_positions)
+        self.zmq_message_handler.account_balance_received.connect(self.dashboard_page.update_balance)
+        if self.copytrade_manager:
+            self.copytrade_manager.copy_trade_log.connect(self.logs_page.append_log)
+            self.copytrade_manager.copy_trade_executed.connect(self.history_page.refresh)
+            self.copytrade_manager.copy_trade_failed.connect(self.history_page.refresh)
 
     @Slot(str)
     def _handle_zmq_messages(self, message: str):
@@ -234,67 +272,50 @@ class MainWindow(QMainWindow):
         for key in list(self.broker_status.keys()):
             if "REGISTER" in message and key in message and "UNREGISTER" not in message:
                 self.broker_status[key] = True
-                logger.info(f"Bloco 5 - Corretora {key} registrada. Habilitando botões.")
                 status_changed = True
                 break
             elif ("CLIENT_UNREGISTERED" in message or "UNREGISTER" in message) and key in message:
                 self.broker_status[key] = False
-                logger.info(f"Bloco 5 - Corretora {key} desregistrada. Desabilitando botões.")
                 status_changed = True
                 break
-
         if status_changed:
             self.broker_status_updated.emit(self.broker_status, self.broker_modes)
-            logger.debug("Bloco 5 - Sinal broker_status_updated emitido após handle_zmq_messages.")
+            self.dashboard_page.refresh_brokers()
+            self.brokers_page.refresh_brokers()
 
-    # Bloco 6 - Monitoramento e Barra de Status
+    # ── System Monitor ──
     @Slot(dict)
-    def _update_status_bar_timer(self, status=None):
-        if status is not None:
-            message = f"Internet: {status['internet']} | {status['cpu']} | {status['memory']}"
-            self.internet_status_label.setText(message)
-            logger.debug(f"Bloco 6 - Barra de status atualizada: {message}.")
+    def _on_system_status(self, status=None):
+        if status is None:
+            return
+        online = status.get("internet", "Offline")
+        color = "#a6e3a1" if online == "Online" else "#f38ba8"
+        self.internet_label.setText(f"Internet: <span style='color:{color}'>{online}</span>")
+        self.cpu_label.setText(status.get("cpu", "CPU: --%"))
+        self.mem_label.setText(status.get("memory", "RAM: --%"))
 
-    # Bloco 7 - Criação e Interação do Menu Principal
-    def _create_menu(self):
-        logger.info("Bloco 7 - Criando menu principal...")
-        self.main_menu = MainMenu(self, self.config, self.broker_manager, self.zmq_router, self.mt5_monitor)
-        self.setMenuBar(self.main_menu.menubar)
-        self.main_menu.conn_menu.aboutToShow.connect(self._update_brokers_list)
-        logger.debug("Bloco 7 - Menu 'Conexões' conectado ao _update_brokers_list.")
+    # ── Emergency ──
+    def _on_emergency(self):
+        reply = QMessageBox.warning(
+            self, "EMERGENCIA",
+            "Fechar TODAS as posicoes em TODAS as corretoras (Master + Slaves)?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
+        )
+        if reply == QMessageBox.Yes:
+            if self.copytrade_manager:
+                asyncio.ensure_future(self.copytrade_manager.emergency_close_all())
+                self.logs_page.append_log("EMERGENCIA: Fechando todas as posicoes...")
+            else:
+                QMessageBox.information(self, "Info", "CopyTradeManager nao inicializado.")
 
-        if hasattr(self.main_menu, "connect_broker"):
-            self.main_menu.connect_broker = self._wrap_update(self.main_menu.connect_broker, "connect")
-            logger.debug("Bloco 7 - Método connect_broker envolvido.")
+    # ── Window Events ──
+    def showEvent(self, event):
+        super().showEvent(event)
+        logger.info("MainWindow exibida.")
 
-        if hasattr(self.main_menu, "disconnect_broker"):
-            original_disconnect = self.main_menu.disconnect_broker
-
-            def wrapped_disconnect(*args, **kwargs):
-                logger.info("Bloco 7 - Executando wrapped_disconnect.")
-                result = original_disconnect(*args, **kwargs)
-                broker_key = args[0] if args else kwargs.get('broker_key')
-
-                if broker_key in self.broker_status:
-                    self.broker_status[broker_key] = False
-                    logger.info(f"Bloco 7 - Corretora {broker_key} desconectada. Status atualizado para False.")
-
-                self.broker_status_updated.emit(self.broker_status, self.broker_modes)
-                logger.debug("Bloco 7 - Sinal broker_status_updated emitido após desconexão.")
-                self._update_brokers_list()
-                return result
-
-            self.main_menu.disconnect_broker = wrapped_disconnect
-            logger.debug("Bloco 7 - Método disconnect_broker envolvido.")
-        logger.info("Bloco 7 - Menu principal criado e configurado.")
-
-    def _wrap_update(self, func, action_type: str):
-        def wrapper(*args, **kwargs):
-            logger.info(f"Bloco 7 - Executando wrapper para {action_type} broker.")
-            result = func(*args, **kwargs)
-            self._update_brokers_list()
-            return result
-        return wrapper
-
-# ------------ término do arquivo main_window.py ------------
-# Versão 1.0.9.i - envio 5
+    def closeEvent(self, event: QCloseEvent):
+        logger.info("Fechando MainWindow...")
+        self.shutdown_event_ref.set()
+        self.internet_monitor.stop()
+        event.accept()

@@ -1,8 +1,11 @@
+# EPCopyFlow 2.0 - Versão 0.0.1 - Claude Code Parte 000
 # gui/brokers_dialog.py
+# Diálogo de cadastro de corretoras com suporte a role (master/slave) e multiplicador de lote.
+
 import logging
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QComboBox, QLineEdit,
-    QPushButton, QMessageBox, QToolButton
+    QPushButton, QMessageBox, QToolButton, QDoubleSpinBox
 )
 from PySide6.QtCore import Signal, Qt
 from PySide6.QtGui import QIcon, QPixmap, QStandardItemModel, QStandardItem, QColor
@@ -20,10 +23,12 @@ EYE_CLOSED_SVG = '''
 </svg>
 '''
 
+
 def svg_icon(svg_data):
     pixmap = QPixmap()
     pixmap.loadFromData(bytearray(svg_data, encoding='utf-8'), "SVG")
     return QIcon(pixmap)
+
 
 class BrokersDialog(QDialog):
     brokers_updated = Signal()
@@ -33,7 +38,7 @@ class BrokersDialog(QDialog):
         self.config = config
         self.broker_manager = broker_manager
         self.setWindowTitle("Cadastro de Corretoras")
-        self.setMinimumWidth(400)
+        self.setMinimumWidth(450)
         self._init_ui()
         self._populate_brokers()
         self._clear_fields()
@@ -49,6 +54,7 @@ class BrokersDialog(QDialog):
     def _init_ui(self):
         layout = QVBoxLayout(self)
 
+        # Seleção de corretora
         select_layout = QHBoxLayout()
         select_label = QLabel("Selecionar corretora:")
         self.combo = QComboBox()
@@ -56,11 +62,13 @@ class BrokersDialog(QDialog):
         select_layout.addWidget(self.combo)
         layout.addLayout(select_layout)
 
+        # Campos básicos
         self.name_edit = QLineEdit()
         self.client_edit = QLineEdit()
         self.broker_name_edit = QLineEdit()
         self.login_edit = QLineEdit()
 
+        # Senha com toggle
         password_layout = QHBoxLayout()
         self.password_edit = QLineEdit()
         self.password_edit.setEchoMode(QLineEdit.Password)
@@ -70,26 +78,7 @@ class BrokersDialog(QDialog):
         self.show_password_btn.setIcon(svg_icon(EYE_OPEN_SVG))
         self.show_password_btn.setToolTip("Exibir/ocultar senha")
         self.show_password_btn.setStyleSheet("""
-            QToolButton {
-                background: transparent;
-                border: none;
-                outline: none;
-                padding: 0px;
-                margin: 0px;
-            }
-            QToolButton:hover {
-                background: transparent;
-            }
-            QToolButton:focus {
-                background: transparent;
-                outline: none;
-            }
-            QToolButton:checked {
-                background: transparent;
-            }
-            QToolButton:pressed {
-                background: transparent;
-            }
+            QToolButton { background: transparent; border: none; padding: 0px; }
         """)
         password_layout.addWidget(self.show_password_btn)
 
@@ -108,6 +97,7 @@ class BrokersDialog(QDialog):
         layout.addWidget(QLabel("Servidor:"))
         layout.addWidget(self.server_edit)
 
+        # Modo + Tipo
         mode_type_layout = QHBoxLayout()
         self.mode_combo = QComboBox()
         self.mode_combo.addItems(["Hedge", "Netting"])
@@ -120,6 +110,23 @@ class BrokersDialog(QDialog):
         mode_type_layout.addWidget(self.type_combo)
         layout.addLayout(mode_type_layout)
 
+        # Role + Multiplicador de Lote (NOVOS CAMPOS)
+        role_lot_layout = QHBoxLayout()
+        self.role_combo = QComboBox()
+        self.role_combo.addItems(["Slave", "Master"])
+        self.lot_multiplier_spin = QDoubleSpinBox()
+        self.lot_multiplier_spin.setRange(0.01, 10.0)
+        self.lot_multiplier_spin.setSingleStep(0.01)
+        self.lot_multiplier_spin.setDecimals(2)
+        self.lot_multiplier_spin.setValue(1.0)
+        role_lot_layout.addWidget(QLabel("Role:"))
+        role_lot_layout.addWidget(self.role_combo)
+        role_lot_layout.addSpacing(20)
+        role_lot_layout.addWidget(QLabel("Multiplicador de Lote:"))
+        role_lot_layout.addWidget(self.lot_multiplier_spin)
+        layout.addLayout(role_lot_layout)
+
+        # Botões
         btn_layout = QHBoxLayout()
         self.add_or_clear_btn = QPushButton("Adicionar")
         self.modify_btn = QPushButton("Modificar")
@@ -142,14 +149,20 @@ class BrokersDialog(QDialog):
         self.remove_btn.clicked.connect(self._on_remove_clicked)
         self.close_btn.clicked.connect(self.close)
         self.show_password_btn.toggled.connect(self._toggle_password_visibility)
-        self.name_edit.textChanged.connect(self._update_buttons)
-        self.client_edit.textChanged.connect(self._update_buttons)
-        self.broker_name_edit.textChanged.connect(self._update_buttons)
-        self.login_edit.textChanged.connect(self._update_buttons)
-        self.password_edit.textChanged.connect(self._update_buttons)
-        self.server_edit.textChanged.connect(self._update_buttons)
+        self.role_combo.currentIndexChanged.connect(self._on_role_changed)
+        # Atualizar botões ao alterar campos
+        for widget in [self.name_edit, self.client_edit, self.broker_name_edit,
+                       self.login_edit, self.password_edit, self.server_edit]:
+            widget.textChanged.connect(self._update_buttons)
         self.mode_combo.currentIndexChanged.connect(self._update_buttons)
         self.type_combo.currentIndexChanged.connect(self._update_buttons)
+
+    def _on_role_changed(self, _idx):
+        """Desabilita multiplicador quando é Master."""
+        is_master = self.role_combo.currentText() == "Master"
+        self.lot_multiplier_spin.setEnabled(not is_master)
+        if is_master:
+            self.lot_multiplier_spin.setValue(1.0)
 
     def _populate_brokers(self):
         self.combo.blockSignals(True)
@@ -160,11 +173,12 @@ class BrokersDialog(QDialog):
 
         model = QStandardItemModel()
         for key in sorted(brokers.keys()):
-            item = QStandardItem(key)
+            role = brokers[key].get("role", "slave")
+            label = f"{key} [{role.upper()}]"
+            item = QStandardItem(label)
             is_connected = key in connected
             item.setForeground(QColor("red" if is_connected else "green"))
             item.setData(is_connected, Qt.UserRole)
-            item.setData(QColor("red" if is_connected else "green"), Qt.ForegroundRole)
             model.appendRow(item)
             self._broker_keys.append(key)
         self.combo.setModel(model)
@@ -172,14 +186,11 @@ class BrokersDialog(QDialog):
         self.combo.blockSignals(False)
         self._clear_fields()
         self._update_buttons()
-        logger.debug(f"Populating brokers: {list(brokers.keys())}, connected: {list(connected)}")
 
     def _on_combo_changed(self, idx):
         if idx < 0 or idx >= len(self._broker_keys):
             self._clear_fields()
             self._update_buttons()
-            self.combo.setStyleSheet("QComboBox { color: black; }")
-            logger.debug("ComboBox resetado para cor preta (sem seleção)")
             return
         key = self._broker_keys[idx]
         broker = self.broker_manager.get_brokers().get(key, {})
@@ -193,9 +204,11 @@ class BrokersDialog(QDialog):
         type_ = broker.get("type", "Demo")
         self.mode_combo.setCurrentIndex(self.mode_combo.findText(mode) if mode in ["Hedge", "Netting"] else 0)
         self.type_combo.setCurrentIndex(self.type_combo.findText(type_) if type_ in ["Demo", "Real"] else 0)
-        is_connected = key in self.broker_manager.get_connected_brokers()
-        self.combo.setStyleSheet(f"QComboBox {{ color: {'red' if is_connected else 'green'}; }}")
-        logger.debug(f"ComboBox configurado para cor {'red' if is_connected else 'green'} (key={key}, is_connected={is_connected})")
+        # Novos campos
+        role = broker.get("role", "slave").capitalize()
+        self.role_combo.setCurrentIndex(self.role_combo.findText(role) if role in ["Slave", "Master"] else 0)
+        self.lot_multiplier_spin.setValue(broker.get("lot_multiplier", 1.0))
+        self._on_role_changed(0)
         self._update_buttons()
 
     def _clear_fields(self):
@@ -207,12 +220,14 @@ class BrokersDialog(QDialog):
         self.server_edit.clear()
         self.mode_combo.setCurrentIndex(0)
         self.type_combo.setCurrentIndex(0)
+        self.role_combo.setCurrentIndex(0)  # Slave por padrão
+        self.lot_multiplier_spin.setValue(1.0)
         self.combo.setCurrentIndex(-1)
         self._update_buttons()
 
     def _update_buttons(self):
         idx = self.combo.currentIndex()
-        has_selection = idx >= 0 and idx < len(self._broker_keys)
+        has_selection = 0 <= idx < len(self._broker_keys)
         key = self._broker_keys[idx] if has_selection else None
         is_connected = key in self.broker_manager.get_connected_brokers() if key else False
 
@@ -223,8 +238,6 @@ class BrokersDialog(QDialog):
             self.login_edit.text().strip(),
             self.password_edit.text().strip(),
             self.server_edit.text().strip(),
-            self.mode_combo.currentText().strip(),
-            self.type_combo.currentText().strip()
         ])
         if has_selection:
             self.add_or_clear_btn.setText("Limpar")
@@ -236,70 +249,48 @@ class BrokersDialog(QDialog):
         self.remove_btn.setEnabled(has_selection and not is_connected)
         return all_fields_filled
 
-    def _generate_ports(self):
-        """
-        Gera um bloco de portas ZMQ não utilizadas para uma nova corretora.
-        Retorna: admin_port, data_port, live_port, str_port, trade_port (todos int)
-        """
-        BASE_PORT = 15555
-        MAX_PORT = 65530
-        STEP = 5
-
-        used_ports = set()
-        for broker in self.broker_manager.get_brokers().values():
-            for port_name in ["admin_port", "data_port", "live_port", "str_port", "trade_port"]:
-                port = broker.get(port_name)
-                if port:
-                    used_ports.add(int(port))
-
-        for start in range(BASE_PORT, MAX_PORT, STEP):
-            block = [start + i for i in range(STEP)]
-            if not any(port in used_ports for port in block):
-                return tuple(block)
-        raise RuntimeError("Não há blocos de portas ZMQ disponíveis.")
-
     def _on_add_or_clear_clicked(self):
         idx = self.combo.currentIndex()
-        has_selection = idx >= 0 and idx < len(self._broker_keys)
-        if has_selection:
+        if 0 <= idx < len(self._broker_keys):
             self._clear_fields()
             return
 
         if not self._update_buttons():
-            QMessageBox.warning(self, "Campos obrigatórios", "Preencha todos os campos para adicionar.")
+            QMessageBox.warning(self, "Campos obrigatórios", "Preencha todos os campos.")
             return
 
-        data = {
-            "name": self.name_edit.text().strip(),
-            "client": self.client_edit.text().strip(),
-            "broker_name": self.broker_name_edit.text().strip(),
-            "login": self.login_edit.text().strip(),
-            "password": self.password_edit.text().strip(),
-            "server": self.server_edit.text().strip(),
-            "mode": self.mode_combo.currentText().strip(),
-            "type_": self.type_combo.currentText().strip()
-        }
+        role = self.role_combo.currentText().lower()
+        lot_multiplier = self.lot_multiplier_spin.value()
+
+        # Validar master único
+        if role == "master" and self.broker_manager.get_master_broker():
+            QMessageBox.warning(self, "Erro", "Já existe um Master definido. Só é permitido um.")
+            return
 
         try:
-            admin_port, data_port, live_port, str_port, trade_port = self._generate_ports()
-            data.update({
-                "admin_port": admin_port,
-                "data_port": data_port,
-                "live_port": live_port,
-                "str_port": str_port,
-                "trade_port": trade_port
-            })
+            command_port, event_port = self.broker_manager.generate_ports()
         except Exception as e:
             QMessageBox.critical(self, "Erro de portas", f"Erro ao gerar portas ZMQ: {e}")
             return
 
-        key = self.broker_manager.add_broker(**data)
+        key = self.broker_manager.add_broker(
+            name=self.name_edit.text().strip(),
+            client=self.client_edit.text().strip(),
+            broker_name=self.broker_name_edit.text().strip(),
+            login=self.login_edit.text().strip(),
+            password=self.password_edit.text().strip(),
+            server=self.server_edit.text().strip(),
+            command_port=command_port,
+            event_port=event_port,
+            mode=self.mode_combo.currentText().strip(),
+            type_=self.type_combo.currentText().strip(),
+            role=role,
+            lot_multiplier=lot_multiplier,
+        )
         if key:
-            QMessageBox.information(self, "Sucesso", f"Corretora '{key}' adicionada com sucesso.")
+            QMessageBox.information(self, "Sucesso", f"Corretora '{key}' adicionada.")
             self._populate_brokers()
             self.brokers_updated.emit()
-            if hasattr(self.parent(), "main_menu"):
-                self.parent().main_menu._populate_conn_menu()
         else:
             QMessageBox.warning(self, "Erro", "Não foi possível adicionar a corretora.")
 
@@ -310,37 +301,33 @@ class BrokersDialog(QDialog):
         old_key = self._broker_keys[idx]
 
         if not self._update_buttons():
-            QMessageBox.warning(self, "Campos obrigatórios", "Preencha todos os campos para modificar.")
+            QMessageBox.warning(self, "Campos obrigatórios", "Preencha todos os campos.")
             return
 
-        data = {
-            "name": self.name_edit.text().strip(),
-            "client": self.client_edit.text().strip(),
-            "broker_name": self.broker_name_edit.text().strip(),
-            "login": self.login_edit.text().strip(),
-            "password": self.password_edit.text().strip(),
-            "server": self.server_edit.text().strip(),
-            "mode": self.mode_combo.currentText().strip(),
-            "type_": self.type_combo.currentText().strip()
-        }
+        role = self.role_combo.currentText().lower()
+        lot_multiplier = self.lot_multiplier_spin.value()
 
-        # Mantém as portas já cadastradas para a corretora
+        # Mantém portas existentes
         broker = self.broker_manager.get_brokers().get(old_key, {})
-        data.update({
-            "admin_port": broker.get("admin_port"),
-            "data_port": broker.get("data_port"),
-            "live_port": broker.get("live_port"),
-            "str_port": broker.get("str_port"),
-            "trade_port": broker.get("trade_port")
-        })
-
-        new_key = self.broker_manager.modify_broker(old_key, **data)
+        new_key = self.broker_manager.modify_broker(
+            old_key=old_key,
+            name=self.name_edit.text().strip(),
+            client=self.client_edit.text().strip(),
+            broker_name=self.broker_name_edit.text().strip(),
+            login=self.login_edit.text().strip(),
+            password=self.password_edit.text().strip(),
+            server=self.server_edit.text().strip(),
+            command_port=broker.get("command_port"),
+            event_port=broker.get("event_port"),
+            mode=self.mode_combo.currentText().strip(),
+            type_=self.type_combo.currentText().strip(),
+            role=role,
+            lot_multiplier=lot_multiplier,
+        )
         if new_key:
-            QMessageBox.information(self, "Sucesso", f"Corretora '{old_key}' modificada para '{new_key}'.")
+            QMessageBox.information(self, "Sucesso", f"Corretora modificada: '{new_key}'.")
             self._populate_brokers()
             self.brokers_updated.emit()
-            if hasattr(self.parent(), "main_menu"):
-                self.parent().main_menu._populate_conn_menu()
         else:
             QMessageBox.warning(self, "Erro", "Não foi possível modificar a corretora.")
 
@@ -350,18 +337,16 @@ class BrokersDialog(QDialog):
             return
         key = self._broker_keys[idx]
         reply = QMessageBox.question(
-            self, "Confirmação", f"Tem certeza que deseja excluir a corretora '{key}'?",
+            self, "Confirmação", f"Excluir corretora '{key}'?",
             QMessageBox.Yes | QMessageBox.No
         )
         if reply == QMessageBox.Yes:
             if self.broker_manager.remove_broker(key):
-                QMessageBox.information(self, "Sucesso", f"Corretora '{key}' excluída com sucesso.")
+                QMessageBox.information(self, "Sucesso", f"Corretora '{key}' excluída.")
                 self._populate_brokers()
                 self.brokers_updated.emit()
-                if hasattr(self.parent(), "main_menu"):
-                    self.parent().main_menu._populate_conn_menu()
             else:
-                QMessageBox.warning(self, "Erro", "Não foi possível excluir a corretora.")
+                QMessageBox.warning(self, "Erro", "Não foi possível excluir.")
 
     def _toggle_password_visibility(self, checked):
         if checked:
@@ -370,5 +355,3 @@ class BrokersDialog(QDialog):
         else:
             self.password_edit.setEchoMode(QLineEdit.Password)
             self.show_password_btn.setIcon(svg_icon(EYE_OPEN_SVG))
-
-#versão 1.0.9.a - envio 2
