@@ -315,6 +315,18 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event: QCloseEvent):
         logger.info("Fechando MainWindow...")
-        self.shutdown_event_ref.set()
         self.internet_monitor.stop()
+
+        # Desconectar todas as corretoras e fechar MT5
+        try:
+            for key in list(self.broker_manager.get_connected_brokers()):
+                try:
+                    self.broker_manager.disconnect_broker(key)
+                    logger.info(f"MT5 desconectado para {key} no fechamento.")
+                except Exception as e:
+                    logger.error(f"Erro ao desconectar {key} no fechamento: {e}")
+        except Exception as e:
+            logger.error(f"Erro ao obter corretoras conectadas no fechamento: {e}")
+
+        self.shutdown_event_ref.set()
         event.accept()
