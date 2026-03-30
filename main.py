@@ -296,15 +296,22 @@ if __name__ == "__main__":
         if app is None:
             app = QApplication(sys.argv)
 
-        qasync.run(main_application_flow(initial_app_config))
+        # Use qasync's QEventLoop to properly integrate asyncio + Qt
+        loop = qasync.QEventLoop(app)
+        asyncio.set_event_loop(loop)
+
+        with loop:
+            loop.run_until_complete(main_application_flow(initial_app_config))
 
     except KeyboardInterrupt:
         if not shutdown_event.is_set():
             shutdown_event.set()
     except asyncio.CancelledError:
         pass
+    except RuntimeError as e:
+        if "Event loop stopped" not in str(e):
+            logger.exception(f"Erro runtime: {e}")
     except Exception as e:
         logger.exception(f"Erro inesperado: {e}")
     finally:
         logger.info("Aplicação encerrada.")
-        sys.exit(0)
