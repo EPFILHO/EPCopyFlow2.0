@@ -13,7 +13,7 @@ import subprocess
 import zmq.asyncio
 from PySide6.QtWidgets import QApplication, QLabel, QVBoxLayout, QProgressBar, QWidget
 from PySide6.QtGui import QFont
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt
 from core.config_manager import ConfigManager
 from core.broker_manager import BrokerManager
 from core.zmq_router import ZmqRouter
@@ -30,7 +30,8 @@ logger = logging.getLogger(__name__)
 def configure_asyncio_policy():
     if platform.system() == "Windows":
         try:
-            asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+            if sys.version_info < (3, 14):
+                asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
         except Exception as e:
             logger.warning(f"Falha ao definir WindowsSelectorEventLoopPolicy: {e}")
 
@@ -58,66 +59,7 @@ def apply_zmq_patch():
     zmq.asyncio.Poller.poll = patched_asyncpoller_poll
 
 
-# ── Bloco 3 - SplashScreen ──
-class SplashScreen:
-    def __init__(self, duration=1.0):
-        self.duration = duration
-        self.finished = False
-        self.widget = QWidget()
-        self.widget.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
-        self.widget.setFixedSize(400, 200)
-        self.widget.setStyleSheet("background-color: #1e1e2e;")
-        layout = QVBoxLayout(self.widget)
-
-        title_label = QLabel("EPCopyFlow 2.0")
-        title_label.setFont(QFont("Arial", 24, QFont.Bold))
-        title_label.setStyleSheet("color: #89b4fa;")
-        title_label.setAlignment(Qt.AlignCenter)
-        layout.addWidget(title_label, 0, Qt.AlignCenter)
-
-        subtitle_label = QLabel("CopyTrade Management Platform")
-        subtitle_label.setFont(QFont("Arial", 12))
-        subtitle_label.setStyleSheet("color: #cdd6f4;")
-        subtitle_label.setAlignment(Qt.AlignCenter)
-        layout.addWidget(subtitle_label, 0, Qt.AlignCenter)
-
-        version_label = QLabel("v0.0.1")
-        version_label.setFont(QFont("Arial", 10))
-        version_label.setStyleSheet("color: #585b70;")
-        version_label.setAlignment(Qt.AlignCenter)
-        layout.addWidget(version_label, 0, Qt.AlignCenter)
-
-        self.progress = QProgressBar()
-        self.progress.setTextVisible(False)
-        self.progress.setRange(0, 0)
-        self.progress.setStyleSheet("""
-            QProgressBar { background-color: #313244; border-radius: 4px; height: 6px; }
-            QProgressBar::chunk { background-color: #89b4fa; border-radius: 4px; }
-        """)
-        layout.addWidget(self.progress)
-        layout.setContentsMargins(20, 30, 20, 20)
-        layout.setSpacing(10)
-
-    def close(self):
-        if not self.finished:
-            self.finished = True
-            self.widget.close()
-
-    def show(self, callback):
-        screen = QApplication.primaryScreen().geometry()
-        x = (screen.width() - self.widget.width()) // 2
-        y = (screen.height() - self.widget.height()) // 2
-        self.widget.move(x, y)
-        self.widget.show()
-        QTimer.singleShot(int(self.duration * 1000), lambda: self._on_complete(callback))
-
-    def _on_complete(self, callback):
-        if not self.finished:
-            self.close()
-            callback()
-
-
-# ── Bloco 4 - Logging ──
+# ── Bloco 3 - Logging ──
 class ColoredFormatter(logging.Formatter):
     BLUE = "\x1b[34;20m"
     LIME = "\x1b[92m"
@@ -230,10 +172,64 @@ def sigint_handler(*args):
 
 
 # ── Bloco 7 - Fluxo Principal ──
+async def show_splash_async(duration):
+    """Exibe splash screen como coroutine sem bloquear o event loop."""
+    app = QApplication.instance()
+    splash_widget = QWidget()
+    splash_widget.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
+    splash_widget.setFixedSize(400, 200)
+    splash_widget.setStyleSheet("background-color: #1e1e2e;")
+    layout = QVBoxLayout(splash_widget)
+
+    title_label = QLabel("EPCopyFlow 2.0")
+    title_label.setFont(QFont("Arial", 24, QFont.Bold))
+    title_label.setStyleSheet("color: #89b4fa;")
+    title_label.setAlignment(Qt.AlignCenter)
+    layout.addWidget(title_label, 0, Qt.AlignCenter)
+
+    subtitle_label = QLabel("CopyTrade Management Platform")
+    subtitle_label.setFont(QFont("Arial", 12))
+    subtitle_label.setStyleSheet("color: #cdd6f4;")
+    subtitle_label.setAlignment(Qt.AlignCenter)
+    layout.addWidget(subtitle_label, 0, Qt.AlignCenter)
+
+    version_label = QLabel("v0.0.1")
+    version_label.setFont(QFont("Arial", 10))
+    version_label.setStyleSheet("color: #585b70;")
+    version_label.setAlignment(Qt.AlignCenter)
+    layout.addWidget(version_label, 0, Qt.AlignCenter)
+
+    progress = QProgressBar()
+    progress.setTextVisible(False)
+    progress.setRange(0, 0)
+    progress.setStyleSheet("""
+        QProgressBar { background-color: #313244; border-radius: 4px; height: 6px; }
+        QProgressBar::chunk { background-color: #89b4fa; border-radius: 4px; }
+    """)
+    layout.addWidget(progress)
+    layout.setContentsMargins(20, 30, 20, 20)
+    layout.setSpacing(10)
+
+    screen = app.primaryScreen().geometry()
+    splash_widget.move(
+        (screen.width() - splash_widget.width()) // 2,
+        (screen.height() - splash_widget.height()) // 2,
+    )
+    splash_widget.show()
+    await asyncio.sleep(duration)
+    splash_widget.close()
+
+
 async def main_application_flow(config: ConfigManager):
     global zmq_task, zmq_router_instance, shutdown_event, mt5_processes
     global broker_manager, mt5_monitor, copytrade_manager
     logger.info("Iniciando EPCopyFlow 2.0...")
+
+    # Splash screen (non-blocking)
+    show_splash = config.getboolean('General', 'show_splash', fallback=True)
+    if show_splash:
+        splash_duration = config.getfloat('General', 'splash_duration', fallback=1.0)
+        await show_splash_async(splash_duration)
 
     base_mt5_path = config.get('General', 'base_mt5_path', fallback='C:/Temp/MT5')
     root_path = os.path.dirname(os.path.abspath(__file__))
@@ -251,10 +247,6 @@ async def main_application_flow(config: ConfigManager):
     )
     mt5_monitor.start()
     logger.info("MT5ProcessMonitor iniciado.")
-
-    app = QApplication.instance()
-    if app is None:
-        app = QApplication(sys.argv)
 
     signal.signal(signal.SIGINT, sigint_handler)
 
@@ -287,10 +279,6 @@ async def main_application_flow(config: ConfigManager):
         logger.error(f"Erro durante shutdown: {e}")
 
     logger.info("main_application_flow concluída.")
-    try:
-        app.quit()
-    except Exception as e:
-        logger.error(f"Erro ao encerrar Qt: {e}")
 
 
 # ── Bloco 8 - Entry Point ──
@@ -304,26 +292,11 @@ if __name__ == "__main__":
     apply_zmq_patch()
 
     try:
-        show_splash_screen = initial_app_config.getboolean('General', 'show_splash', fallback=True)
         app = QApplication.instance()
         if app is None:
             app = QApplication(sys.argv)
 
-        if show_splash_screen:
-            splash_duration = initial_app_config.getfloat('General', 'splash_duration', fallback=1.0)
-            splash = SplashScreen(splash_duration)
-
-            def start_main_app_flow_after_splash():
-                try:
-                    qasync.run(main_application_flow(initial_app_config))
-                except Exception as e:
-                    logger.exception(f"Erro ao executar main_application_flow: {e}")
-                    sys.exit(1)
-
-            splash.show(start_main_app_flow_after_splash)
-            sys.exit(app.exec())
-        else:
-            qasync.run(main_application_flow(initial_app_config))
+        qasync.run(main_application_flow(initial_app_config))
 
     except KeyboardInterrupt:
         if not shutdown_event.is_set():
