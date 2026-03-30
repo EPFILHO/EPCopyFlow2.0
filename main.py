@@ -9,7 +9,6 @@ import warnings
 import logging
 import signal
 import subprocess
-import zmq.asyncio
 from PySide6.QtWidgets import QApplication, QLabel, QVBoxLayout, QProgressBar, QWidget
 from PySide6.QtGui import QFont
 from PySide6.QtCore import Qt
@@ -32,21 +31,7 @@ def filter_warnings():
     warnings.filterwarnings("ignore", category=DeprecationWarning, module="asyncio.*")
 
 
-# ── Bloco 2 - Patch ZMQ ──
-original_asyncpoller_poll = zmq.asyncio.Poller.poll
-
-
-async def patched_asyncpoller_poll(self, timeout=None):
-    try:
-        return await original_asyncpoller_poll(self, timeout)
-    except zmq.error.ZMQError as e:
-        if "not a socket" in str(e):
-            return []
-        raise
-
-
-def apply_zmq_patch():
-    zmq.asyncio.Poller.poll = patched_asyncpoller_poll
+# ── Bloco 2 - (Reservado - patch ZMQ removido, usa polling sync) ──
 
 
 # ── Bloco 3 - Logging ──
@@ -277,7 +262,6 @@ if __name__ == "__main__":
     logger.info("Iniciando EPCopyFlow 2.0.")
 
     filter_warnings()
-    apply_zmq_patch()
 
     app = QApplication.instance()
     if app is None:

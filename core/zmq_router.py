@@ -3,7 +3,6 @@
 # Roteador ZMQ simplificado: 2 sockets por broker (CommandSocket + EventSocket).
 
 import zmq
-import zmq.asyncio
 import asyncio
 import json
 import logging
@@ -23,14 +22,13 @@ class ZmqRouter:
         self._clients = {}
         self._responses = {}
         self._response_events = {}
-        self.context = zmq.asyncio.Context()
+        self.context = zmq.Context()
 
         # 2 sockets por broker (simplificado de 5)
         self.command_sockets = {}   # DEALER - bidirecional (admin + trade)
         self.event_sockets = {}     # SUB - recebe eventos do EA
 
         self._socket_control_queue = asyncio.Queue()
-        self._poller = zmq.asyncio.Poller()
         logger.debug("ZmqRouter inicializado (2 sockets por broker).")
 
     # ──────────────────────────────────────────────
@@ -89,7 +87,7 @@ class ZmqRouter:
         self._response_events[request_id] = asyncio.Event()
         try:
             message_str = json.dumps(message)
-            await self.command_sockets[broker_key].send(message_str.encode('utf-8'))
+            self.command_sockets[broker_key].send(message_str.encode('utf-8'), zmq.NOBLOCK)
             logger.debug(f"Comando {command} enviado para {broker_key} (id={request_id})")
 
             await asyncio.wait_for(self._response_events[request_id].wait(), timeout=5.0)
@@ -171,7 +169,6 @@ class ZmqRouter:
             try:
                 sock.connect(address)
                 sock.setsockopt(zmq.LINGER, 0)
-                self._poller.register(sock, zmq.POLLIN)
                 self.command_sockets[broker_key] = sock
                 logger.info(f"CommandSocket conectado em {address} para {broker_key}")
             except zmq.ZMQError as e:
@@ -189,7 +186,6 @@ class ZmqRouter:
                 sock.connect(address)
                 sock.setsockopt_string(zmq.SUBSCRIBE, "")
                 sock.setsockopt(zmq.LINGER, 0)
-                self._poller.register(sock, zmq.POLLIN)
                 self.event_sockets[broker_key] = sock
                 logger.info(f"EventSocket conectado em {address} para {broker_key}")
             except zmq.ZMQError as e:
@@ -207,10 +203,9 @@ class ZmqRouter:
             sock = socket_dict.pop(broker_key, None)
             if sock and not sock.closed:
                 try:
-                    self._poller.unregister(sock)
                     sock.close()
                     logger.debug(f"{name} para {broker_key} fechado.")
-                except (KeyError, zmq.ZMQError) as e:
+                except zmq.ZMQError as e:
                     logger.warning(f"Erro ao fechar {name} para {broker_key}: {e}")
 
     # ──────────────────────────────────────────────
@@ -221,8 +216,6 @@ class ZmqRouter:
         self._running = True
         while self._running:
             try:
-                socks = dict(await self._poller.poll(100))
-
                 # Processa comandos de controle
                 while not self._socket_control_queue.empty():
                     cmd_type, broker_key, *args = await self._socket_control_queue.get()
@@ -232,15 +225,19 @@ class ZmqRouter:
                         await self._teardown_single_broker_sockets(broker_key)
                     self._socket_control_queue.task_done()
 
-                # Processa mensagens dos sockets
+                # Processa mensagens dos sockets (polling não-bloqueante)
+                had_messages = False
                 for socket_map, port_name in [
                     (self.command_sockets, 'CommandSocket'),
                     (self.event_sockets, 'EventSocket'),
                 ]:
                     for broker_key, socket in list(socket_map.items()):
-                        if socket in socks and socks[socket] == zmq.POLLIN:
-                            try:
-                                raw = await socket.recv()
+                        if socket.closed:
+                            continue
+                        try:
+                            while True:
+                                raw = socket.recv(zmq.NOBLOCK)
+                                had_messages = True
                                 msg_str = raw.decode('utf-8', errors='ignore')
                                 # Correção de JSON malformado
                                 if not msg_str.startswith('{'):
@@ -249,14 +246,19 @@ class ZmqRouter:
                                     msg_str += '}'
                                 data = json.loads(msg_str)
                                 await self._process_message(data, broker_key)
-                            except json.JSONDecodeError as e:
-                                logger.error(f"JSON inválido de {broker_key} ({port_name}): {e}")
-                            except zmq.ZMQError as e:
-                                if e.errno == zmq.ETERM:
-                                    self._running = False
-                                    break
-                            except Exception as e:
-                                logger.exception(f"Erro ao receber de {broker_key} ({port_name}): {e}")
+                        except zmq.Again:
+                            pass  # Sem mensagens pendentes
+                        except json.JSONDecodeError as e:
+                            logger.error(f"JSON inválido de {broker_key} ({port_name}): {e}")
+                        except zmq.ZMQError as e:
+                            if e.errno == zmq.ETERM:
+                                self._running = False
+                                break
+                        except Exception as e:
+                            logger.exception(f"Erro ao receber de {broker_key} ({port_name}): {e}")
+
+                # Yield para o event loop - intervalo menor se havia mensagens
+                await asyncio.sleep(0.01 if had_messages else 0.05)
 
             except zmq.ZMQError as e:
                 if e.errno == zmq.ETERM:
