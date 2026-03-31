@@ -1,4 +1,4 @@
-# EPCopyFlow 2.0 - Versão 0.0.1 - Claude Code Parte 000
+# EPCopyFlow 2.0 - Versão 0.0.1 - Claude Code Parte 002
 # gui/widgets/broker_card.py
 # Card visual para exibir informações de uma corretora.
 
@@ -10,6 +10,11 @@ from PySide6.QtCore import Qt
 from gui import themes
 
 logger = logging.getLogger(__name__)
+
+# Cores dos indicadores de status
+_COLOR_GREEN = "#a6e3a1"
+_COLOR_RED = "#f38ba8"
+_COLOR_GRAY = "#585b70"
 
 
 class BrokerCard(QFrame):
@@ -69,33 +74,53 @@ class BrokerCard(QFrame):
         row2.addWidget(self.status_label)
         layout.addLayout(row2)
 
-        # Row 3: Client + Lot multiplier
-        row3 = QHBoxLayout()
+        # Row 3: Status indicators (MT5, BRK, ZMQ, EA, ALG)
+        indicators_row = QHBoxLayout()
+        indicators_row.setSpacing(12)
+        self._indicators = {}
+        for name in ("MT5", "BRK", "ZMQ", "EA", "ALG"):
+            dot = QLabel("\u25CF")  # ● character
+            dot.setStyleSheet(f"color: {_COLOR_GRAY}; font-size: 14px;")
+            dot.setAlignment(Qt.AlignCenter)
+            lbl = QLabel(name)
+            lbl.setProperty("class", "card-info")
+            lbl.setStyleSheet("font-size: 10px;")
+            pair = QHBoxLayout()
+            pair.setSpacing(2)
+            pair.addWidget(dot)
+            pair.addWidget(lbl)
+            indicators_row.addLayout(pair)
+            self._indicators[name] = dot
+        indicators_row.addStretch()
+        layout.addLayout(indicators_row)
+
+        # Row 4: Client + Lot multiplier
+        row4 = QHBoxLayout()
         client = data.get("client", data.get("name", "-"))
         client_label = QLabel(f"Cliente: {client}")
         client_label.setProperty("class", "card-info")
-        row3.addWidget(client_label)
-        row3.addStretch()
+        row4.addWidget(client_label)
+        row4.addStretch()
 
         mult = data.get("lot_multiplier", 1.0)
         mult_label = QLabel(f"Mult: {mult:.2f}x")
         mult_label.setProperty("class", "card-info")
-        row3.addWidget(mult_label)
-        layout.addLayout(row3)
+        row4.addWidget(mult_label)
+        layout.addLayout(row4)
 
-        # Row 4: Balance + Positions count
-        row4 = QHBoxLayout()
+        # Row 5: Balance + Positions count
+        row5 = QHBoxLayout()
         self.balance_label = QLabel("Saldo: --")
         self.balance_label.setProperty("class", "card-info")
-        row4.addWidget(self.balance_label)
-        row4.addStretch()
+        row5.addWidget(self.balance_label)
+        row5.addStretch()
 
         self.positions_label = QLabel("Posicoes: --")
         self.positions_label.setProperty("class", "card-info")
-        row4.addWidget(self.positions_label)
-        layout.addLayout(row4)
+        row5.addWidget(self.positions_label)
+        layout.addLayout(row5)
 
-        # Row 5: Total profit
+        # Row 6: Total profit
         self.profit_label = QLabel("P/L: --")
         self.profit_label.setProperty("class", "card-profit-positive")
         layout.addWidget(self.profit_label)
@@ -116,6 +141,22 @@ class BrokerCard(QFrame):
                     btn.clicked.connect(lambda _checked=False: self._on_connect())
             btn_row.addWidget(btn)
             layout.addLayout(btn_row)
+
+    def update_status_indicators(self, mt5=None, brk=None, zmq=None, ea=None, alg=None):
+        """Update the 5 status indicator dots.
+
+        Each parameter accepts: True (green), False (red), None (gray).
+        """
+        mapping = {"MT5": mt5, "BRK": brk, "ZMQ": zmq, "EA": ea, "ALG": alg}
+        for name, value in mapping.items():
+            if name in self._indicators:
+                if value is True:
+                    color = _COLOR_GREEN
+                elif value is False:
+                    color = _COLOR_RED
+                else:
+                    color = _COLOR_GRAY
+                self._indicators[name].setStyleSheet(f"color: {color}; font-size: 14px;")
 
     def update_positions(self, positions):
         count = len(positions) if positions else 0
