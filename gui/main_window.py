@@ -142,8 +142,10 @@ class MainWindow(QMainWindow):
         self.internet_label.setProperty("class", "header-status")
         self.cpu_label = QLabel("CPU: --%")
         self.cpu_label.setProperty("class", "header-status")
+        self.cpu_label.setFixedWidth(90)
         self.mem_label = QLabel("RAM: --%")
         self.mem_label.setProperty("class", "header-status")
+        self.mem_label.setFixedWidth(90)
 
         for lbl in (self.internet_label, self.cpu_label, self.mem_label):
             layout.addWidget(lbl)

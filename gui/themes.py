@@ -389,25 +389,39 @@ QLineEdit, QSpinBox, QComboBox {{
     border-radius: 4px;
     padding: 6px;
 }}
-QSpinBox::up-button, QSpinBox::down-button {{
+QSpinBox::up-button {{
+    subcontrol-origin: border;
+    subcontrol-position: top right;
     width: 20px;
-    border: 1px solid {c['border_hover']};
+    border-left: 1px solid {c['border_hover']};
+    border-bottom: 1px solid {c['border_hover']};
+    background-color: {c['input']};
+}}
+QSpinBox::up-button:hover {{
+    background-color: {c['border_hover']};
+}}
+QSpinBox::down-button {{
+    subcontrol-origin: border;
+    subcontrol-position: bottom right;
+    width: 20px;
+    border-left: 1px solid {c['border_hover']};
+    border-top: 1px solid {c['border_hover']};
+    background-color: {c['input']};
+}}
+QSpinBox::down-button:hover {{
+    background-color: {c['border_hover']};
 }}
 QSpinBox::up-arrow {{
-    image: none;
-    border-left: 5px solid transparent;
-    border-right: 5px solid transparent;
+    width: 0px; height: 0px;
+    border-left: 4px solid transparent;
+    border-right: 4px solid transparent;
     border-bottom: 5px solid {c['text']};
-    width: 0px;
-    height: 0px;
 }}
 QSpinBox::down-arrow {{
-    image: none;
-    border-left: 5px solid transparent;
-    border-right: 5px solid transparent;
+    width: 0px; height: 0px;
+    border-left: 4px solid transparent;
+    border-right: 4px solid transparent;
     border-top: 5px solid {c['text']};
-    width: 0px;
-    height: 0px;
 }}
 QCheckBox {{
     color: {c['text']};
@@ -536,25 +550,39 @@ QLineEdit, QComboBox, QDoubleSpinBox {{
     border-radius: 4px;
     padding: 4px;
 }}
-QDoubleSpinBox::up-button, QDoubleSpinBox::down-button {{
+QDoubleSpinBox::up-button {{
+    subcontrol-origin: border;
+    subcontrol-position: top right;
     width: 20px;
-    border: 1px solid {c['border_hover']};
+    border-left: 1px solid {c['border_hover']};
+    border-bottom: 1px solid {c['border_hover']};
+    background-color: {c['input']};
+}}
+QDoubleSpinBox::up-button:hover {{
+    background-color: {c['border_hover']};
+}}
+QDoubleSpinBox::down-button {{
+    subcontrol-origin: border;
+    subcontrol-position: bottom right;
+    width: 20px;
+    border-left: 1px solid {c['border_hover']};
+    border-top: 1px solid {c['border_hover']};
+    background-color: {c['input']};
+}}
+QDoubleSpinBox::down-button:hover {{
+    background-color: {c['border_hover']};
 }}
 QDoubleSpinBox::up-arrow {{
-    image: none;
-    border-left: 5px solid transparent;
-    border-right: 5px solid transparent;
+    width: 0px; height: 0px;
+    border-left: 4px solid transparent;
+    border-right: 4px solid transparent;
     border-bottom: 5px solid {c['text']};
-    width: 0px;
-    height: 0px;
 }}
 QDoubleSpinBox::down-arrow {{
-    image: none;
-    border-left: 5px solid transparent;
-    border-right: 5px solid transparent;
+    width: 0px; height: 0px;
+    border-left: 4px solid transparent;
+    border-right: 4px solid transparent;
     border-top: 5px solid {c['text']};
-    width: 0px;
-    height: 0px;
 }}
 QPushButton {{
     color: {c['text']};
@@ -632,7 +660,16 @@ QComboBox QAbstractItemView {{
     outline: none;
 }}
 QComboBox::drop-down {{
-    border: none;
+    subcontrol-origin: padding;
+    subcontrol-position: center right;
+    width: 20px;
+    border-left: 1px solid {c['border_hover']};
+}}
+QComboBox::down-arrow {{
+    width: 0px; height: 0px;
+    border-left: 5px solid transparent;
+    border-right: 5px solid transparent;
+    border-top: 6px solid {c['text']};
 }}
 QMessageBox {{
     background-color: {c['base']};
