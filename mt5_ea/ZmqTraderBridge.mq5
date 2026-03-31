@@ -40,6 +40,10 @@ int    g_eventPort = 0;
 bool g_last_trade_allowed = false;
 bool g_initial_trade_allowed_sent = false;
 
+//--- Monitoramento de conexão com o servidor da corretora
+bool g_last_terminal_connected = false;
+bool g_initial_connection_status_sent = false;
+
 //+------------------------------------------------------------------+
 //| Função auxiliar para trim de string                              |
 //+------------------------------------------------------------------+
@@ -716,6 +720,7 @@ int OnInit()
    }
 
    g_last_trade_allowed = (bool)TerminalInfoInteger(TERMINAL_TRADE_ALLOWED);
+   g_last_terminal_connected = (bool)TerminalInfoInteger(TERMINAL_CONNECTED);
    PrintFormat("EPCopyFlow EA: Inicializado. Role=%s, BrokerKey=%s", g_role, g_brokerKey);
    return(INIT_SUCCEEDED);
 }
@@ -774,6 +779,35 @@ void OnTimer()
       g_last_trade_allowed = current_trade_allowed;
       if(InpDebugLog)
          PrintFormat("TRADE_ALLOWED_UPDATE: %s", current_trade_allowed ? "true" : "false");
+   }
+
+   // Envio inicial de connection_status
+   if(!g_initial_connection_status_sent)
+   {
+      bool connected = (bool)TerminalInfoInteger(TERMINAL_CONNECTED);
+      JSONNode msg;
+      msg["type"] = "STREAM";
+      msg["event"] = "CONNECTION_STATUS";
+      msg["connected"] = connected;
+      msg["timestamp_mql"] = (long)TimeCurrent();
+      SendJsonMessage(msg, event_socket, "Event");
+      g_initial_connection_status_sent = true;
+      g_last_terminal_connected = connected;
+   }
+
+   // Detecta mudança de conexão com o servidor da corretora
+   bool current_connected = (bool)TerminalInfoInteger(TERMINAL_CONNECTED);
+   if(current_connected != g_last_terminal_connected)
+   {
+      JSONNode msg;
+      msg["type"] = "STREAM";
+      msg["event"] = "CONNECTION_STATUS";
+      msg["connected"] = current_connected;
+      msg["timestamp_mql"] = (long)TimeCurrent();
+      SendJsonMessage(msg, event_socket, "Event");
+      g_last_terminal_connected = current_connected;
+      if(InpDebugLog)
+         PrintFormat("CONNECTION_STATUS: %s", current_connected ? "connected" : "disconnected");
    }
 }
 
