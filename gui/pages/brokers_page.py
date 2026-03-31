@@ -59,14 +59,31 @@ class BrokersPage(QWidget):
 
         layout.addLayout(header)
 
-        # Broker cards grid
+        # Master section
+        master_label = QLabel("Master")
+        master_label.setProperty("class", "section-title")
+        layout.addWidget(master_label)
+
+        self.master_area = QHBoxLayout()
+        self.master_placeholder = QLabel("Nenhum Master configurado")
+        self.master_placeholder.setStyleSheet(themes.dashboard_placeholder_style())
+        self.master_area.addWidget(self.master_placeholder)
+        self.master_area.addStretch()
+        layout.addLayout(self.master_area)
+
+        # Slaves section
+        slaves_label = QLabel("Slaves")
+        slaves_label.setProperty("class", "section-title")
+        layout.addWidget(slaves_label)
+
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setStyleSheet(themes.scroll_area_style())
         scroll_widget = QWidget()
         scroll_widget.setStyleSheet(themes.scroll_widget_style())
-        self.grid = QGridLayout(scroll_widget)
-        self.grid.setSpacing(12)
+        self.slaves_grid = QGridLayout(scroll_widget)
+        self.slaves_grid.setSpacing(12)
+        self.slaves_grid.setAlignment(Qt.AlignLeft | Qt.AlignTop)
         scroll.setWidget(scroll_widget)
         layout.addWidget(scroll, 1)
 
@@ -80,25 +97,47 @@ class BrokersPage(QWidget):
             card.deleteLater()
         self.broker_cards.clear()
 
-        while self.grid.count():
-            item = self.grid.takeAt(0)
+        # Remove master placeholder if present
+        if self.master_placeholder.parent():
+            self.master_placeholder.setParent(None)
+
+        # Clear slaves grid
+        while self.slaves_grid.count():
+            item = self.slaves_grid.takeAt(0)
             if item.widget():
                 item.widget().setParent(None)
 
         brokers = self.broker_manager.get_brokers()
         connected = self.broker_manager.get_connected_brokers()
-        cols = 3
+        master_key = self.broker_manager.get_master_broker()
+        slave_keys = sorted([k for k in brokers if k != master_key])
 
-        for i, key in enumerate(sorted(brokers.keys())):
-            is_conn = key in connected
+        # Master card
+        if master_key:
             card = BrokerCard(
-                key, brokers[key], is_connected=is_conn,
+                master_key, brokers[master_key],
+                is_connected=(master_key in connected),
+                show_connect_btn=True,
+                on_connect=lambda k=master_key: self._connect_broker(k),
+                on_disconnect=lambda k=master_key: self._disconnect_broker(k),
+            )
+            self.broker_cards[master_key] = card
+            self.master_area.insertWidget(0, card)
+        else:
+            self.master_area.insertWidget(0, self.master_placeholder)
+
+        # Slave cards in grid
+        cols = 3
+        for i, key in enumerate(slave_keys):
+            card = BrokerCard(
+                key, brokers[key],
+                is_connected=(key in connected),
                 show_connect_btn=True,
                 on_connect=lambda k=key: self._connect_broker(k),
                 on_disconnect=lambda k=key: self._disconnect_broker(k),
             )
             self.broker_cards[key] = card
-            self.grid.addWidget(card, i // cols, i % cols)
+            self.slaves_grid.addWidget(card, i // cols, i % cols)
 
     def _open_broker_dialog(self):
         dialog = BrokersDialog(self.config, self.broker_manager, parent=self)

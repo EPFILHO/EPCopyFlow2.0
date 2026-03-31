@@ -69,6 +69,7 @@ class DashboardPage(QWidget):
         scroll_widget.setStyleSheet(themes.scroll_widget_style())
         self.slaves_grid = QGridLayout(scroll_widget)
         self.slaves_grid.setSpacing(12)
+        self.slaves_grid.setAlignment(Qt.AlignLeft | Qt.AlignTop)
         scroll.setWidget(scroll_widget)
         layout.addWidget(scroll, 1)
 
