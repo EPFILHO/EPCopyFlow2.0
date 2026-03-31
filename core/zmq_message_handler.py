@@ -10,8 +10,9 @@ from PySide6.QtCore import QObject, Signal, Slot
 
 logger = logging.getLogger(__name__)
 
-# Buffer global de trade_allowed por corretora
+# Buffers globais de estado por corretora
 trade_allowed_states = {}
+connection_status_states = {}  # True = broker conectado ao servidor, False = desconectado
 
 
 class ZmqMessageHandler(QObject):
@@ -25,6 +26,7 @@ class ZmqMessageHandler(QObject):
     positions_received = Signal(dict)
     orders_received = Signal(dict)
     trade_allowed_update_received = Signal(dict)
+    connection_status_received = Signal(dict)
     trade_event_received = Signal(dict)
     trade_response_received = Signal(dict)
 
@@ -47,7 +49,7 @@ class ZmqMessageHandler(QObject):
     # ──────────────────────────────────────────────
     @Slot(bytes, object)
     async def handle_zmq_message(self, client_id_bytes: bytes, message: dict):
-        global trade_allowed_states
+        global trade_allowed_states, connection_status_states
 
         # Identifica broker
         client_id_hex = client_id_bytes.hex()
@@ -86,6 +88,7 @@ class ZmqMessageHandler(QObject):
                 self.ping_button_state_changed.emit(False)
                 self.heartbeat_active.pop(broker_key, None)
                 trade_allowed_states.pop(broker_key, None)
+                connection_status_states.pop(broker_key, None)
 
         # ── STREAM events ──
         elif msg_type == "STREAM" and event == "TRADE_ALLOWED_UPDATE":
@@ -97,6 +100,18 @@ class ZmqMessageHandler(QObject):
             if identified_broker_key and data["trade_allowed"] is not None:
                 trade_allowed_states[identified_broker_key] = data["trade_allowed"]
             self.trade_allowed_update_received.emit(data)
+
+        elif msg_type == "STREAM" and event == "CONNECTION_STATUS":
+            connected = message.get("connected")
+            data = {
+                "connected": connected,
+                "broker_key": identified_broker_key,
+                "timestamp_mql": message.get("timestamp_mql", 0)
+            }
+            if identified_broker_key and connected is not None:
+                connection_status_states[identified_broker_key] = connected
+            self.connection_status_received.emit(data)
+            logger.info(f"CONNECTION_STATUS de {identified_broker_key}: {connected}")
 
         elif msg_type == "STREAM" and event == "TRADE_EVENT":
             trade_event_data = {
@@ -238,3 +253,6 @@ class ZmqMessageHandler(QObject):
     # ──────────────────────────────────────────────
     def get_trade_allowed_states(self):
         return trade_allowed_states.copy()
+
+    def get_connection_status_states(self):
+        return connection_status_states.copy()

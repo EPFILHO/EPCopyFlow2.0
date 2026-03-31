@@ -56,6 +56,7 @@ class MainWindow(QMainWindow):
         self.broker_status = {}
         self.broker_modes = {}
         for key, broker in self.brokers.items():
+            self.broker_status[key] = False
             self.broker_modes[key] = broker.get("mode", "Hedge")
 
         # Carregar tema salvo
@@ -104,7 +105,11 @@ class MainWindow(QMainWindow):
         self.pages.setStyleSheet(themes.page_background_style())
 
         # Create pages
-        self.dashboard_page = DashboardPage(self.broker_manager, self.copytrade_manager)
+        self.dashboard_page = DashboardPage(
+            self.broker_manager, self.copytrade_manager,
+            zmq_message_handler=self.zmq_message_handler
+        )
+        self.dashboard_page.set_broker_status(self.broker_status)
         self.brokers_page = BrokersPage(self.config, self.broker_manager, self.zmq_router, self.mt5_monitor)
         self.history_page = HistoryPage(self.copytrade_manager)
         self.logs_page = LogsPage()
@@ -225,6 +230,11 @@ class MainWindow(QMainWindow):
         self.zmq_message_handler.log_message_received.connect(self._handle_zmq_messages)
         self.zmq_message_handler.positions_received.connect(self.dashboard_page.update_positions)
         self.zmq_message_handler.account_balance_received.connect(self.dashboard_page.update_balance)
+        # Atualizar indicadores quando status muda
+        self.zmq_message_handler.trade_allowed_update_received.connect(
+            lambda _: self.dashboard_page.update_broker_indicators())
+        self.zmq_message_handler.connection_status_received.connect(
+            lambda _: self.dashboard_page.update_broker_indicators())
         # Sincronizar dashboard quando broker conecta/desconecta via botão
         self.brokers_page.broker_status_changed.connect(self.dashboard_page.refresh_brokers)
         if self.copytrade_manager:
@@ -246,6 +256,7 @@ class MainWindow(QMainWindow):
                 break
         if status_changed:
             self.broker_status_updated.emit(self.broker_status, self.broker_modes)
+            self.dashboard_page.update_broker_indicators()
             self.dashboard_page.refresh_brokers()
             self.brokers_page.refresh_brokers()
 
