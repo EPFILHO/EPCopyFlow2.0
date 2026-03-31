@@ -180,8 +180,14 @@ class DashboardPage(QWidget):
                 card.update_status_indicators(mt5=None, brk=None, zmq=None, ea=None, alg=None)
                 continue
 
-            # MT5 rodando: verificar os demais
+            # ZMQ conectado?
             is_connected = key in self.broker_manager.get_connected_brokers()
+            if not is_connected:
+                # MT5 rodando mas ZMQ desconectado: só MT5 verde, resto cinza
+                card.update_status_indicators(mt5=True, brk=None, zmq=None, ea=None, alg=None)
+                continue
+
+            # ZMQ conectado: verificar os demais via buffers
             ea_registered = self._broker_status.get(key, False)
             alg = trade_allowed.get(key)
             brk = connection_status.get(key)
@@ -189,7 +195,7 @@ class DashboardPage(QWidget):
             card.update_status_indicators(
                 mt5=True,
                 brk=brk,
-                zmq=is_connected if is_connected else False,
+                zmq=True,
                 ea=ea_registered if ea_registered else False,
                 alg=alg,
             )

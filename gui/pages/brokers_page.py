@@ -19,16 +19,23 @@ logger = logging.getLogger(__name__)
 class BrokersPage(QWidget):
     broker_status_changed = Signal()
 
-    def __init__(self, config, broker_manager, zmq_router, mt5_monitor, parent=None):
+    def __init__(self, config, broker_manager, zmq_router, mt5_monitor,
+                 zmq_message_handler=None, parent=None):
         super().__init__(parent)
         self.config = config
         self.broker_manager = broker_manager
         self.zmq_router = zmq_router
         self.mt5_monitor = mt5_monitor
+        self.zmq_message_handler = zmq_message_handler
+        self._broker_status = {}
         self.broker_cards = {}
         self.setStyleSheet(themes.brokers_page_style())
         self._init_ui()
         self.refresh_brokers()
+
+    def set_broker_status(self, broker_status):
+        """Reference to main_window.broker_status dict."""
+        self._broker_status = broker_status
 
     def _init_ui(self):
         layout = QVBoxLayout(self)
@@ -139,6 +146,42 @@ class BrokersPage(QWidget):
             )
             self.broker_cards[key] = card
             self.slaves_grid.addWidget(card, i // cols, i % cols)
+
+        self.update_broker_indicators()
+
+    @Slot()
+    def update_broker_indicators(self):
+        """Update all 5 status indicators on every broker card."""
+        trade_allowed = {}
+        connection_status = {}
+        if self.zmq_message_handler:
+            trade_allowed = self.zmq_message_handler.get_trade_allowed_states()
+            connection_status = self.zmq_message_handler.get_connection_status_states()
+
+        for key, card in self.broker_cards.items():
+            process = self.broker_manager.mt5_processes.get(key)
+            mt5_running = process is not None and process.poll() is None
+
+            if not mt5_running:
+                card.update_status_indicators(mt5=None, brk=None, zmq=None, ea=None, alg=None)
+                continue
+
+            is_connected = key in self.broker_manager.get_connected_brokers()
+            if not is_connected:
+                card.update_status_indicators(mt5=True, brk=None, zmq=None, ea=None, alg=None)
+                continue
+
+            ea_registered = self._broker_status.get(key, False)
+            alg = trade_allowed.get(key)
+            brk = connection_status.get(key)
+
+            card.update_status_indicators(
+                mt5=True,
+                brk=brk,
+                zmq=True,
+                ea=ea_registered if ea_registered else False,
+                alg=alg,
+            )
 
     def _open_broker_dialog(self):
         dialog = BrokersDialog(self.config, self.broker_manager, parent=self)

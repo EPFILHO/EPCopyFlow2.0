@@ -110,7 +110,11 @@ class MainWindow(QMainWindow):
             zmq_message_handler=self.zmq_message_handler
         )
         self.dashboard_page.set_broker_status(self.broker_status)
-        self.brokers_page = BrokersPage(self.config, self.broker_manager, self.zmq_router, self.mt5_monitor)
+        self.brokers_page = BrokersPage(
+            self.config, self.broker_manager, self.zmq_router, self.mt5_monitor,
+            zmq_message_handler=self.zmq_message_handler
+        )
+        self.brokers_page.set_broker_status(self.broker_status)
         self.history_page = HistoryPage(self.copytrade_manager)
         self.logs_page = LogsPage()
         self.settings_page = SettingsPage(self.config, on_theme_changed=self.apply_theme)
@@ -232,9 +236,9 @@ class MainWindow(QMainWindow):
         self.zmq_message_handler.account_balance_received.connect(self.dashboard_page.update_balance)
         # Atualizar indicadores quando status muda
         self.zmq_message_handler.trade_allowed_update_received.connect(
-            lambda _: self.dashboard_page.update_broker_indicators())
+            lambda _: self._update_all_indicators())
         self.zmq_message_handler.connection_status_received.connect(
-            lambda _: self.dashboard_page.update_broker_indicators())
+            lambda _: self._update_all_indicators())
         # Sincronizar dashboard quando broker conecta/desconecta via botão
         self.brokers_page.broker_status_changed.connect(self.dashboard_page.refresh_brokers)
         if self.copytrade_manager:
@@ -256,9 +260,13 @@ class MainWindow(QMainWindow):
                 break
         if status_changed:
             self.broker_status_updated.emit(self.broker_status, self.broker_modes)
-            self.dashboard_page.update_broker_indicators()
             self.dashboard_page.refresh_brokers()
             self.brokers_page.refresh_brokers()
+
+    def _update_all_indicators(self):
+        """Update indicators on both dashboard and brokers page."""
+        self.dashboard_page.update_broker_indicators()
+        self.brokers_page.update_broker_indicators()
 
     # ── System Monitor ──
     @Slot(dict)
