@@ -91,10 +91,10 @@ class SettingsPage(QWidget):
 
         row3 = QHBoxLayout()
         row3.addWidget(QLabel("Nivel de log:"))
-        self.log_level_edit = QLineEdit()
-        self.log_level_edit.setPlaceholderText("INFO, DEBUG, WARNING, ERROR")
-        self.log_level_edit.setMaximumWidth(200)
-        row3.addWidget(self.log_level_edit)
+        self.log_level_combo = QComboBox()
+        self.log_level_combo.addItems(["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"])
+        self.log_level_combo.setMaximumWidth(200)
+        row3.addWidget(self.log_level_combo)
         row3.addStretch()
         app_layout.addLayout(row3)
 
@@ -119,9 +119,10 @@ class SettingsPage(QWidget):
         self.splash_check.setChecked(
             self.config.getboolean('General', 'show_splash', fallback=True)
         )
-        self.log_level_edit.setText(
-            self.config.get('General', 'log_level', fallback='INFO')
-        )
+        saved_log_level = self.config.get('General', 'log_level', fallback='INFO').upper()
+        idx_log = self.log_level_combo.findText(saved_log_level)
+        if idx_log >= 0:
+            self.log_level_combo.setCurrentIndex(idx_log)
         # Tema
         saved_theme = self.config.get('GUI', 'theme', fallback='Escuro')
         idx = self.theme_combo.findText(saved_theme)
@@ -136,7 +137,7 @@ class SettingsPage(QWidget):
             self.config.set('General', 'base_mt5_path', self.mt5_path_edit.text())
             self.config.set('General', 'monitor_interval', str(self.monitor_interval_spin.value()))
             self.config.set('General', 'show_splash', str(self.splash_check.isChecked()))
-            self.config.set('General', 'log_level', self.log_level_edit.text().upper())
+            self.config.set('General', 'log_level', self.log_level_combo.currentText())
 
             # Salvar e aplicar tema
             new_theme = self.theme_combo.currentText()

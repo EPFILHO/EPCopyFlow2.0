@@ -82,6 +82,7 @@ class BrokersPage(QWidget):
         scroll_widget = QWidget()
         scroll_widget.setStyleSheet(themes.scroll_widget_style())
         self.slaves_grid = QGridLayout(scroll_widget)
+        self.slaves_grid.setContentsMargins(0, 0, 0, 0)
         self.slaves_grid.setSpacing(12)
         self.slaves_grid.setAlignment(Qt.AlignLeft | Qt.AlignTop)
         scroll.setWidget(scroll_widget)

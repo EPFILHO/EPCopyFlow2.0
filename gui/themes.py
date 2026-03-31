@@ -389,6 +389,26 @@ QLineEdit, QSpinBox, QComboBox {{
     border-radius: 4px;
     padding: 6px;
 }}
+QSpinBox::up-button, QSpinBox::down-button {{
+    width: 20px;
+    border: 1px solid {c['border_hover']};
+}}
+QSpinBox::up-arrow {{
+    image: none;
+    border-left: 5px solid transparent;
+    border-right: 5px solid transparent;
+    border-bottom: 5px solid {c['text']};
+    width: 0px;
+    height: 0px;
+}}
+QSpinBox::down-arrow {{
+    image: none;
+    border-left: 5px solid transparent;
+    border-right: 5px solid transparent;
+    border-top: 5px solid {c['text']};
+    width: 0px;
+    height: 0px;
+}}
 QCheckBox {{
     color: {c['text']};
     font-size: 13px;
@@ -515,6 +535,26 @@ QLineEdit, QComboBox, QDoubleSpinBox {{
     border: 1px solid {c['border_hover']};
     border-radius: 4px;
     padding: 4px;
+}}
+QDoubleSpinBox::up-button, QDoubleSpinBox::down-button {{
+    width: 20px;
+    border: 1px solid {c['border_hover']};
+}}
+QDoubleSpinBox::up-arrow {{
+    image: none;
+    border-left: 5px solid transparent;
+    border-right: 5px solid transparent;
+    border-bottom: 5px solid {c['text']};
+    width: 0px;
+    height: 0px;
+}}
+QDoubleSpinBox::down-arrow {{
+    image: none;
+    border-left: 5px solid transparent;
+    border-right: 5px solid transparent;
+    border-top: 5px solid {c['text']};
+    width: 0px;
+    height: 0px;
 }}
 QPushButton {{
     color: {c['text']};
