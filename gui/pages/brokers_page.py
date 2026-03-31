@@ -8,7 +8,7 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QScrollArea, QFrame, QGridLayout, QMessageBox
 )
-from PySide6.QtCore import Slot, Qt
+from PySide6.QtCore import Slot, Qt, Signal
 from gui.brokers_dialog import BrokersDialog
 from gui.widgets.broker_card import BrokerCard
 from gui import themes
@@ -17,6 +17,8 @@ logger = logging.getLogger(__name__)
 
 
 class BrokersPage(QWidget):
+    broker_status_changed = Signal()
+
     def __init__(self, config, broker_manager, zmq_router, mt5_monitor, parent=None):
         super().__init__(parent)
         self.config = config
@@ -108,6 +110,7 @@ class BrokersPage(QWidget):
             self.broker_manager.connect_broker(key)
             logger.info(f"Corretora {key} conectada.")
             self.refresh_brokers()
+            self.broker_status_changed.emit()
         except Exception as e:
             QMessageBox.critical(self, "Erro", f"Erro ao conectar {key}: {e}")
             logger.error(f"Erro ao conectar {key}: {e}")
@@ -117,6 +120,7 @@ class BrokersPage(QWidget):
             self.broker_manager.disconnect_broker(key)
             logger.info(f"Corretora {key} desconectada.")
             self.refresh_brokers()
+            self.broker_status_changed.emit()
         except Exception as e:
             QMessageBox.critical(self, "Erro", f"Erro ao desconectar {key}: {e}")
             logger.error(f"Erro ao desconectar {key}: {e}")
@@ -131,6 +135,7 @@ class BrokersPage(QWidget):
                 except Exception as e:
                     logger.error(f"Erro ao conectar {key}: {e}")
         self.refresh_brokers()
+        self.broker_status_changed.emit()
 
     def _disconnect_all(self):
         connected = list(self.broker_manager.get_connected_brokers())
@@ -140,3 +145,4 @@ class BrokersPage(QWidget):
             except Exception as e:
                 logger.error(f"Erro ao desconectar {key}: {e}")
         self.refresh_brokers()
+        self.broker_status_changed.emit()

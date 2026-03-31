@@ -561,3 +561,84 @@ def splash_style():
 def internet_status_color(online):
     c = t()
     return c['success'] if online == "Online" else c['error']
+
+
+def global_app_style():
+    """Stylesheet aplicado na QApplication — cobre widgets nativos como QMessageBox."""
+    c = t()
+    return f"""
+QWidget {{
+    background-color: {c['surface']};
+    color: {c['text']};
+}}
+QComboBox {{
+    background-color: {c['input']};
+    color: {c['text']};
+    border: 1px solid {c['border_hover']};
+    border-radius: 4px;
+    padding: 4px 8px;
+}}
+QComboBox QAbstractItemView {{
+    background-color: {c['input']};
+    color: {c['text']};
+    selection-background-color: {c['selection']};
+    border: 1px solid {c['border_hover']};
+    outline: none;
+}}
+QComboBox::drop-down {{
+    border: none;
+}}
+QMessageBox {{
+    background-color: {c['base']};
+}}
+QMessageBox QLabel {{
+    color: {c['text']};
+    background-color: transparent;
+}}
+QMessageBox QPushButton {{
+    color: {c['text']};
+    background-color: {c['input']};
+    border: 1px solid {c['border_hover']};
+    border-radius: 4px;
+    padding: 6px 20px;
+    min-width: 64px;
+}}
+QMessageBox QPushButton:hover {{
+    background-color: {c['border_hover']};
+}}
+QMessageBox QPushButton:pressed {{
+    background-color: {c['selection']};
+}}
+QToolTip {{
+    background-color: {c['card']};
+    color: {c['text']};
+    border: 1px solid {c['border_hover']};
+    padding: 4px;
+}}
+QScrollBar:vertical {{
+    background: {c['surface']};
+    width: 8px;
+    border-radius: 4px;
+}}
+QScrollBar::handle:vertical {{
+    background: {c['border_hover']};
+    border-radius: 4px;
+    min-height: 20px;
+}}
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
+    height: 0px;
+}}
+QScrollBar:horizontal {{
+    background: {c['surface']};
+    height: 8px;
+    border-radius: 4px;
+}}
+QScrollBar::handle:horizontal {{
+    background: {c['border_hover']};
+    border-radius: 4px;
+    min-width: 20px;
+}}
+QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{
+    width: 0px;
+}}
+"""

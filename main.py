@@ -270,6 +270,12 @@ if __name__ == "__main__":
     if app is None:
         app = QApplication(sys.argv)
 
+    # Aplicar stylesheet global (cobre QMessageBox, dropdowns, scrollbars, etc.)
+    from gui import themes as _themes
+    saved_theme_early = initial_app_config.get('GUI', 'theme', fallback='Escuro')
+    _themes.set_theme(saved_theme_early)
+    app.setStyleSheet(_themes.global_app_style())
+
     try:
         # PySide6.QtAsyncio - solução oficial do Qt para asyncio + Qt
         from PySide6.QtAsyncio import QAsyncioEventLoop

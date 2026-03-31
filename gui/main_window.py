@@ -201,6 +201,9 @@ class MainWindow(QMainWindow):
     # ── Theme ──
     def apply_theme(self):
         """Reaplica todos os estilos após troca de tema."""
+        from PySide6.QtWidgets import QApplication
+        QApplication.instance().setStyleSheet(themes.global_app_style())
+
         self.centralWidget().setStyleSheet(themes.main_area_style())
         self.header.setStyleSheet(themes.header_style())
         self.sidebar.setStyleSheet(themes.sidebar_style())
@@ -220,6 +223,8 @@ class MainWindow(QMainWindow):
         self.zmq_message_handler.log_message_received.connect(self._handle_zmq_messages)
         self.zmq_message_handler.positions_received.connect(self.dashboard_page.update_positions)
         self.zmq_message_handler.account_balance_received.connect(self.dashboard_page.update_balance)
+        # Sincronizar dashboard quando broker conecta/desconecta via botão
+        self.brokers_page.broker_status_changed.connect(self.dashboard_page.refresh_brokers)
         if self.copytrade_manager:
             self.copytrade_manager.copy_trade_log.connect(self.logs_page.append_log)
             self.copytrade_manager.copy_trade_executed.connect(self.history_page.refresh)
