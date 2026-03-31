@@ -268,6 +268,12 @@ QPushButton.disconnect-btn {{
 QPushButton.disconnect-btn:hover {{
     background-color: {c['error_hover']};
 }}
+QLabel.section-title {{
+    color: {c['text_secondary']};
+    font-size: 14px;
+    font-weight: bold;
+    padding: 8px 0px 4px 0px;
+}}
 """
 
 
