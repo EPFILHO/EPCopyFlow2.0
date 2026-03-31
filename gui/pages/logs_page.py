@@ -7,43 +7,15 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QTextEdit
 )
 from PySide6.QtCore import Slot, Qt
+from gui import themes
 
 logger = logging.getLogger(__name__)
-
-PAGE_STYLE = """
-QLabel.page-title {
-    color: #cdd6f4;
-    font-size: 20px;
-    font-weight: bold;
-    padding: 8px 0px;
-}
-QTextEdit {
-    background-color: #11111b;
-    color: #a6e3a1;
-    border: 1px solid #313244;
-    border-radius: 6px;
-    font-family: 'Consolas', 'Courier New', monospace;
-    font-size: 12px;
-    padding: 8px;
-}
-QPushButton.action-btn {
-    background-color: #313244;
-    color: #cdd6f4;
-    border: 1px solid #45475a;
-    border-radius: 6px;
-    padding: 8px 16px;
-    font-size: 13px;
-}
-QPushButton.action-btn:hover {
-    background-color: #45475a;
-}
-"""
 
 
 class LogsPage(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setStyleSheet(PAGE_STYLE)
+        self.setStyleSheet(themes.logs_page_style())
         self._init_ui()
 
     def _init_ui(self):

@@ -1,70 +1,24 @@
 # EPCopyFlow 2.0 - Versão 0.0.1 - Claude Code Parte 000
 # gui/pages/settings_page.py
-# Página de configurações gerais.
+# Página de configurações gerais com seletor de tema.
 
 import logging
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QLineEdit, QSpinBox, QCheckBox, QFrame, QMessageBox
+    QLineEdit, QSpinBox, QCheckBox, QFrame, QMessageBox, QComboBox
 )
 from PySide6.QtCore import Qt
+from gui import themes
 
 logger = logging.getLogger(__name__)
 
-PAGE_STYLE = """
-QLabel.page-title {
-    color: #cdd6f4;
-    font-size: 20px;
-    font-weight: bold;
-    padding: 8px 0px;
-}
-QLabel.section-title {
-    color: #a6adc8;
-    font-size: 14px;
-    font-weight: bold;
-    padding: 8px 0px 4px 0px;
-}
-QLabel.field-label {
-    color: #cdd6f4;
-    font-size: 13px;
-}
-QLineEdit, QSpinBox {
-    background-color: #313244;
-    color: #cdd6f4;
-    border: 1px solid #45475a;
-    border-radius: 4px;
-    padding: 6px;
-}
-QCheckBox {
-    color: #cdd6f4;
-    font-size: 13px;
-}
-QFrame.settings-group {
-    background-color: #1e1e2e;
-    border: 1px solid #313244;
-    border-radius: 10px;
-    padding: 16px;
-}
-QPushButton.save-btn {
-    background-color: #a6e3a1;
-    color: #1e1e2e;
-    border: none;
-    border-radius: 6px;
-    padding: 10px 24px;
-    font-weight: bold;
-    font-size: 14px;
-}
-QPushButton.save-btn:hover {
-    background-color: #94e2d5;
-}
-"""
-
 
 class SettingsPage(QWidget):
-    def __init__(self, config, parent=None):
+    def __init__(self, config, on_theme_changed=None, parent=None):
         super().__init__(parent)
         self.config = config
-        self.setStyleSheet(PAGE_STYLE)
+        self._on_theme_changed = on_theme_changed
+        self.setStyleSheet(themes.settings_page_style())
         self._init_ui()
         self._load_settings()
 
@@ -77,7 +31,27 @@ class SettingsPage(QWidget):
         title.setProperty("class", "page-title")
         layout.addWidget(title)
 
-        # MT5 Settings
+        # ── Aparência ──
+        theme_group = QFrame()
+        theme_group.setProperty("class", "settings-group")
+        theme_layout = QVBoxLayout(theme_group)
+
+        theme_title = QLabel("Aparencia")
+        theme_title.setProperty("class", "section-title")
+        theme_layout.addWidget(theme_title)
+
+        row_theme = QHBoxLayout()
+        row_theme.addWidget(QLabel("Tema:"))
+        self.theme_combo = QComboBox()
+        self.theme_combo.addItems(themes.get_theme_names())
+        self.theme_combo.setMaximumWidth(200)
+        row_theme.addWidget(self.theme_combo)
+        row_theme.addStretch()
+        theme_layout.addLayout(row_theme)
+
+        layout.addWidget(theme_group)
+
+        # ── MT5 Settings ──
         mt5_group = QFrame()
         mt5_group.setProperty("class", "settings-group")
         mt5_layout = QVBoxLayout(mt5_group)
@@ -103,7 +77,7 @@ class SettingsPage(QWidget):
 
         layout.addWidget(mt5_group)
 
-        # App Settings
+        # ── App Settings ──
         app_group = QFrame()
         app_group.setProperty("class", "settings-group")
         app_layout = QVBoxLayout(app_group)
@@ -148,6 +122,14 @@ class SettingsPage(QWidget):
         self.log_level_edit.setText(
             self.config.get('General', 'log_level', fallback='INFO')
         )
+        # Tema
+        saved_theme = self.config.get('GUI', 'theme', fallback='Escuro')
+        idx = self.theme_combo.findText(saved_theme)
+        if idx >= 0:
+            self.theme_combo.setCurrentIndex(idx)
+
+    def apply_theme(self):
+        self.setStyleSheet(themes.settings_page_style())
 
     def _save_settings(self):
         try:
@@ -155,6 +137,14 @@ class SettingsPage(QWidget):
             self.config.set('General', 'monitor_interval', str(self.monitor_interval_spin.value()))
             self.config.set('General', 'show_splash', str(self.splash_check.isChecked()))
             self.config.set('General', 'log_level', self.log_level_edit.text().upper())
+
+            # Salvar e aplicar tema
+            new_theme = self.theme_combo.currentText()
+            self.config.set('GUI', 'theme', new_theme)
+            themes.set_theme(new_theme)
+            if self._on_theme_changed:
+                self._on_theme_changed()
+
             self.config.save_config()
             QMessageBox.information(self, "Sucesso", "Configuracoes salvas.")
             logger.info("Configuracoes salvas.")

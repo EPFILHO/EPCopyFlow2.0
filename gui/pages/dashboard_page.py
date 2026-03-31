@@ -9,38 +9,9 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import Slot, Qt
 from gui.widgets.broker_card import BrokerCard
+from gui import themes
 
 logger = logging.getLogger(__name__)
-
-PAGE_STYLE = """
-QLabel.page-title {
-    color: #cdd6f4;
-    font-size: 20px;
-    font-weight: bold;
-    padding: 8px 0px;
-}
-QLabel.section-title {
-    color: #a6adc8;
-    font-size: 14px;
-    font-weight: bold;
-    padding: 4px 0px;
-}
-QLabel.stat-value {
-    color: #89b4fa;
-    font-size: 24px;
-    font-weight: bold;
-}
-QLabel.stat-label {
-    color: #6c7086;
-    font-size: 12px;
-}
-QFrame.stat-card {
-    background-color: #1e1e2e;
-    border: 1px solid #313244;
-    border-radius: 10px;
-    padding: 16px;
-}
-"""
 
 
 class DashboardPage(QWidget):
@@ -49,7 +20,7 @@ class DashboardPage(QWidget):
         self.broker_manager = broker_manager
         self.copytrade_manager = copytrade_manager
         self.broker_cards = {}
-        self.setStyleSheet(PAGE_STYLE)
+        self.setStyleSheet(themes.dashboard_style())
         self._init_ui()
         self.refresh_brokers()
 
@@ -81,7 +52,7 @@ class DashboardPage(QWidget):
 
         self.master_area = QHBoxLayout()
         self.master_placeholder = QLabel("Nenhum Master configurado")
-        self.master_placeholder.setStyleSheet("color: #585b70; font-style: italic; padding: 12px;")
+        self.master_placeholder.setStyleSheet(themes.dashboard_placeholder_style())
         self.master_area.addWidget(self.master_placeholder)
         self.master_area.addStretch()
         layout.addLayout(self.master_area)
@@ -93,9 +64,9 @@ class DashboardPage(QWidget):
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
-        scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
+        scroll.setStyleSheet(themes.scroll_area_style())
         scroll_widget = QWidget()
-        scroll_widget.setStyleSheet("background: transparent;")
+        scroll_widget.setStyleSheet(themes.scroll_widget_style())
         self.slaves_grid = QGridLayout(scroll_widget)
         self.slaves_grid.setSpacing(12)
         scroll.setWidget(scroll_widget)
@@ -119,6 +90,11 @@ class DashboardPage(QWidget):
 
         card._value_label = value
         return card
+
+    def apply_theme(self):
+        self.setStyleSheet(themes.dashboard_style())
+        self.master_placeholder.setStyleSheet(themes.dashboard_placeholder_style())
+        self.refresh_brokers()
 
     def refresh_brokers(self):
         """Rebuild broker cards from broker_manager data."""

@@ -7,76 +7,9 @@ from PySide6.QtWidgets import (
     QFrame, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QSizePolicy
 )
 from PySide6.QtCore import Qt
+from gui import themes
 
 logger = logging.getLogger(__name__)
-
-CARD_STYLE_TEMPLATE = """
-QFrame.broker-card {{
-    background-color: #1e1e2e;
-    border: 1px solid {border_color};
-    border-radius: 12px;
-    padding: 4px;
-}}
-QFrame.broker-card:hover {{
-    border-color: #89b4fa;
-}}
-QLabel.card-title {{
-    color: #cdd6f4;
-    font-size: 14px;
-    font-weight: bold;
-}}
-QLabel.card-role {{
-    color: {role_color};
-    font-size: 11px;
-    font-weight: bold;
-    background-color: {role_bg};
-    border-radius: 4px;
-    padding: 2px 8px;
-}}
-QLabel.card-info {{
-    color: #a6adc8;
-    font-size: 12px;
-}}
-QLabel.card-status {{
-    color: {status_color};
-    font-size: 12px;
-    font-weight: bold;
-}}
-QLabel.card-profit-positive {{
-    color: #a6e3a1;
-    font-size: 13px;
-    font-weight: bold;
-}}
-QLabel.card-profit-negative {{
-    color: #f38ba8;
-    font-size: 13px;
-    font-weight: bold;
-}}
-QPushButton.card-connect {{
-    background-color: #a6e3a1;
-    color: #1e1e2e;
-    border: none;
-    border-radius: 4px;
-    padding: 4px 12px;
-    font-size: 11px;
-    font-weight: bold;
-}}
-QPushButton.card-connect:hover {{
-    background-color: #94e2d5;
-}}
-QPushButton.card-disconnect {{
-    background-color: #f38ba8;
-    color: #1e1e2e;
-    border: none;
-    border-radius: 4px;
-    padding: 4px 12px;
-    font-size: 11px;
-    font-weight: bold;
-}}
-QPushButton.card-disconnect:hover {{
-    background-color: #eba0ac;
-}}
-"""
 
 
 class BrokerCard(QFrame):
@@ -93,17 +26,11 @@ class BrokerCard(QFrame):
         role = broker_data.get("role", "slave")
         is_master = role == "master"
 
-        role_color = "#f9e2af" if is_master else "#89b4fa"
-        role_bg = "#45475a"
-        border_color = "#f9e2af" if is_master else "#313244"
-        status_color = "#a6e3a1" if is_connected else "#f38ba8"
-
-        style = CARD_STYLE_TEMPLATE.format(
-            border_color=border_color,
-            role_color=role_color,
-            role_bg=role_bg,
-            status_color=status_color,
+        border_color, role_color, role_bg, status_color = themes.broker_card_dynamic_colors(
+            is_master, is_connected
         )
+
+        style = themes.broker_card_style(border_color, role_color, role_bg, status_color)
         self.setStyleSheet(style)
         self.setProperty("class", "broker-card")
         self.setMinimumWidth(280)
