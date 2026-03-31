@@ -8,61 +8,18 @@ from PySide6.QtWidgets import (
     QTableWidget, QTableWidgetItem, QHeaderView, QComboBox
 )
 from PySide6.QtCore import Slot, Qt
+from PySide6.QtGui import QColor
 from datetime import datetime
+from gui import themes
 
 logger = logging.getLogger(__name__)
-
-PAGE_STYLE = """
-QLabel.page-title {
-    color: #cdd6f4;
-    font-size: 20px;
-    font-weight: bold;
-    padding: 8px 0px;
-}
-QTableWidget {
-    background-color: #1e1e2e;
-    color: #cdd6f4;
-    border: 1px solid #313244;
-    border-radius: 6px;
-    gridline-color: #313244;
-    selection-background-color: #45475a;
-}
-QTableWidget::item {
-    padding: 6px;
-}
-QHeaderView::section {
-    background-color: #313244;
-    color: #cdd6f4;
-    padding: 6px;
-    border: none;
-    font-weight: bold;
-}
-QPushButton.action-btn {
-    background-color: #313244;
-    color: #cdd6f4;
-    border: 1px solid #45475a;
-    border-radius: 6px;
-    padding: 8px 16px;
-    font-size: 13px;
-}
-QPushButton.action-btn:hover {
-    background-color: #45475a;
-}
-QComboBox {
-    background-color: #313244;
-    color: #cdd6f4;
-    border: 1px solid #45475a;
-    border-radius: 4px;
-    padding: 4px 8px;
-}
-"""
 
 
 class HistoryPage(QWidget):
     def __init__(self, copytrade_manager=None, parent=None):
         super().__init__(parent)
         self.copytrade_manager = copytrade_manager
-        self.setStyleSheet(PAGE_STYLE)
+        self.setStyleSheet(themes.history_page_style())
         self._init_ui()
 
     def _init_ui(self):
@@ -124,6 +81,7 @@ class HistoryPage(QWidget):
                 continue
             filtered.append(row)
 
+        c = themes.t()
         self.table.setRowCount(len(filtered))
         for i, row in enumerate(filtered):
             ts_val = row.get("timestamp", 0)
@@ -146,7 +104,7 @@ class HistoryPage(QWidget):
                 # Color code status
                 if j == 9:
                     if val == "SUCCESS":
-                        item.setForeground(Qt.green)
+                        item.setForeground(QColor(c['success']))
                     elif val == "FAILED":
-                        item.setForeground(Qt.red)
+                        item.setForeground(QColor(c['error']))
                 self.table.setItem(i, j, item)

@@ -9,7 +9,6 @@ import warnings
 import logging
 import signal
 import subprocess
-import zmq.asyncio
 from PySide6.QtWidgets import QApplication, QLabel, QVBoxLayout, QProgressBar, QWidget
 from PySide6.QtGui import QFont
 from PySide6.QtCore import Qt
@@ -19,6 +18,7 @@ from core.zmq_router import ZmqRouter
 from core.copytrade_manager import CopyTradeManager
 from core.mt5_process_monitor import MT5ProcessMonitor
 from gui.main_window import MainWindow
+from gui import themes
 import os
 from datetime import datetime
 
@@ -32,21 +32,7 @@ def filter_warnings():
     warnings.filterwarnings("ignore", category=DeprecationWarning, module="asyncio.*")
 
 
-# ── Bloco 2 - Patch ZMQ ──
-original_asyncpoller_poll = zmq.asyncio.Poller.poll
-
-
-async def patched_asyncpoller_poll(self, timeout=None):
-    try:
-        return await original_asyncpoller_poll(self, timeout)
-    except zmq.error.ZMQError as e:
-        if "not a socket" in str(e):
-            return []
-        raise
-
-
-def apply_zmq_patch():
-    zmq.asyncio.Poller.poll = patched_asyncpoller_poll
+# ── Bloco 2 - (Reservado - patch ZMQ removido, usa polling sync) ──
 
 
 # ── Bloco 3 - Logging ──
@@ -164,38 +150,36 @@ def sigint_handler(*args):
 # ── Bloco 6 - Splash Screen Async ──
 async def show_splash_async(duration):
     """Exibe splash screen como coroutine sem bloquear o event loop."""
+    s = themes.splash_style()
     app = QApplication.instance()
     splash_widget = QWidget()
     splash_widget.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
     splash_widget.setFixedSize(400, 200)
-    splash_widget.setStyleSheet("background-color: #1e1e2e;")
+    splash_widget.setStyleSheet(s["background"])
     layout = QVBoxLayout(splash_widget)
 
     title_label = QLabel("EPCopyFlow 2.0")
     title_label.setFont(QFont("Arial", 24, QFont.Bold))
-    title_label.setStyleSheet("color: #89b4fa;")
+    title_label.setStyleSheet(s["title"])
     title_label.setAlignment(Qt.AlignCenter)
     layout.addWidget(title_label, 0, Qt.AlignCenter)
 
     subtitle_label = QLabel("CopyTrade Management Platform")
     subtitle_label.setFont(QFont("Arial", 12))
-    subtitle_label.setStyleSheet("color: #cdd6f4;")
+    subtitle_label.setStyleSheet(s["subtitle"])
     subtitle_label.setAlignment(Qt.AlignCenter)
     layout.addWidget(subtitle_label, 0, Qt.AlignCenter)
 
     version_label = QLabel("v0.0.1")
     version_label.setFont(QFont("Arial", 10))
-    version_label.setStyleSheet("color: #585b70;")
+    version_label.setStyleSheet(s["version"])
     version_label.setAlignment(Qt.AlignCenter)
     layout.addWidget(version_label, 0, Qt.AlignCenter)
 
     progress = QProgressBar()
     progress.setTextVisible(False)
     progress.setRange(0, 0)
-    progress.setStyleSheet("""
-        QProgressBar { background-color: #313244; border-radius: 4px; height: 6px; }
-        QProgressBar::chunk { background-color: #89b4fa; border-radius: 4px; }
-    """)
+    progress.setStyleSheet(s["progress"])
     layout.addWidget(progress)
     layout.setContentsMargins(20, 30, 20, 20)
     layout.setSpacing(10)
@@ -215,6 +199,10 @@ async def main_application_flow(config: ConfigManager):
     global zmq_task, zmq_router_instance, shutdown_event, mt5_processes
     global broker_manager, mt5_monitor, copytrade_manager
     logger.info("Iniciando EPCopyFlow 2.0...")
+
+    # Carregar tema salvo antes do splash
+    saved_theme = config.get('GUI', 'theme', fallback='Escuro')
+    themes.set_theme(saved_theme)
 
     # Splash screen (non-blocking)
     show_splash = config.getboolean('General', 'show_splash', fallback=True)
@@ -277,11 +265,16 @@ if __name__ == "__main__":
     logger.info("Iniciando EPCopyFlow 2.0.")
 
     filter_warnings()
-    apply_zmq_patch()
 
     app = QApplication.instance()
     if app is None:
         app = QApplication(sys.argv)
+
+    # Aplicar stylesheet global (cobre QMessageBox, dropdowns, scrollbars, etc.)
+    from gui import themes as _themes
+    saved_theme_early = initial_app_config.get('GUI', 'theme', fallback='Escuro')
+    _themes.set_theme(saved_theme_early)
+    app.setStyleSheet(_themes.global_app_style())
 
     try:
         # PySide6.QtAsyncio - solução oficial do Qt para asyncio + Qt

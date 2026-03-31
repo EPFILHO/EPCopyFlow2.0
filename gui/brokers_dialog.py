@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import Signal, Qt
 from PySide6.QtGui import QIcon, QPixmap, QStandardItemModel, QStandardItem, QColor
+from gui import themes
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +40,7 @@ class BrokersDialog(QDialog):
         self.broker_manager = broker_manager
         self.setWindowTitle("Cadastro de Corretoras")
         self.setMinimumWidth(450)
+        self.setStyleSheet(themes.brokers_dialog_style())
         self._init_ui()
         self._populate_brokers()
         self._clear_fields()
@@ -139,7 +141,7 @@ class BrokersDialog(QDialog):
         layout.addLayout(btn_layout)
 
         info_label = QLabel("Não é possível modificar ou excluir uma corretora conectada.")
-        info_label.setStyleSheet("color: red; font-style: italic;")
+        info_label.setStyleSheet(themes.dialog_info_label_style())
         layout.addWidget(info_label)
 
     def _connect_signals(self):
@@ -165,6 +167,7 @@ class BrokersDialog(QDialog):
             self.lot_multiplier_spin.setValue(1.0)
 
     def _populate_brokers(self):
+        c = themes.t()
         self.combo.blockSignals(True)
         self.combo.clear()
         self._broker_keys = []
@@ -177,7 +180,7 @@ class BrokersDialog(QDialog):
             label = f"{key} [{role.upper()}]"
             item = QStandardItem(label)
             is_connected = key in connected
-            item.setForeground(QColor("red" if is_connected else "green"))
+            item.setForeground(QColor(c['error'] if is_connected else c['success']))
             item.setData(is_connected, Qt.UserRole)
             model.appendRow(item)
             self._broker_keys.append(key)

@@ -8,56 +8,17 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QScrollArea, QFrame, QGridLayout, QMessageBox
 )
-from PySide6.QtCore import Slot, Qt
+from PySide6.QtCore import Slot, Qt, Signal
 from gui.brokers_dialog import BrokersDialog
 from gui.widgets.broker_card import BrokerCard
+from gui import themes
 
 logger = logging.getLogger(__name__)
 
-PAGE_STYLE = """
-QLabel.page-title {
-    color: #cdd6f4;
-    font-size: 20px;
-    font-weight: bold;
-    padding: 8px 0px;
-}
-QPushButton.action-btn {
-    background-color: #313244;
-    color: #cdd6f4;
-    border: 1px solid #45475a;
-    border-radius: 6px;
-    padding: 8px 16px;
-    font-size: 13px;
-}
-QPushButton.action-btn:hover {
-    background-color: #45475a;
-}
-QPushButton.connect-btn {
-    background-color: #a6e3a1;
-    color: #1e1e2e;
-    border: none;
-    border-radius: 6px;
-    padding: 8px 16px;
-    font-weight: bold;
-}
-QPushButton.connect-btn:hover {
-    background-color: #94e2d5;
-}
-QPushButton.disconnect-btn {
-    background-color: #f38ba8;
-    color: #1e1e2e;
-    border: none;
-    border-radius: 6px;
-    padding: 8px 16px;
-    font-weight: bold;
-}
-QPushButton.disconnect-btn:hover {
-    background-color: #eba0ac;
-}
-"""
-
 
 class BrokersPage(QWidget):
+    broker_status_changed = Signal()
+
     def __init__(self, config, broker_manager, zmq_router, mt5_monitor, parent=None):
         super().__init__(parent)
         self.config = config
@@ -65,7 +26,7 @@ class BrokersPage(QWidget):
         self.zmq_router = zmq_router
         self.mt5_monitor = mt5_monitor
         self.broker_cards = {}
-        self.setStyleSheet(PAGE_STYLE)
+        self.setStyleSheet(themes.brokers_page_style())
         self._init_ui()
         self.refresh_brokers()
 
@@ -101,13 +62,17 @@ class BrokersPage(QWidget):
         # Broker cards grid
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
-        scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
+        scroll.setStyleSheet(themes.scroll_area_style())
         scroll_widget = QWidget()
-        scroll_widget.setStyleSheet("background: transparent;")
+        scroll_widget.setStyleSheet(themes.scroll_widget_style())
         self.grid = QGridLayout(scroll_widget)
         self.grid.setSpacing(12)
         scroll.setWidget(scroll_widget)
         layout.addWidget(scroll, 1)
+
+    def apply_theme(self):
+        self.setStyleSheet(themes.brokers_page_style())
+        self.refresh_brokers()
 
     def refresh_brokers(self):
         for card in self.broker_cards.values():
@@ -145,6 +110,7 @@ class BrokersPage(QWidget):
             self.broker_manager.connect_broker(key)
             logger.info(f"Corretora {key} conectada.")
             self.refresh_brokers()
+            self.broker_status_changed.emit()
         except Exception as e:
             QMessageBox.critical(self, "Erro", f"Erro ao conectar {key}: {e}")
             logger.error(f"Erro ao conectar {key}: {e}")
@@ -154,6 +120,7 @@ class BrokersPage(QWidget):
             self.broker_manager.disconnect_broker(key)
             logger.info(f"Corretora {key} desconectada.")
             self.refresh_brokers()
+            self.broker_status_changed.emit()
         except Exception as e:
             QMessageBox.critical(self, "Erro", f"Erro ao desconectar {key}: {e}")
             logger.error(f"Erro ao desconectar {key}: {e}")
@@ -168,6 +135,7 @@ class BrokersPage(QWidget):
                 except Exception as e:
                     logger.error(f"Erro ao conectar {key}: {e}")
         self.refresh_brokers()
+        self.broker_status_changed.emit()
 
     def _disconnect_all(self):
         connected = list(self.broker_manager.get_connected_brokers())
@@ -177,3 +145,4 @@ class BrokersPage(QWidget):
             except Exception as e:
                 logger.error(f"Erro ao desconectar {key}: {e}")
         self.refresh_brokers()
+        self.broker_status_changed.emit()

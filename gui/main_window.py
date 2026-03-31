@@ -16,6 +16,7 @@ from core.broker_manager import BrokerManager
 from core.zmq_router import ZmqRouter
 from core.zmq_message_handler import ZmqMessageHandler
 from internet_monitor import InternetMonitor
+from gui import themes
 
 from gui.pages.dashboard_page import DashboardPage
 from gui.pages.brokers_page import BrokersPage
@@ -24,69 +25,6 @@ from gui.pages.logs_page import LogsPage
 from gui.pages.settings_page import SettingsPage
 
 logger = logging.getLogger(__name__)
-
-SIDEBAR_STYLE = """
-QFrame#sidebar {
-    background-color: #1e1e2e;
-    border-right: 1px solid #313244;
-}
-QPushButton.nav-btn {
-    background-color: transparent;
-    color: #cdd6f4;
-    border: none;
-    text-align: left;
-    padding: 12px 16px;
-    font-size: 14px;
-    border-radius: 8px;
-    margin: 2px 8px;
-}
-QPushButton.nav-btn:hover {
-    background-color: #313244;
-}
-QPushButton.nav-btn:checked {
-    background-color: #45475a;
-    color: #89b4fa;
-    font-weight: bold;
-}
-"""
-
-HEADER_STYLE = """
-QFrame#header {
-    background-color: #1e1e2e;
-    border-bottom: 1px solid #313244;
-    padding: 4px 16px;
-}
-QLabel.header-title {
-    color: #89b4fa;
-    font-size: 16px;
-    font-weight: bold;
-}
-QLabel.header-status {
-    color: #a6adc8;
-    font-size: 12px;
-}
-QPushButton#emergency-btn {
-    background-color: #f38ba8;
-    color: #1e1e2e;
-    border: none;
-    border-radius: 6px;
-    padding: 8px 16px;
-    font-weight: bold;
-    font-size: 13px;
-}
-QPushButton#emergency-btn:hover {
-    background-color: #eba0ac;
-}
-QPushButton#emergency-btn:pressed {
-    background-color: #f38ba8;
-}
-"""
-
-MAIN_STYLE = """
-QWidget#main-area {
-    background-color: #181825;
-}
-"""
 
 
 class MainWindow(QMainWindow):
@@ -120,6 +58,10 @@ class MainWindow(QMainWindow):
         for key, broker in self.brokers.items():
             self.broker_modes[key] = broker.get("mode", "Hedge")
 
+        # Carregar tema salvo
+        saved_theme = self.config.get('GUI', 'theme', fallback='Escuro')
+        themes.set_theme(saved_theme)
+
         self.setWindowTitle("EPCopyFlow 2.0")
         self.setGeometry(50, 50, 1200, 750)
         self.setMinimumSize(900, 550)
@@ -138,7 +80,7 @@ class MainWindow(QMainWindow):
     def _init_ui(self):
         central = QWidget()
         central.setObjectName("main-area")
-        central.setStyleSheet(MAIN_STYLE)
+        central.setStyleSheet(themes.main_area_style())
         self.setCentralWidget(central)
 
         root_layout = QVBoxLayout(central)
@@ -159,14 +101,14 @@ class MainWindow(QMainWindow):
         body_layout.addWidget(self.sidebar)
 
         self.pages = QStackedWidget()
-        self.pages.setStyleSheet("background-color: #181825;")
+        self.pages.setStyleSheet(themes.page_background_style())
 
         # Create pages
         self.dashboard_page = DashboardPage(self.broker_manager, self.copytrade_manager)
         self.brokers_page = BrokersPage(self.config, self.broker_manager, self.zmq_router, self.mt5_monitor)
         self.history_page = HistoryPage(self.copytrade_manager)
         self.logs_page = LogsPage()
-        self.settings_page = SettingsPage(self.config)
+        self.settings_page = SettingsPage(self.config, on_theme_changed=self.apply_theme)
 
         self.pages.addWidget(self.dashboard_page)   # 0
         self.pages.addWidget(self.brokers_page)      # 1
@@ -183,7 +125,7 @@ class MainWindow(QMainWindow):
     def _create_header(self):
         header = QFrame()
         header.setObjectName("header")
-        header.setStyleSheet(HEADER_STYLE)
+        header.setStyleSheet(themes.header_style())
         header.setFixedHeight(52)
 
         layout = QHBoxLayout(header)
@@ -218,7 +160,7 @@ class MainWindow(QMainWindow):
     def _create_sidebar(self):
         sidebar = QFrame()
         sidebar.setObjectName("sidebar")
-        sidebar.setStyleSheet(SIDEBAR_STYLE)
+        sidebar.setStyleSheet(themes.sidebar_style())
         sidebar.setFixedWidth(200)
 
         layout = QVBoxLayout(sidebar)
@@ -245,9 +187,9 @@ class MainWindow(QMainWindow):
         layout.addStretch()
 
         # Version label at bottom
-        ver = QLabel("v0.0.1")
-        ver.setStyleSheet("color: #585b70; font-size: 11px; padding: 8px 16px;")
-        layout.addWidget(ver)
+        self.version_label = QLabel("v0.0.1")
+        self.version_label.setStyleSheet(themes.version_label_style())
+        layout.addWidget(self.version_label)
 
         return sidebar
 
@@ -256,12 +198,33 @@ class MainWindow(QMainWindow):
         for i, btn in enumerate(self.nav_buttons):
             btn.setChecked(i == index)
 
+    # ── Theme ──
+    def apply_theme(self):
+        """Reaplica todos os estilos após troca de tema."""
+        from PySide6.QtWidgets import QApplication
+        QApplication.instance().setStyleSheet(themes.global_app_style())
+
+        self.centralWidget().setStyleSheet(themes.main_area_style())
+        self.header.setStyleSheet(themes.header_style())
+        self.sidebar.setStyleSheet(themes.sidebar_style())
+        self.pages.setStyleSheet(themes.page_background_style())
+        self.version_label.setStyleSheet(themes.version_label_style())
+
+        # Re-estilizar páginas
+        self.dashboard_page.apply_theme()
+        self.brokers_page.apply_theme()
+        self.history_page.setStyleSheet(themes.history_page_style())
+        self.logs_page.setStyleSheet(themes.logs_page_style())
+        self.settings_page.apply_theme()
+
     # ── Signals ──
     def _connect_signals(self):
         self.zmq_message_handler.log_message_received.connect(self.logs_page.append_log)
         self.zmq_message_handler.log_message_received.connect(self._handle_zmq_messages)
         self.zmq_message_handler.positions_received.connect(self.dashboard_page.update_positions)
         self.zmq_message_handler.account_balance_received.connect(self.dashboard_page.update_balance)
+        # Sincronizar dashboard quando broker conecta/desconecta via botão
+        self.brokers_page.broker_status_changed.connect(self.dashboard_page.refresh_brokers)
         if self.copytrade_manager:
             self.copytrade_manager.copy_trade_log.connect(self.logs_page.append_log)
             self.copytrade_manager.copy_trade_executed.connect(self.history_page.refresh)
@@ -288,7 +251,7 @@ class MainWindow(QMainWindow):
     @Slot(dict)
     def _on_system_status(self, status):
         online = status.get("internet", "Offline")
-        color = "#a6e3a1" if online == "Online" else "#f38ba8"
+        color = themes.internet_status_color(online)
         self.internet_label.setText(f"Internet: <span style='color:{color}'>{online}</span>")
         self.cpu_label.setText(status.get("cpu", "CPU: --%"))
         self.mem_label.setText(status.get("memory", "RAM: --%"))
@@ -315,6 +278,18 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event: QCloseEvent):
         logger.info("Fechando MainWindow...")
-        self.shutdown_event_ref.set()
         self.internet_monitor.stop()
+
+        # Desconectar todas as corretoras e fechar MT5
+        try:
+            for key in list(self.broker_manager.get_connected_brokers()):
+                try:
+                    self.broker_manager.disconnect_broker(key)
+                    logger.info(f"MT5 desconectado para {key} no fechamento.")
+                except Exception as e:
+                    logger.error(f"Erro ao desconectar {key} no fechamento: {e}")
+        except Exception as e:
+            logger.error(f"Erro ao obter corretoras conectadas no fechamento: {e}")
+
+        self.shutdown_event_ref.set()
         event.accept()
