@@ -12,8 +12,8 @@ from gui import themes
 logger = logging.getLogger(__name__)
 
 # Cores dos indicadores de status
-_COLOR_GREEN = "#a6e3a1"
-_COLOR_RED = "#f38ba8"
+_COLOR_GREEN = "#2ecc71"
+_COLOR_RED = "#e74c3c"
 _COLOR_GRAY = "#585b70"
 
 
@@ -78,13 +78,13 @@ class BrokerCard(QFrame):
         indicators_row = QHBoxLayout()
         indicators_row.setSpacing(12)
         self._indicators = {}
-        for name in ("MT5", "ZMQ", "EA", "BRK", "ALG"):
+        for name in ("MT5", "EA", "BRK", "ALG"):
             dot = QLabel("\u25CF")  # ● character
-            dot.setStyleSheet(f"color: {_COLOR_GRAY}; font-size: 14px;")
+            dot.setStyleSheet(f"color: {_COLOR_GRAY}; font-size: 18px;")
             dot.setAlignment(Qt.AlignCenter)
             lbl = QLabel(name)
             lbl.setProperty("class", "card-info")
-            lbl.setStyleSheet("font-size: 10px;")
+            lbl.setStyleSheet("font-size: 11px;")
             pair = QHBoxLayout()
             pair.setSpacing(2)
             pair.addWidget(dot)
@@ -142,12 +142,12 @@ class BrokerCard(QFrame):
             btn_row.addWidget(btn)
             layout.addLayout(btn_row)
 
-    def update_status_indicators(self, mt5=None, brk=None, zmq=None, ea=None, alg=None):
-        """Update the 5 status indicator dots.
+    def update_status_indicators(self, mt5=None, ea=None, brk=None, alg=None):
+        """Update the 4 status indicator dots.
 
         Each parameter accepts: True (green), False (red), None (gray).
         """
-        mapping = {"MT5": mt5, "BRK": brk, "ZMQ": zmq, "EA": ea, "ALG": alg}
+        mapping = {"MT5": mt5, "EA": ea, "BRK": brk, "ALG": alg}
         for name, value in mapping.items():
             if name in self._indicators:
                 if value is True:
@@ -156,7 +156,7 @@ class BrokerCard(QFrame):
                     color = _COLOR_RED
                 else:
                     color = _COLOR_GRAY
-                self._indicators[name].setStyleSheet(f"color: {color}; font-size: 14px;")
+                self._indicators[name].setStyleSheet(f"color: {color}; font-size: 18px;")
 
     def update_positions(self, positions):
         count = len(positions) if positions else 0

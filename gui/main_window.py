@@ -245,7 +245,7 @@ class MainWindow(QMainWindow):
         self.zmq_message_handler.connection_status_received.connect(
             lambda _: self._update_all_indicators())
         # Sincronizar dashboard quando broker conecta/desconecta via botão
-        self.brokers_page.broker_status_changed.connect(self.dashboard_page.refresh_brokers)
+        self.brokers_page.broker_status_changed.connect(self._on_broker_status_changed)
         if self.copytrade_manager:
             self.copytrade_manager.copy_trade_log.connect(self.logs_page.append_log)
             self.copytrade_manager.copy_trade_executed.connect(self.history_page.refresh)
@@ -267,6 +267,15 @@ class MainWindow(QMainWindow):
             self.broker_status_updated.emit(self.broker_status, self.broker_modes)
             self.dashboard_page.refresh_brokers()
             self.brokers_page.refresh_brokers()
+
+    def _on_broker_status_changed(self):
+        """Clear stale status and refresh when broker connects/disconnects via GUI."""
+        for key in list(self.broker_status.keys()):
+            if not self.broker_manager.is_connected(key):
+                self.broker_status[key] = False
+                self.zmq_message_handler.clear_broker_status(key)
+        self.dashboard_page.refresh_brokers()
+        self.brokers_page.refresh_brokers()
 
     def _update_all_indicators(self):
         """Update indicators on both dashboard and brokers page."""
