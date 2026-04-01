@@ -9,7 +9,7 @@ from PySide6.QtWidgets import (
     QPushButton, QStackedWidget, QFrame, QSizePolicy, QMessageBox
 )
 from PySide6.QtGui import QCloseEvent, QFont, QIcon
-from PySide6.QtCore import Slot, Qt, Signal
+from PySide6.QtCore import Slot, Qt, Signal, QTimer
 
 from core.config_manager import ConfigManager
 from core.broker_manager import BrokerManager
@@ -74,6 +74,11 @@ class MainWindow(QMainWindow):
         self.internet_monitor = InternetMonitor(check_interval=5, parent=self)
         self.internet_monitor.status_updated.connect(self._on_system_status)
         self.internet_monitor.start()
+
+        # Timer para polling periódico dos indicadores de status (detecta MT5 fechando)
+        self.indicators_timer = QTimer(self)
+        self.indicators_timer.timeout.connect(self._update_all_indicators)
+        self.indicators_timer.start(2000)  # 2 segundos
 
         logger.info("MainWindow inicializada.")
 
@@ -299,6 +304,7 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event: QCloseEvent):
         logger.info("Fechando MainWindow...")
+        self.indicators_timer.stop()
         self.internet_monitor.stop()
 
         # Desconectar todas as corretoras e fechar MT5

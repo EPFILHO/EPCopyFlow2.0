@@ -78,7 +78,7 @@ class BrokerCard(QFrame):
         indicators_row = QHBoxLayout()
         indicators_row.setSpacing(12)
         self._indicators = {}
-        for name in ("MT5", "BRK", "ZMQ", "EA", "ALG"):
+        for name in ("MT5", "ZMQ", "EA", "BRK", "ALG"):
             dot = QLabel("\u25CF")  # ● character
             dot.setStyleSheet(f"color: {_COLOR_GRAY}; font-size: 14px;")
             dot.setAlignment(Qt.AlignCenter)
