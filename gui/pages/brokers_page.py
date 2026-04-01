@@ -151,7 +151,7 @@ class BrokersPage(QWidget):
 
     @Slot()
     def update_broker_indicators(self):
-        """Update all 5 status indicators on every broker card."""
+        """Update all 4 status indicators (MT5, EA, BRK, ALG) on every broker card."""
         trade_allowed = {}
         connection_status = {}
         if self.zmq_message_handler:
@@ -163,23 +163,22 @@ class BrokersPage(QWidget):
             mt5_running = process is not None and process.poll() is None
 
             if not mt5_running:
-                card.update_status_indicators(mt5=None, brk=None, zmq=None, ea=None, alg=None)
-                continue
-
-            is_connected = key in self.broker_manager.get_connected_brokers()
-            if not is_connected:
-                card.update_status_indicators(mt5=True, brk=None, zmq=None, ea=None, alg=None)
+                card.update_status_indicators(mt5=None, ea=None, brk=None, alg=None)
                 continue
 
             ea_registered = self._broker_status.get(key, False)
-            alg = trade_allowed.get(key)
+
+            if not ea_registered:
+                card.update_status_indicators(mt5=True, ea=False, brk=None, alg=None)
+                continue
+
             brk = connection_status.get(key)
+            alg = trade_allowed.get(key)
 
             card.update_status_indicators(
                 mt5=True,
+                ea=True,
                 brk=brk,
-                zmq=True,
-                ea=ea_registered if ea_registered else False,
                 alg=alg,
             )
 

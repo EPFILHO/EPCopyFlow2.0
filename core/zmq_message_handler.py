@@ -256,3 +256,8 @@ class ZmqMessageHandler(QObject):
 
     def get_connection_status_states(self):
         return connection_status_states.copy()
+
+    def clear_broker_status(self, broker_key):
+        """Clear all cached status for a broker (on disconnect)."""
+        trade_allowed_states.pop(broker_key, None)
+        connection_status_states.pop(broker_key, None)

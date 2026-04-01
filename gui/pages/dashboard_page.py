@@ -163,7 +163,7 @@ class DashboardPage(QWidget):
 
     @Slot()
     def update_broker_indicators(self):
-        """Update all 5 status indicators on every broker card."""
+        """Update all 4 status indicators (MT5, EA, BRK, ALG) on every broker card."""
         trade_allowed = {}
         connection_status = {}
         if self.zmq_message_handler:
@@ -177,26 +177,25 @@ class DashboardPage(QWidget):
 
             if not mt5_running:
                 # MT5 fechado: tudo cinza
-                card.update_status_indicators(mt5=None, brk=None, zmq=None, ea=None, alg=None)
+                card.update_status_indicators(mt5=None, ea=None, brk=None, alg=None)
                 continue
 
-            # ZMQ conectado?
-            is_connected = key in self.broker_manager.get_connected_brokers()
-            if not is_connected:
-                # MT5 rodando mas ZMQ desconectado: só MT5 verde, resto cinza
-                card.update_status_indicators(mt5=True, brk=None, zmq=None, ea=None, alg=None)
-                continue
-
-            # ZMQ conectado: verificar os demais via buffers
+            # EA registrado? (prova real de que ZMQ está funcionando)
             ea_registered = self._broker_status.get(key, False)
-            alg = trade_allowed.get(key)
+
+            if not ea_registered:
+                # MT5 rodando mas EA não registrou: MT5 verde, EA vermelho, resto cinza
+                card.update_status_indicators(mt5=True, ea=False, brk=None, alg=None)
+                continue
+
+            # EA registrado: verificar BRK e ALG via buffers
             brk = connection_status.get(key)
+            alg = trade_allowed.get(key)
 
             card.update_status_indicators(
                 mt5=True,
+                ea=True,
                 brk=brk,
-                zmq=True,
-                ea=ea_registered if ea_registered else False,
                 alg=alg,
             )
 
