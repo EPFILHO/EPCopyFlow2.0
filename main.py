@@ -225,6 +225,7 @@ async def main_application_flow(config: ConfigManager):
     mt5_monitor = MT5ProcessMonitor(
         broker_manager,
         event_loop=asyncio.get_event_loop(),
+        config_manager=config,
         check_interval=config.getint('General', 'monitor_interval', fallback=10)
     )
     mt5_monitor.start()
@@ -239,8 +240,9 @@ async def main_application_flow(config: ConfigManager):
     main_window.show()
     logger.info("MainWindow exibida.")
 
-    # Wire copytrade_manager into message handler
+    # Wire copytrade_manager and process monitor into message handler
     main_window.zmq_message_handler.set_copytrade_manager(copytrade_manager)
+    main_window.zmq_message_handler.mt5_monitor = mt5_monitor
 
     # Detectar account modes em background (após MT5 instâncias iniciarem)
     asyncio.create_task(copytrade_manager.detect_all_account_modes())
