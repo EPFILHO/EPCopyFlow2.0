@@ -143,6 +143,52 @@ class CopyTradeManager(QObject):
         logger.info(f"✅ {broker_key} validado para CopyTrade (modo NETTING)")
         return True, "OK"
 
+    async def detect_and_cache_account_mode(self, broker_key: str) -> str:
+        """
+        Detecta account mode real via GET_ACCOUNT_MODE do MT5.
+        Salva em cache para uso posterior.
+        Retorna: "Netting", "Hedging", "Exchange" ou "Unknown"
+        """
+        try:
+            request_id = f"get_account_mode_{broker_key}_{int(time.time())}"
+            logger.debug(f"🔍 Detectando account mode de {broker_key}...")
+
+            response = await self.zmq_router.send_command_to_broker(
+                broker_key, "GET_ACCOUNT_MODE", {}, request_id
+            )
+
+            if response.get("status") != "OK":
+                logger.warning(f"  Falha ao detectar mode de {broker_key}: {response.get('message', '?')}")
+                return "Unknown"
+
+            account_mode = response.get("account_mode", "Unknown")
+            logger.info(f"✅ Detectado: {broker_key} = {account_mode} mode")
+
+            # Cachear no DB (atualizar broker_manager)
+            self.broker_manager.cache_detected_mode(broker_key, account_mode)
+
+            return account_mode
+
+        except Exception as e:
+            logger.error(f"Erro ao detectar account mode de {broker_key}: {e}")
+            return "Unknown"
+
+    async def detect_all_account_modes(self):
+        """
+        Detecta account modes para TODOS os brokers conectados.
+        Chamado durante inicialização para cachear modos em brokers.json.
+        """
+        connected_brokers = self.broker_manager.get_connected_brokers()
+
+        if not connected_brokers:
+            logger.info("Nenhum broker conectado para detectar account modes.")
+            return
+
+        logger.info(f"🔍 Detectando account modes para {len(connected_brokers)} broker(s)...")
+
+        for broker_key in connected_brokers:
+            await self.detect_and_cache_account_mode(broker_key)
+
     # ──────────────────────────────────────────────
     # Bloco 1.5 - Gerenciamento de Status de Slaves
     # ──────────────────────────────────────────────

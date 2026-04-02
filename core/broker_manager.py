@@ -216,6 +216,16 @@ class BrokerManager(QObject):
         """Retorna o modo da conta (Netting ou Hedge)."""
         return self.brokers.get(key, {}).get("mode", "Netting")
 
+    def cache_detected_mode(self, key, mode):
+        """Armazena o modo detectado da conta em brokers.json."""
+        if key not in self.brokers:
+            logger.warning(f"Corretora {key} não encontrada ao cachear modo detectado.")
+            return
+
+        self.brokers[key]["mode"] = mode
+        self.save_brokers()
+        logger.info(f"Modo detectado para {key}: {mode}")
+
     # ──────────────────────────────────────────────
     # Bloco 4 - Instâncias MT5 Portáteis
     # ──────────────────────────────────────────────

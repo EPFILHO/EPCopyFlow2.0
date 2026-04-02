@@ -242,6 +242,9 @@ async def main_application_flow(config: ConfigManager):
     # Wire copytrade_manager into message handler
     main_window.zmq_message_handler.set_copytrade_manager(copytrade_manager)
 
+    # Detectar account modes em background (após MT5 instâncias iniciarem)
+    asyncio.create_task(copytrade_manager.detect_all_account_modes())
+
     zmq_task = asyncio.create_task(zmq_router_instance.run(main_window.zmq_message_handler))
 
     logger.info("Setup concluído. Aguardando shutdown_event...")
