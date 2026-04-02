@@ -246,10 +246,20 @@ class CopyTradeManager(QObject):
         self.copy_trade_log.emit(log_msg)
         logger.info(log_msg)
 
+        # Rastrear posição no DB (abertura ou fechamento)
+        await self._track_master_position(
+            master_ticket, symbol, volume, trade_action, price, sl, tp
+        )
+
         # Replica para cada slave conectado
         slaves = self.broker_manager.get_connected_slave_brokers()
         logger.info(f"  Slaves conectados: {slaves}")
         for slave_key in slaves:
+            # Pular se slave está pausado
+            if self.is_slave_paused(slave_key):
+                logger.warning(f"  Pulando {slave_key} (pausado)")
+                continue
+
             await self._replicate_to_slave(
                 slave_key, master_broker, master_ticket,
                 trade_action, symbol, volume, price, sl, tp,
@@ -271,6 +281,41 @@ class CopyTradeManager(QObject):
             elif order_type == 1:
                 return "SELL"
         return None  # Outras ações não são replicadas por enquanto
+
+    async def _track_master_position(self, master_ticket: int, symbol: str,
+                                     volume: float, trade_action: str,
+                                     price: float, sl: float, tp: float):
+        """
+        Rastreia posição no BD (abertura ou fechamento).
+        """
+        import hashlib
+
+        if trade_action in ("BUY", "SELL"):
+            # Gerar request_id único para idempotência
+            request_id = hashlib.sha256(
+                f"{master_ticket}_{symbol}_{int(time.time() * 1000)}".encode()
+            ).hexdigest()[:32]
+
+            now = time.time()
+            self.db.execute(
+                """INSERT OR IGNORE INTO open_positions
+                   (master_ticket, slave_broker, symbol,
+                    master_volume_original, master_volume_current, slave_volume_current,
+                    status, request_id, opened_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                ("TEMP", symbol, volume, volume, 0, "SYNCING", request_id, now)
+            )
+            self.db.commit()
+            logger.debug(f"  📝 Posição rastreada: ticket={master_ticket}, request_id={request_id}")
+
+        elif trade_action == "CLOSE":
+            # Marcar posição como CLOSING
+            self.db.execute(
+                "UPDATE open_positions SET status = ? WHERE master_ticket = ? AND status != 'CLOSED'",
+                ("CLOSING", master_ticket)
+            )
+            self.db.commit()
+            logger.debug(f"  📝 Posição marcada CLOSING: ticket={master_ticket}")
 
     async def _replicate_to_slave(self, slave_key: str, master_broker: str,
                                    master_ticket: int, trade_action: str,
@@ -346,6 +391,17 @@ class CopyTradeManager(QObject):
                 if master_ticket not in self.position_map:
                     self.position_map[master_ticket] = {}
                 self.position_map[master_ticket][slave_key] = slave_result_ticket
+
+                # Atualizar open_positions com slave_ticket
+                now = time.time()
+                self.db.execute(
+                    """UPDATE open_positions SET slave_ticket = ?, status = ?, synced_at = ?
+                       WHERE master_ticket = ? AND slave_broker = ? AND status = 'SYNCING'""",
+                    (slave_result_ticket, "OPEN", now, master_ticket, slave_key)
+                )
+                self.db.commit()
+                logger.debug(f"  ✅ Posição sincronizada: master={master_ticket}, slave={slave_result_ticket}")
+
             self.copy_trade_executed.emit({
                 "slave": slave_key, "symbol": symbol,
                 "action": trade_action, "lot": slave_lot
