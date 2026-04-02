@@ -31,6 +31,11 @@ class CopyTradeManager(QObject):
         self.db = sqlite3.connect(DB_FILE)
         self._init_db()
         self._validate_account_modes()
+
+        # Heartbeat control
+        self.heartbeat_task = None
+        self.heartbeat_running = False
+
         logger.info("CopyTradeManager inicializado.")
 
     def _init_db(self):
@@ -355,7 +360,86 @@ class CopyTradeManager(QObject):
             logger.error(f"Falha ao replicar para {slave_key}: {error}")
 
     # ──────────────────────────────────────────────
-    # Bloco 4 - Fechamento de Emergência
+    # Bloco 4 - Heartbeat de Sincronização
+    # ──────────────────────────────────────────────
+    def start_heartbeat(self):
+        """Inicia o heartbeat em background."""
+        if self.heartbeat_running:
+            logger.debug("Heartbeat já está rodando")
+            return
+
+        self.heartbeat_running = True
+        self.heartbeat_task = asyncio.create_task(self._heartbeat_loop())
+        logger.info("✅ Heartbeat de sincronização iniciado")
+
+    def stop_heartbeat(self):
+        """Para o heartbeat."""
+        if self.heartbeat_task and not self.heartbeat_task.done():
+            self.heartbeat_task.cancel()
+        self.heartbeat_running = False
+        logger.info("⏹️ Heartbeat de sincronização parado")
+
+    async def _heartbeat_loop(self):
+        """
+        Loop principal do heartbeat: a cada HEARTBEAT_INTERVAL segundos,
+        valida sincronização de posições e detecta operações alienígenas.
+        """
+        import configparser
+
+        # Ler intervalo do config
+        config = configparser.ConfigParser()
+        config.read("config.ini")
+        heartbeat_interval = int(config.get("CopyTrade", "heartbeat_interval", fallback="5"))
+
+        logger.info(f"🔄 Heartbeat loop iniciado (intervalo: {heartbeat_interval}s)")
+
+        while self.heartbeat_running:
+            try:
+                await asyncio.sleep(heartbeat_interval)
+
+                if not self.heartbeat_running:
+                    break
+
+                logger.debug("🔄 Heartbeat: iniciando validação")
+                await self._reconcile_positions()
+
+            except asyncio.CancelledError:
+                logger.info("Heartbeat cancelado")
+                break
+            except Exception as e:
+                logger.error(f"❌ Erro no heartbeat: {e}", exc_info=True)
+
+    async def _reconcile_positions(self):
+        """
+        Valida sincronização:
+        - Compara posições do Master com Slave
+        - Detecta operações alienígenas
+        - Atualiza heartbeat no DB
+        """
+        logger.debug("  Reconciliando posições...")
+
+        try:
+            # Lógica de reconciliação será implementada na próxima parte
+            # Por enquanto, apenas log
+            open_pos_count = self.db.execute(
+                "SELECT COUNT(*) FROM open_positions WHERE status != 'CLOSED'"
+            ).fetchone()[0]
+
+            logger.debug(f"  Posições abertas: {open_pos_count}")
+
+            # Atualizar heartbeat timestamp
+            now = time.time()
+            self.db.execute(
+                "UPDATE slave_status SET last_heartbeat = ? WHERE status = 'ACTIVE'",
+                (now,)
+            )
+            self.db.commit()
+
+        except Exception as e:
+            logger.error(f"Erro ao reconciliar: {e}")
+
+    # ──────────────────────────────────────────────
+    # Bloco 5 - Fechamento de Emergência
     # ──────────────────────────────────────────────
     async def emergency_close_all(self):
         """Fecha TODAS as posições em TODOS os MT5s (master + slaves)."""

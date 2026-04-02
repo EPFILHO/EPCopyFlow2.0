@@ -218,6 +218,7 @@ async def main_application_flow(config: ConfigManager):
     zmq_router_instance.broker_manager = broker_manager
 
     copytrade_manager = CopyTradeManager(broker_manager, zmq_router_instance)
+    copytrade_manager.start_heartbeat()
 
     mt5_monitor = MT5ProcessMonitor(
         broker_manager,
