@@ -45,8 +45,8 @@ bool g_last_terminal_connected = false;
 bool g_initial_connection_status_sent = false;
 
 //--- Heartbeat periódico (enviado pelo EA para o Python)
-long g_heartbeat_interval_ms = 5000;  // Padrão: 5 segundos (será configurado pelo Python)
-long g_last_heartbeat_time = 0;       // Timestamp do último heartbeat enviado
+ulong g_heartbeat_interval_ms = 5000;  // Padrão: 5 segundos (será configurado pelo Python)
+ulong g_last_heartbeat_time = 0;       // Timestamp do último heartbeat enviado
 
 //+------------------------------------------------------------------+
 //| Função auxiliar para trim de string                              |
@@ -326,7 +326,7 @@ void HandleSetHeartbeatIntervalCommand(const string request_id, JSONNode &payloa
       return;
    }
 
-   long interval = (long)interval_node.ToInt();
+   long interval = StringToInteger(interval_node.ToString());
    if(interval < 1000 || interval > 600000)  // 1s a 10 minutos
    {
       response["status"] = "ERROR";
@@ -335,7 +335,7 @@ void HandleSetHeartbeatIntervalCommand(const string request_id, JSONNode &payloa
       return;
    }
 
-   g_heartbeat_interval_ms = interval;
+   g_heartbeat_interval_ms = (ulong)interval;
    g_last_heartbeat_time = GetTickCount64();  // Reset timing
 
    response["status"] = "OK";
@@ -907,7 +907,7 @@ void OnTimer()
    }
 
    // Envio periódico de heartbeat com posições
-   long current_time = GetTickCount64();
+   ulong current_time = GetTickCount64();
    if(current_time - g_last_heartbeat_time >= g_heartbeat_interval_ms)
    {
       SendHeartbeat();
