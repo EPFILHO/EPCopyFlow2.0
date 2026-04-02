@@ -114,14 +114,39 @@ class ZmqMessageHandler(QObject):
             logger.info(f"CONNECTION_STATUS de {identified_broker_key}: {connected}")
 
         elif msg_type == "STREAM" and event == "TRADE_EVENT":
+            # Reconstruir request e result a partir dos dados flattenados do MQL
+            # (Contorna bug do Copy() em Json.mqh que sobrescreve m_key)
+            request = {
+                "action": message.get("request_action", 0),
+                "order": message.get("request_order", 0),
+                "symbol": message.get("request_symbol", ""),
+                "volume": message.get("request_volume", 0),
+                "price": message.get("request_price", 0),
+                "sl": message.get("request_sl", 0),
+                "tp": message.get("request_tp", 0),
+                "deviation": message.get("request_deviation", 0),
+                "type": message.get("request_type", 0),
+                "type_filling": message.get("request_type_filling", 0),
+                "comment": message.get("request_comment", ""),
+                "position": message.get("request_position", 0),
+            }
+            result = {
+                "retcode": message.get("result_retcode", 0),
+                "deal": message.get("result_deal", 0),
+                "order": message.get("result_order", 0),
+                "volume": message.get("result_volume", 0),
+                "price": message.get("result_price", 0),
+                "comment": message.get("result_comment", ""),
+            }
+
             trade_event_data = {
                 "broker_key": identified_broker_key,
                 "timestamp_mql": message.get("timestamp_mql", 0),
-                "request": message.get("request", {}),
-                "result": message.get("result", {}),
+                "request": request,
+                "result": result,
             }
             self.trade_event_received.emit(trade_event_data)
-            logger.info(f"TRADE_EVENT de {identified_broker_key}")
+            logger.info(f"TRADE_EVENT de {identified_broker_key} - symbol={request.get('symbol', 'N/A')}")
 
             # Copytrade: se é do Master, replica para Slaves
             if self.copytrade_manager and self.broker_manager:
