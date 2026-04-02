@@ -280,6 +280,32 @@ void HandleGetAccountMarginCommand(const string request_id)
    SendJsonMessage(response, command_socket, "Command");
 }
 
+void HandleGetAccountModeCommand(const string request_id)
+{
+   JSONNode response;
+   response["type"] = "RESPONSE";
+   response["request_id"] = request_id;
+   response["status"] = "OK";
+
+   // Verificar modo da conta
+   int margin_mode = (int)AccountInfoInteger(ACCOUNT_MARGIN_MODE);
+   string mode_str;
+
+   if(margin_mode == ACCOUNT_MARGIN_MODE_RETAIL_NETTING)
+      mode_str = "Netting";
+   else if(margin_mode == ACCOUNT_MARGIN_MODE_RETAIL_HEDGING)
+      mode_str = "Hedging";
+   else if(margin_mode == ACCOUNT_MARGIN_MODE_EXCHANGE)
+      mode_str = "Exchange";
+   else
+      mode_str = "Unknown";
+
+   response["account_mode"] = mode_str;
+   response["margin_mode_code"] = (long)margin_mode;
+
+   SendJsonMessage(response, command_socket, "Command");
+}
+
 void HandleGetPositionsCommand(const string request_id)
 {
    JSONNode response;
@@ -872,6 +898,10 @@ void ProcessCommand(JSONNode &json_command)
    else if(command == "GET_ACCOUNT_MARGIN")
    {
       HandleGetAccountMarginCommand(request_id);
+   }
+   else if(command == "GET_ACCOUNT_MODE")
+   {
+      HandleGetAccountModeCommand(request_id);
    }
    else if(command == "POSITIONS" || command == "GET_POSITIONS")
    {
