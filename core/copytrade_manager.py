@@ -412,20 +412,12 @@ class CopyTradeManager(QObject):
     async def _reconcile_positions(self):
         """
         Valida sincronização:
-        - Compara posições do Master com Slave
         - Detecta operações alienígenas
         - Atualiza heartbeat no DB
         """
-        logger.debug("  Reconciliando posições...")
-
         try:
-            # Lógica de reconciliação será implementada na próxima parte
-            # Por enquanto, apenas log
-            open_pos_count = self.db.execute(
-                "SELECT COUNT(*) FROM open_positions WHERE status != 'CLOSED'"
-            ).fetchone()[0]
-
-            logger.debug(f"  Posições abertas: {open_pos_count}")
+            # Detectar operações alienígenas
+            await self._detect_alien_operations()
 
             # Atualizar heartbeat timestamp
             now = time.time()
@@ -437,6 +429,66 @@ class CopyTradeManager(QObject):
 
         except Exception as e:
             logger.error(f"Erro ao reconciliar: {e}")
+
+    async def _detect_alien_operations(self):
+        """
+        Detecta operações manuais no Slave que não estão mapeadas.
+        Se encontrar, pausa copytrader para aquele slave.
+        """
+        master_brokers = [k for k, v in self.broker_manager.get_brokers().items()
+                         if self.broker_manager.get_broker_role(k) == "master"]
+        slave_brokers = [k for k, v in self.broker_manager.get_brokers().items()
+                        if self.broker_manager.get_broker_role(k) == "slave"]
+
+        if not master_brokers or not slave_brokers:
+            return
+
+        master_key = master_brokers[0]
+
+        for slave_key in slave_brokers:
+            # Pular se já pausado
+            if self.is_slave_paused(slave_key):
+                continue
+
+            try:
+                # Pedir posições do Slave
+                slave_positions = await self._get_slave_positions(slave_key)
+
+                if not slave_positions:
+                    continue
+
+                # Ler mapeamento do DB
+                db_rows = self.db.execute(
+                    "SELECT slave_ticket FROM open_positions WHERE slave_broker = ? AND status != 'CLOSED'",
+                    (slave_key,)
+                ).fetchall()
+
+                mapped_tickets = {row[0] for row in db_rows}
+
+                # Verificar se há tickets no Slave não mapeados
+                for ticket, position in slave_positions.items():
+                    if ticket not in mapped_tickets:
+                        logger.warning(f"🚨 OPERAÇÃO ALIENÍGENA detectada em {slave_key}!")
+                        logger.warning(f"   Ticket: {ticket}, Símbolo: {position.get('symbol')}, Volume: {position.get('volume')}")
+
+                        # Pausar copytrader
+                        self.pause_slave(slave_key, "ALIEN_OPERATION", ticket)
+                        self.copy_trade_log.emit(
+                            f"⚠️ CopyTrade PAUSADO em {slave_key}: operação manual detectada"
+                        )
+                        break
+
+            except Exception as e:
+                logger.error(f"Erro ao detectar alienígenas em {slave_key}: {e}")
+
+    async def _get_slave_positions(self, slave_key: str) -> dict:
+        """
+        Retorna dict de posições abertas do Slave: {ticket: {symbol, volume, ...}}
+        Placeholder: implementação real requer comunicação com EA.
+        """
+        # TODO: Implementar comunicação com Slave EA para pedir posições abertas
+        # Por enquanto, retorna vazio
+        return {}
 
     # ──────────────────────────────────────────────
     # Bloco 5 - Fechamento de Emergência
