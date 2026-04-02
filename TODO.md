@@ -16,6 +16,25 @@
   - Solução: process monitor deve chamar `clear_broker_status()` do zmq_message_handler ao detectar morte
   - Ou fazer isso via signal (refatoração futura no TODO)
 
+## Bugs Descobertos em Teste Funcional
+- [ ] **SQL BINDING ERROR** — INSERT em open_positions com número errado de placeholders
+  - `sqlite3.ProgrammingError: uses 9, 8 supplied`
+  - Arquivo: `core/copytrade_manager.py` linha ~355 em `_track_master_position()`
+  - Falta valor ou placeholder duplicado no INSERT
+
+- [ ] **FECHAMENTO PARCIAL FECHA TUDO** — Fechar 1.0 de 2.0 no Master fecha TODAS posições no Slave
+  - Master: 2.0 lotes abertos → fecha parcial 1.0 (1.0 restante)
+  - Python envia: `TRADE_POSITION_CLOSE` com symbol=USDJPY (sem ticket)
+  - Slave: fecha TODAS posições USDJPY (inclusive a alienígena 0.01)
+  - Causa: falta de mapeamento Master_ticket → Slave_ticket na BD
+  - Solução: guardar mapping no open_positions, enviar comando com ticket específico
+
+- [ ] **ALIEN OPERATIONS NÃO DETECTADAS** — Ordem aberta no Slave não foi pausada
+  - Você abriu USDJPY 0.01 no FBS (Slave) às 14:27:06
+  - Python deveria ter detectado (não tem ticket no open_positions) e pausado
+  - Causa: heartbeat é enviado pelo EA mas Python não processa para detecção
+  - Falta: implementação de `_detect_alien_operations()` que comparar posições Slave vs BD
+
 ## CopyTrade - Implementação em Andamento
 - [x] Fix JSON serialization bug (flattening nested JSONNode objects)
 - [x] Fix cálculo de lotes para Forex (fracionários em vez de inteiros)
@@ -28,7 +47,10 @@
 - [x] GET_ACCOUNT_MODE no EA (auto-detecção de modo da conta)
 - [x] cache_detected_mode() + detect_all_account_modes() no Python
 - [x] Heartbeat push do EA (não polling do Python) com intervalo configurável
-- [ ] Detecção de operações alienígenas - comparar heartbeat Slave vs BD de mapeamento
+- [ ] **FIX IMEDIATO:** SQL binding error em _track_master_position() (linha 355)
+- [ ] **FIX IMEDIATO:** Guardar Master_ticket → Slave_ticket mapping em open_positions
+- [ ] **FIX IMEDIATO:** Usar ticket específico ao fechar posição (não symbol)
+- [ ] Implementar _detect_alien_operations() - comparar heartbeat Slave vs open_positions
 - [ ] Pausar CopyTrade automaticamente quando alien detectado (com mensagem clara)
 - [ ] Atualizar open_positions quando posição fecha - marcar status CLOSED quando Slave confirma
 - [ ] Retry com validação preço/tempo - max_price_deviation e max_retry_age (skeleton em config.ini)
