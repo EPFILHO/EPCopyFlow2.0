@@ -55,19 +55,19 @@ class CopyTradeManager(QObject):
     # ──────────────────────────────────────────────
     # Bloco 2 - Cálculo de Lotes
     # ──────────────────────────────────────────────
-    def calculate_slave_lot(self, master_lot: float, multiplier: float) -> int:
-        """B3: arredonda para baixo, mínimo 1."""
-        lot = int(master_lot * multiplier)
-        return max(lot, 1)
+    def calculate_slave_lot(self, master_lot: float, multiplier: float) -> float:
+        """Calcula lote do slave. Arredonda para 2 casas decimais, mínimo 0.01."""
+        lot = round(master_lot * multiplier, 2)
+        return max(lot, 0.01)
 
     def calculate_partial_close_lot(self, master_original: float, master_partial: float,
-                                     slave_current: float) -> int:
+                                     slave_current: float) -> float:
         """Fechamento parcial proporcional."""
         if master_original <= 0:
-            return max(int(slave_current), 1)
+            return max(round(slave_current, 2), 0.01)
         ratio = master_partial / master_original
-        lot = int(slave_current * ratio)
-        return max(lot, 1)
+        lot = round(slave_current * ratio, 2)
+        return max(lot, 0.01)
 
     # ──────────────────────────────────────────────
     # Bloco 3 - Processamento de Trade Events do Master
