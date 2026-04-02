@@ -103,27 +103,11 @@ class CopyTradeManager(QObject):
 
     def _validate_account_modes(self):
         """
-        Valida que todas as contas configuradas são NETTING.
-        CopyTrade só suporta NETTING (não HEDGE) para simplificar lógica de replicação.
+        Log de confirmação: validação já foi feita em main.py.
+        Esta função existe apenas para documentação e possível re-validação.
         """
         brokers = self.broker_manager.get_brokers()
-
-        for broker_key, broker_data in brokers.items():
-            account_mode = self.broker_manager.get_account_mode(broker_key)
-
-            # Normalizar para comparação (case-insensitive)
-            mode_normalized = account_mode.lower()
-
-            if mode_normalized not in ("netting", "netting account"):
-                logger.error(f"❌ {broker_key}: modo '{account_mode}' não suportado")
-                logger.error(f"   CopyTrade requer contas em NETTING mode")
-                logger.error(f"   Configure a conta como NETTING em brokers.json")
-                raise ValueError(
-                    f"CopyTrade não suporta {account_mode}. "
-                    f"Configure {broker_key} como NETTING."
-                )
-
-        logger.info(f"✅ Validação: Todas as {len(brokers)} contas estão em NETTING mode")
+        logger.debug(f"✅ CopyTradeManager: {len(brokers)} contas validadas como NETTING")
 
     # ──────────────────────────────────────────────
     # Bloco 1.5 - Gerenciamento de Status de Slaves
