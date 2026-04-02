@@ -44,6 +44,10 @@ bool g_initial_trade_allowed_sent = false;
 bool g_last_terminal_connected = false;
 bool g_initial_connection_status_sent = false;
 
+//--- Heartbeat periódico (enviado pelo EA para o Python)
+ulong g_heartbeat_interval_ms = 5000;  // Padrão: 5 segundos (será configurado pelo Python)
+ulong g_last_heartbeat_time = 0;       // Timestamp do último heartbeat enviado
+
 //+------------------------------------------------------------------+
 //| Função auxiliar para trim de string                              |
 //+------------------------------------------------------------------+
@@ -306,6 +310,41 @@ void HandleGetAccountModeCommand(const string request_id)
    SendJsonMessage(response, command_socket, "Command");
 }
 
+void HandleSetHeartbeatIntervalCommand(const string request_id, JSONNode &payload)
+{
+   JSONNode response;
+   response["type"] = "RESPONSE";
+   response["request_id"] = request_id;
+
+   // Extrair intervalo do payload
+   JSONNode *interval_node = payload["heartbeat_interval_ms"];
+   if(CheckPointer(interval_node) == POINTER_INVALID)
+   {
+      response["status"] = "ERROR";
+      response["error_message"] = "heartbeat_interval_ms não fornecido";
+      SendJsonMessage(response, command_socket, "Command");
+      return;
+   }
+
+   long interval = StringToInteger(interval_node.ToString());
+   if(interval < 1000 || interval > 600000)  // 1s a 10 minutos
+   {
+      response["status"] = "ERROR";
+      response["error_message"] = StringFormat("Intervalo inválido: %d (deve ser 1000-600000 ms)", interval);
+      SendJsonMessage(response, command_socket, "Command");
+      return;
+   }
+
+   g_heartbeat_interval_ms = (ulong)interval;
+   g_last_heartbeat_time = GetTickCount64();  // Reset timing
+
+   response["status"] = "OK";
+   response["heartbeat_interval_ms"] = interval;
+   SendJsonMessage(response, command_socket, "Command");
+
+   PrintFormat("Intervalo de heartbeat configurado: %d ms", interval);
+}
+
 void HandleGetPositionsCommand(const string request_id)
 {
    JSONNode response;
@@ -363,6 +402,37 @@ void HandleGetOrdersCommand(const string request_id)
    }
    response["orders"] = orders_array;
    SendJsonMessage(response, command_socket, "Command");
+}
+
+void SendHeartbeat()
+{
+   // Envia heartbeat periódico com as posições atuais
+   JSONNode heartbeat;
+   heartbeat["type"] = "STREAM";
+   heartbeat["event"] = "HEARTBEAT";
+   heartbeat["timestamp_mql"] = (long)TimeCurrent();
+   heartbeat["role"] = g_role;
+
+   // Flattenizar posições (mesmo formato que GET_POSITIONS)
+   int total = PositionsTotal();
+   heartbeat["positions_count"] = (long)total;
+
+   for(int i = 0; i < total; i++)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(PositionSelectByTicket(ticket))
+      {
+         string prefix = StringFormat("pos_%d_", i);
+         heartbeat[prefix + "ticket"] = (long)ticket;
+         heartbeat[prefix + "symbol"] = PositionGetString(POSITION_SYMBOL);
+         heartbeat[prefix + "type"] = PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY ? "BUY" : "SELL";
+         heartbeat[prefix + "volume"] = PositionGetDouble(POSITION_VOLUME);
+         heartbeat[prefix + "price_open"] = PositionGetDouble(POSITION_PRICE_OPEN);
+         heartbeat[prefix + "profit"] = PositionGetDouble(POSITION_PROFIT);
+      }
+   }
+
+   SendJsonMessage(heartbeat, event_socket, "Event");
 }
 
 void HandleGetHistoryTradesCommand(const string request_id, JSONNode &payload)
@@ -835,6 +905,14 @@ void OnTimer()
       if(InpDebugLog)
          PrintFormat("CONNECTION_STATUS: %s", current_connected ? "connected" : "disconnected");
    }
+
+   // Envio periódico de heartbeat com posições
+   ulong current_time = GetTickCount64();
+   if(current_time - g_last_heartbeat_time >= g_heartbeat_interval_ms)
+   {
+      SendHeartbeat();
+      g_last_heartbeat_time = current_time;
+   }
 }
 
 //+------------------------------------------------------------------+
@@ -902,6 +980,10 @@ void ProcessCommand(JSONNode &json_command)
    else if(command == "GET_ACCOUNT_MODE")
    {
       HandleGetAccountModeCommand(request_id);
+   }
+   else if(command == "SET_HEARTBEAT_INTERVAL")
+   {
+      HandleSetHeartbeatIntervalCommand(request_id, payload);
    }
    else if(command == "POSITIONS" || command == "GET_POSITIONS")
    {

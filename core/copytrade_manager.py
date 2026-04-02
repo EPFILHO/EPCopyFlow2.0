@@ -103,20 +103,11 @@ class CopyTradeManager(QObject):
 
     def _validate_account_modes(self):
         """
-        Validar contas NETTING é crítico, mas não devemos derrubar a app.
-        Apenas log de warning para contas em modo incorreto.
-        Validação real acontece quando tenta usar CopyTrade.
+        Validação silenciosa na inicialização.
+        Account mode será detectado do MT5 e validado quando tenta usar CopyTrade.
         """
-        brokers = self.broker_manager.get_brokers()
-
-        for broker_key, broker_data in brokers.items():
-            account_mode = self.broker_manager.get_account_mode(broker_key)
-            mode_normalized = account_mode.lower()
-
-            if mode_normalized not in ("netting", "netting account"):
-                logger.warning(f"⚠️ {broker_key}: modo '{account_mode}' (esperado NETTING)")
-                logger.warning(f"   CopyTrade não funcionará para esta conta")
-                logger.warning(f"   Aviso será mostrado quando tentar usar CopyTrade")
+        # Apenas inicializa sem warnings - a detecção real vem do EA
+        pass
 
     def validate_broker_for_copytrade(self, broker_key: str) -> tuple[bool, str]:
         """
@@ -483,14 +474,34 @@ class CopyTradeManager(QObject):
     # Bloco 4 - Heartbeat de Sincronização
     # ──────────────────────────────────────────────
     def start_heartbeat(self):
-        """Inicia o heartbeat em background."""
-        if self.heartbeat_running:
-            logger.debug("Heartbeat já está rodando")
-            return
+        """
+        DEPRECATED: Heartbeat agora é gerenciado pelo EA (Master).
+        O EA envia heartbeat periódico via ZMQ, não há polling do Python.
+        """
+        logger.debug("start_heartbeat() obsoleto - heartbeat vem do EA")
 
-        self.heartbeat_running = True
-        self.heartbeat_task = asyncio.create_task(self._heartbeat_loop())
-        logger.info("✅ Heartbeat de sincronização iniciado")
+    async def process_heartbeat_from_ea(self, broker_key: str, heartbeat_data: dict):
+        """
+        Processa heartbeat recebido do EA (Master).
+        O EA envia periodicamente: posições abertas, timestamp, etc.
+        """
+        try:
+            logger.debug(f"💓 Heartbeat de {broker_key}: {len(heartbeat_data.get('positions', []))} posições")
+
+            # Aqui o Python pode:
+            # 1. Validar sincronização com slaves
+            # 2. Detectar operações alienígenas
+            # 3. Atualizar timestamp do heartbeat no DB
+
+            # Por enquanto, apenas loga. Será implementado quando o EA enviar.
+            await self._detect_alien_operations()
+
+        except Exception as e:
+            logger.error(f"Erro ao processar heartbeat de {broker_key}: {e}", exc_info=True)
+
+    # ────────────────────────────────────────────────
+    # Métodos de Heartbeat (DEPRECATED - mantidos para referência)
+    # ────────────────────────────────────────────────
 
     def stop_heartbeat(self):
         """Para o heartbeat."""

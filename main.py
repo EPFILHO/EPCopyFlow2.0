@@ -219,8 +219,8 @@ async def main_application_flow(config: ConfigManager):
 
     # CopyTradeManager é criado normalmente
     # Validação de NETTING é feita quando tenta usar CopyTrade
+    # Heartbeat é gerenciado pelo EA (Master), não pelo Python
     copytrade_manager = CopyTradeManager(broker_manager, zmq_router_instance)
-    copytrade_manager.start_heartbeat()
 
     mt5_monitor = MT5ProcessMonitor(
         broker_manager,

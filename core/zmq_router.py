@@ -104,6 +104,40 @@ class ZmqRouter:
         finally:
             self._response_events.pop(request_id, None)
 
+    async def configure_heartbeat_interval(self, broker_key: str):
+        """
+        Configura o intervalo de heartbeat no EA.
+        Lê do config.ini e envia SET_HEARTBEAT_INTERVAL.
+        """
+        try:
+            import configparser
+            config = configparser.ConfigParser()
+            config.read("config.ini")
+
+            # Intervalo em segundos → converter para ms
+            interval_seconds = int(config.get("CopyTrade", "heartbeat_interval", fallback="5"))
+            interval_ms = interval_seconds * 1000
+
+            # Validar intervalo
+            if interval_ms < 1000 or interval_ms > 600000:
+                interval_ms = 5000  # Default
+                logger.warning(f"Intervalo inválido, usando default: {interval_ms}ms")
+
+            response = await self.send_command_to_broker(
+                broker_key,
+                "SET_HEARTBEAT_INTERVAL",
+                {"heartbeat_interval_ms": interval_ms},
+                f"set_heartbeat_{broker_key}_{int(time.time())}"
+            )
+
+            if response.get("status") == "OK":
+                logger.info(f"✅ Heartbeat configurado em {broker_key}: {interval_ms}ms")
+            else:
+                logger.warning(f"⚠️ Falha ao configurar heartbeat em {broker_key}: {response.get('error_message', '?')}")
+
+        except Exception as e:
+            logger.error(f"Erro ao configurar heartbeat em {broker_key}: {e}", exc_info=True)
+
     # ──────────────────────────────────────────────
     # Bloco 5 - Processamento de Mensagens
     # ──────────────────────────────────────────────
