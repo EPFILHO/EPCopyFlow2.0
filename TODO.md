@@ -1,5 +1,21 @@
 # EPCopyFlow 2.0 - TODO
 
+## Prioridade CRÍTICA (Bugs encontrados em teste)
+- [ ] **CRASH LOOP** — Process monitor reinicia MT5 infinitamente se ele fechar logo após iniciar
+  - MT5 inicia, morre em <5s, reinicia, morre de novo — loop infinito por 2+ minutos
+  - Solução: adicionar max retry count (ex: 3 tentativas), backoff exponencial (1s, 2s, 4s)
+  - Após N falhas, parar de reiniciar e notificar usuário em popup/log
+  - Arquivo: `core/mt5_process_monitor.py` — método `restart_mt5_instance()`
+  
+- [ ] **MT5 CARDS CINZA** — Indicadores ficam cinza com MT5 aberto porque processo morre rapidamente
+  - Causado pelo crash loop acima — processo sobe/desce a cada 5s, QTimer vê processo morto
+  - Será resolvido automaticamente quando crash loop for corrigido
+
+- [ ] **BROKER_STATUS STALE** — Quando process monitor reinicia MT5, `broker_status[key]` pode ficar True
+  - O EA não envia UNREGISTER em tempo antes do restart
+  - Solução: process monitor deve chamar `clear_broker_status()` do zmq_message_handler ao detectar morte
+  - Ou fazer isso via signal (refatoração futura no TODO)
+
 ## CopyTrade - Implementação em Andamento
 - [x] Fix JSON serialization bug (flattening nested JSONNode objects)
 - [x] Fix cálculo de lotes para Forex (fracionários em vez de inteiros)
