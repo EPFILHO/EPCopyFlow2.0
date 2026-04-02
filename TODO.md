@@ -17,10 +17,10 @@
   - Ou fazer isso via signal (refatoração futura no TODO)
 
 ## Bugs Descobertos em Teste Funcional
-- [ ] **SQL BINDING ERROR** — INSERT em open_positions com número errado de placeholders
-  - `sqlite3.ProgrammingError: uses 9, 8 supplied`
-  - Arquivo: `core/copytrade_manager.py` linha ~355 em `_track_master_position()`
-  - Falta valor ou placeholder duplicado no INSERT
+- [x] **SQL BINDING ERROR** — INSERT em open_positions com número errado de placeholders ✅ FIXADO
+  - Faltava master_ticket no tuple de valores
+  - Arquivo: `core/copytrade_manager.py` linha 361 em `_track_master_position()`
+  - Commit: `0b467ca`
 
 - [ ] **FECHAMENTO PARCIAL FECHA TUDO** — Fechar 1.0 de 2.0 no Master fecha TODAS posições no Slave
   - Master: 2.0 lotes abertos → fecha parcial 1.0 (1.0 restante)
@@ -30,8 +30,7 @@
   - Solução: guardar mapping no open_positions, enviar comando com ticket específico
 
 - [ ] **ALIEN OPERATIONS NÃO DETECTADAS** — Ordem aberta no Slave não foi pausada
-  - Você abriu USDJPY 0.01 no FBS (Slave) às 14:27:06
-  - Python deveria ter detectado (não tem ticket no open_positions) e pausado
+  - Python deveria detectar (não tem ticket no open_positions) e pausar
   - Causa: heartbeat é enviado pelo EA mas Python não processa para detecção
   - Falta: implementação de `_detect_alien_operations()` que comparar posições Slave vs BD
 
@@ -47,7 +46,7 @@
 - [x] GET_ACCOUNT_MODE no EA (auto-detecção de modo da conta)
 - [x] cache_detected_mode() + detect_all_account_modes() no Python
 - [x] Heartbeat push do EA (não polling do Python) com intervalo configurável
-- [ ] **FIX IMEDIATO:** SQL binding error em _track_master_position() (linha 355)
+- [x] **FIX IMEDIATO:** SQL binding error em _track_master_position() ✅ FIXADO
 - [ ] **FIX IMEDIATO:** Guardar Master_ticket → Slave_ticket mapping em open_positions
 - [ ] **FIX IMEDIATO:** Usar ticket específico ao fechar posição (não symbol)
 - [ ] Implementar _detect_alien_operations() - comparar heartbeat Slave vs open_positions
