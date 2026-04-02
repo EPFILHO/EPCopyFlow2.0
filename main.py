@@ -142,6 +142,31 @@ async def shutdown_cleanup():
     logger.info("shutdown_cleanup concluído.")
 
 
+def _validate_account_modes_gracefully(broker_manager) -> str:
+    """
+    Valida modos de conta gracefully (sem exception).
+    Retorna mensagem de erro se houver, ou None se tudo OK.
+    """
+    brokers = broker_manager.get_brokers()
+
+    for broker_key, broker_data in brokers.items():
+        account_mode = broker_manager.get_account_mode(broker_key)
+        mode_normalized = account_mode.lower()
+
+        if mode_normalized not in ("netting", "netting account"):
+            error_msg = (
+                f"❌ Conta {broker_key} em modo '{account_mode}'\n\n"
+                f"CopyTrade requer NETTING mode.\n\n"
+                f"Solução:\n"
+                f"1. Edite brokers.json\n"
+                f"2. Mude 'mode': '{account_mode}' para 'mode': 'Netting'\n"
+                f"3. Ou remova a conta se o broker não oferece Netting"
+            )
+            return error_msg
+
+    return None
+
+
 def sigint_handler(*args):
     if not shutdown_event.is_set():
         shutdown_event.set()
@@ -216,6 +241,15 @@ async def main_application_flow(config: ConfigManager):
     zmq_router_instance = ZmqRouter(None)
     broker_manager = BrokerManager(config, base_mt5_path, root_path, zmq_router_instance)
     zmq_router_instance.broker_manager = broker_manager
+
+    # Validar modos de conta ANTES de criar CopyTradeManager
+    account_mode_error = _validate_account_modes_gracefully(broker_manager)
+    if account_mode_error:
+        # Mostrar erro gracefully
+        from PySide6.QtWidgets import QMessageBox
+        QMessageBox.critical(None, "Erro de Configuração", account_mode_error)
+        logger.error(f"Aplicação encerrada: {account_mode_error}")
+        return
 
     copytrade_manager = CopyTradeManager(broker_manager, zmq_router_instance)
     copytrade_manager.start_heartbeat()
