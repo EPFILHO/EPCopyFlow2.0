@@ -81,6 +81,10 @@ class ZmqMessageHandler(QObject):
                 self.ping_button_state_changed.emit(True)
                 self.heartbeat_active[broker_key] = True
 
+                # Notificar process monitor para cancelar grace period/retry
+                if hasattr(self, 'mt5_monitor') and self.mt5_monitor:
+                    self.mt5_monitor.on_broker_registered(broker_key)
+
                 # Configurar intervalo de heartbeat no EA
                 if self.zmq_router:
                     asyncio.create_task(
