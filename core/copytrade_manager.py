@@ -34,6 +34,7 @@ class CopyTradeManager(QObject):
         logger.info("CopyTradeManager inicializado.")
 
     def _init_db(self):
+        # Tabela original: histórico de replicações
         self.db.execute("""
             CREATE TABLE IF NOT EXISTS copytrade_history (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -50,8 +51,50 @@ class CopyTradeManager(QObject):
                 error_message TEXT DEFAULT ''
             )
         """)
+
+        # Tabela: Posições abertas (rastreamento ativo)
+        self.db.execute("""
+            CREATE TABLE IF NOT EXISTS open_positions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                master_ticket INTEGER NOT NULL,
+                slave_broker TEXT NOT NULL,
+                slave_ticket INTEGER,
+                symbol TEXT NOT NULL,
+
+                master_volume_original REAL NOT NULL,
+                master_volume_current REAL NOT NULL,
+                slave_volume_current REAL NOT NULL,
+
+                status TEXT NOT NULL,  -- SYNCING / OPEN / SYNCED / CLOSING / CLOSED
+                request_id TEXT UNIQUE,
+
+                opened_at REAL NOT NULL,
+                synced_at REAL,
+                last_heartbeat REAL,
+                closed_at REAL,
+
+                sync_attempts INTEGER DEFAULT 0,
+                last_error TEXT,
+
+                UNIQUE(master_ticket, slave_broker)
+            )
+        """)
+
+        # Tabela: Status de cada slave (paused/active)
+        self.db.execute("""
+            CREATE TABLE IF NOT EXISTS slave_status (
+                slave_broker TEXT PRIMARY KEY,
+                status TEXT NOT NULL,  -- ACTIVE / PAUSED
+                paused_reason TEXT,
+                paused_at REAL,
+                paused_by_ticket INTEGER,
+                can_resume_at REAL,
+                last_heartbeat REAL
+            )
+        """)
+
         self.db.commit()
-        logger.info("Banco de dados SQLite inicializado.")
+        logger.info("Banco de dados SQLite inicializado (3 tabelas).")
 
     def _validate_account_modes(self):
         """
@@ -76,6 +119,54 @@ class CopyTradeManager(QObject):
                 )
 
         logger.info(f"✅ Validação: Todas as {len(brokers)} contas estão em NETTING mode")
+
+    # ──────────────────────────────────────────────
+    # Bloco 1.5 - Gerenciamento de Status de Slaves
+    # ──────────────────────────────────────────────
+    def get_slave_status(self, slave_key: str) -> dict:
+        """Retorna status do slave (ACTIVE/PAUSED)."""
+        cursor = self.db.execute(
+            "SELECT status, paused_reason, paused_at FROM slave_status WHERE slave_broker = ?",
+            (slave_key,)
+        )
+        row = cursor.fetchone()
+        if row:
+            return {
+                "status": row[0],
+                "paused_reason": row[1],
+                "paused_at": row[2]
+            }
+        return {"status": "ACTIVE", "paused_reason": None, "paused_at": None}
+
+    def is_slave_paused(self, slave_key: str) -> bool:
+        """Verifica se slave está pausado."""
+        status = self.get_slave_status(slave_key)
+        return status["status"] == "PAUSED"
+
+    def pause_slave(self, slave_key: str, reason: str, ticket: int = None):
+        """
+        Pausa copytrader para um slave específico.
+        reason: ex. "ALIEN_OPERATION", "MANUAL"
+        """
+        now = time.time()
+        self.db.execute(
+            """INSERT OR REPLACE INTO slave_status
+               (slave_broker, status, paused_reason, paused_at, paused_by_ticket)
+               VALUES (?, ?, ?, ?, ?)""",
+            (slave_key, "PAUSED", reason, now, ticket)
+        )
+        self.db.commit()
+        logger.warning(f"⏸️ CopyTrade PAUSADO para {slave_key}: {reason}")
+
+    def resume_slave(self, slave_key: str):
+        """Reativa copytrader para um slave."""
+        self.db.execute(
+            """UPDATE slave_status SET status = ?, paused_reason = ?, paused_at = NULL
+               WHERE slave_broker = ?""",
+            ("ACTIVE", None, slave_key)
+        )
+        self.db.commit()
+        logger.info(f"▶️ CopyTrade REATIVADO para {slave_key}")
 
     # ──────────────────────────────────────────────
     # Bloco 2 - Cálculo de Lotes
