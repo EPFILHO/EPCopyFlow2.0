@@ -103,11 +103,45 @@ class CopyTradeManager(QObject):
 
     def _validate_account_modes(self):
         """
-        Log de confirmação: validação já foi feita em main.py.
-        Esta função existe apenas para documentação e possível re-validação.
+        Validar contas NETTING é crítico, mas não devemos derrubar a app.
+        Apenas log de warning para contas em modo incorreto.
+        Validação real acontece quando tenta usar CopyTrade.
         """
         brokers = self.broker_manager.get_brokers()
-        logger.debug(f"✅ CopyTradeManager: {len(brokers)} contas validadas como NETTING")
+
+        for broker_key, broker_data in brokers.items():
+            account_mode = self.broker_manager.get_account_mode(broker_key)
+            mode_normalized = account_mode.lower()
+
+            if mode_normalized not in ("netting", "netting account"):
+                logger.warning(f"⚠️ {broker_key}: modo '{account_mode}' (esperado NETTING)")
+                logger.warning(f"   CopyTrade não funcionará para esta conta")
+                logger.warning(f"   Aviso será mostrado quando tentar usar CopyTrade")
+
+    def validate_broker_for_copytrade(self, broker_key: str) -> tuple[bool, str]:
+        """
+        Valida se um broker pode usar CopyTrade.
+        Retorna (sucesso: bool, mensagem: str)
+
+        Chamado quando usuário tenta ATIVAR CopyTrade para um broker.
+        """
+        account_mode = self.broker_manager.get_account_mode(broker_key)
+        mode_normalized = account_mode.lower()
+
+        if mode_normalized not in ("netting", "netting account"):
+            error_msg = (
+                f"❌ {broker_key} está em modo '{account_mode}'\n\n"
+                f"CopyTrade requer modo NETTING.\n\n"
+                f"Por favor, altere no painel de configuração (Admin):\n"
+                f"• Vá para: Configurações → Corretoras\n"
+                f"• Mude o modo de '{account_mode}' para 'Netting'\n"
+                f"• Salve as alterações"
+            )
+            logger.error(f"Validação falhou para {broker_key}: {error_msg}")
+            return False, error_msg
+
+        logger.info(f"✅ {broker_key} validado para CopyTrade (modo NETTING)")
+        return True, "OK"
 
     # ──────────────────────────────────────────────
     # Bloco 1.5 - Gerenciamento de Status de Slaves
