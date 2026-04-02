@@ -76,3 +76,4 @@
 - [ ] Ajuste fino da estética geral (refinamento visual)
 - [ ] Salvar/restaurar geometria da janela entre sessões
 - [ ] Cores dos indicadores de status devem vir do tema (não hardcoded)
+
