@@ -566,7 +566,7 @@ class CopyTradeManager(QObject):
             logger.debug(f"  Pedindo posições de {slave_key}...")
 
             response = await self.zmq_router.send_command_to_broker(
-                slave_key, "GET_POSITIONS", {}, request_id, timeout=5
+                slave_key, "GET_POSITIONS", {}, request_id
             )
 
             if response.get("status") != "OK":
