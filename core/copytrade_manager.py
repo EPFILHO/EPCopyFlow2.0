@@ -540,11 +540,44 @@ class CopyTradeManager(QObject):
     async def _get_slave_positions(self, slave_key: str) -> dict:
         """
         Retorna dict de posições abertas do Slave: {ticket: {symbol, volume, ...}}
-        Placeholder: implementação real requer comunicação com EA.
+        Comunica com Slave EA via ZMQ para pedir lista de posições.
         """
-        # TODO: Implementar comunicação com Slave EA para pedir posições abertas
-        # Por enquanto, retorna vazio
-        return {}
+        try:
+            # Enviar comando GET_POSITIONS para Slave
+            request_id = f"get_positions_{slave_key}_{int(time.time())}"
+            logger.debug(f"  Pedindo posições de {slave_key}...")
+
+            response = await self.zmq_router.send_command_to_broker(
+                slave_key, "GET_POSITIONS", {}, request_id, timeout=5
+            )
+
+            if response.get("status") != "OK":
+                logger.warning(f"  Falha ao pedir posições de {slave_key}: {response.get('message', '?')}")
+                return {}
+
+            # Parsear resposta
+            positions_list = response.get("positions", [])
+            positions_dict = {}
+
+            for pos in positions_list:
+                ticket = pos.get("ticket")
+                if ticket:
+                    positions_dict[ticket] = {
+                        "symbol": pos.get("symbol", ""),
+                        "volume": pos.get("volume", 0),
+                        "price": pos.get("price", 0),
+                        "profit": pos.get("profit", 0),
+                    }
+
+            logger.debug(f"  Posições em {slave_key}: {list(positions_dict.keys())}")
+            return positions_dict
+
+        except asyncio.TimeoutError:
+            logger.warning(f"  Timeout ao pedir posições de {slave_key}")
+            return {}
+        except Exception as e:
+            logger.error(f"  Erro ao pedir posições de {slave_key}: {e}")
+            return {}
 
     # ──────────────────────────────────────────────
     # Bloco 5 - Fechamento de Emergência
