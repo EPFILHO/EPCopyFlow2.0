@@ -30,6 +30,7 @@ class CopyTradeManager(QObject):
         self.position_map = {}  # master_ticket -> {slave_key: slave_ticket}
         self.db = sqlite3.connect(DB_FILE)
         self._init_db()
+        self._validate_account_modes()
         logger.info("CopyTradeManager inicializado.")
 
     def _init_db(self):
@@ -51,6 +52,30 @@ class CopyTradeManager(QObject):
         """)
         self.db.commit()
         logger.info("Banco de dados SQLite inicializado.")
+
+    def _validate_account_modes(self):
+        """
+        Valida que todas as contas configuradas são NETTING.
+        CopyTrade só suporta NETTING (não HEDGE) para simplificar lógica de replicação.
+        """
+        brokers = self.broker_manager.get_brokers()
+
+        for broker_key, broker_data in brokers.items():
+            account_mode = self.broker_manager.get_account_mode(broker_key)
+
+            # Normalizar para comparação (case-insensitive)
+            mode_normalized = account_mode.lower()
+
+            if mode_normalized not in ("netting", "netting account"):
+                logger.error(f"❌ {broker_key}: modo '{account_mode}' não suportado")
+                logger.error(f"   CopyTrade requer contas em NETTING mode")
+                logger.error(f"   Configure a conta como NETTING em brokers.json")
+                raise ValueError(
+                    f"CopyTrade não suporta {account_mode}. "
+                    f"Configure {broker_key} como NETTING."
+                )
+
+        logger.info(f"✅ Validação: Todas as {len(brokers)} contas estão em NETTING mode")
 
     # ──────────────────────────────────────────────
     # Bloco 2 - Cálculo de Lotes

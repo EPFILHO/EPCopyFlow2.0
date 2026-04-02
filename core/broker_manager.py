@@ -212,6 +212,10 @@ class BrokerManager(QObject):
         """Retorna o multiplicador de lote de um broker."""
         return self.brokers.get(key, {}).get("lot_multiplier", 1.0)
 
+    def get_account_mode(self, key):
+        """Retorna o modo da conta (Netting ou Hedge)."""
+        return self.brokers.get(key, {}).get("mode", "Netting")
+
     # ──────────────────────────────────────────────
     # Bloco 4 - Instâncias MT5 Portáteis
     # ──────────────────────────────────────────────
