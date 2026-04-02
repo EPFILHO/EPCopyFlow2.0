@@ -951,31 +951,28 @@ void OnTradeTransaction(const MqlTradeTransaction &trans, const MqlTradeRequest 
    stream_msg["timestamp_mql"] = (long)TimeCurrent();
    stream_msg["role"] = g_role;
 
-   // Request data
-   JSONNode request_data;
-   request_data["action"] = (int)request.action;
-   request_data["order"] = (long)request.order;
-   request_data["symbol"] = request.symbol == "" ? NULL : request.symbol;
-   request_data["volume"] = request.volume;
-   request_data["price"] = request.price;
-   request_data["sl"] = request.sl;
-   request_data["tp"] = request.tp;
-   request_data["deviation"] = (long)request.deviation;
-   request_data["type"] = (int)request.type;
-   request_data["type_filling"] = (int)request.type_filling;
-   request_data["comment"] = request.comment == "" ? NULL : request.comment;
-   request_data["position"] = (long)request.position;
-   stream_msg["request"] = request_data;
+   // Request data - FLATTENAR para contornar bug do Copy() no Json.mqh
+   // (Copy() sobrescreve m_key com "" ao atribuir JSONNode via operator=)
+   stream_msg["request_action"] = (int)request.action;
+   stream_msg["request_order"] = (long)request.order;
+   stream_msg["request_symbol"] = request.symbol;
+   stream_msg["request_volume"] = request.volume;
+   stream_msg["request_price"] = request.price;
+   stream_msg["request_sl"] = request.sl;
+   stream_msg["request_tp"] = request.tp;
+   stream_msg["request_deviation"] = (long)request.deviation;
+   stream_msg["request_type"] = (int)request.type;
+   stream_msg["request_type_filling"] = (int)request.type_filling;
+   stream_msg["request_comment"] = request.comment;
+   stream_msg["request_position"] = (long)request.position;
 
-   // Result data
-   JSONNode result_data;
-   result_data["retcode"] = (long)result.retcode;
-   result_data["deal"] = (long)result.deal;
-   result_data["order"] = (long)result.order;
-   result_data["volume"] = result.volume;
-   result_data["price"] = result.price;
-   result_data["comment"] = result.comment == "" ? NULL : result.comment;
-   stream_msg["result"] = result_data;
+   // Result data - FLATTENAR para contornar bug do Copy() no Json.mqh
+   stream_msg["result_retcode"] = (long)result.retcode;
+   stream_msg["result_deal"] = (long)result.deal;
+   stream_msg["result_order"] = (long)result.order;
+   stream_msg["result_volume"] = result.volume;
+   stream_msg["result_price"] = result.price;
+   stream_msg["result_comment"] = result.comment;
 
    // Dados extras para copytrade (posição, volume restante)
    if(request.action == TRADE_ACTION_DEAL && request.position > 0)

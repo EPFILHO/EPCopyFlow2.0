@@ -80,8 +80,14 @@ class CopyTradeManager(QObject):
         request_data = trade_event.get("request", {})
         result_data = trade_event.get("result", {})
 
+        logger.info(f"🔍 handle_master_trade_event recebido de {master_broker}")
+        logger.info(f"  request_data keys: {list(request_data.keys())}")
+        logger.info(f"  result_data keys: {list(result_data.keys())}")
+
         # Verifica se é realmente do master
-        if self.broker_manager.get_broker_role(master_broker) != "master":
+        broker_role = self.broker_manager.get_broker_role(master_broker)
+        logger.info(f"  Broker role: {broker_role}")
+        if broker_role != "master":
             logger.debug(f"Trade event ignorado: {master_broker} não é master.")
             return
 
@@ -97,6 +103,8 @@ class CopyTradeManager(QObject):
         retcode = result_data.get("retcode", 0)
         master_ticket = result_data.get("deal", 0) or result_data.get("order", 0)
 
+        logger.info(f"  action={action}, symbol={symbol}, volume={volume}, retcode={retcode}")
+
         # Só replica trades com sucesso (retcode 10009 = TRADE_RETCODE_DONE)
         if retcode != 10009 and retcode != 0:
             logger.warning(f"Trade event com retcode={retcode}, não será replicado.")
@@ -108,6 +116,7 @@ class CopyTradeManager(QObject):
 
         # Determinar tipo de ação para replicação
         trade_action = self._classify_trade_action(action, order_type, position_ticket)
+        logger.info(f"  trade_action={trade_action}")
         if not trade_action:
             logger.debug(f"Ação de trade não replicável: action={action}, type={order_type}")
             return
@@ -118,6 +127,7 @@ class CopyTradeManager(QObject):
 
         # Replica para cada slave conectado
         slaves = self.broker_manager.get_connected_slave_brokers()
+        logger.info(f"  Slaves conectados: {slaves}")
         for slave_key in slaves:
             await self._replicate_to_slave(
                 slave_key, master_broker, master_ticket,
@@ -146,8 +156,11 @@ class CopyTradeManager(QObject):
                                    symbol: str, volume: float, price: float,
                                    sl: float, tp: float, position_ticket: int):
         """Envia comando de trade para um slave específico."""
+        logger.info(f"  ➜ _replicate_to_slave: slave={slave_key}, action={trade_action}, symbol={symbol}")
+
         multiplier = self.broker_manager.get_lot_multiplier(slave_key)
         slave_lot = self.calculate_slave_lot(volume, multiplier)
+        logger.info(f"    multiplier={multiplier}, slave_lot={slave_lot}")
 
         # Determinar comando
         if trade_action == "BUY":
@@ -197,9 +210,11 @@ class CopyTradeManager(QObject):
 
         # Envia comando para o slave
         request_id = f"trade_{slave_key}_{int(time.time())}"
+        logger.info(f"    Enviando comando: {command}, payload: {payload}")
         response = await self.zmq_router.send_command_to_broker(
             slave_key, command, payload, request_id
         )
+        logger.info(f"    Resposta recebida: {response}")
 
         # Atualiza status no histórico
         if response.get("status") == "OK":
