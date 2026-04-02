@@ -358,7 +358,7 @@ class CopyTradeManager(QObject):
                     master_volume_original, master_volume_current, slave_volume_current,
                     status, request_id, opened_at)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                ("TEMP", symbol, volume, volume, 0, "SYNCING", request_id, now)
+                (master_ticket, "TEMP", symbol, volume, volume, 0, "SYNCING", request_id, now)
             )
             self.db.commit()
             logger.debug(f"  📝 Posição rastreada: ticket={master_ticket}, request_id={request_id}")
