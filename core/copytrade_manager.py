@@ -555,18 +555,20 @@ class CopyTradeManager(QObject):
                 logger.warning(f"  Falha ao pedir posições de {slave_key}: {response.get('message', '?')}")
                 return {}
 
-            # Parsear resposta
-            positions_list = response.get("positions", [])
+            # Parsear resposta flattenada do EA
+            positions_count = response.get("positions_count", 0)
             positions_dict = {}
 
-            for pos in positions_list:
-                ticket = pos.get("ticket")
+            for i in range(positions_count):
+                prefix = f"pos_{i}_"
+                ticket = response.get(f"{prefix}ticket")
+
                 if ticket:
                     positions_dict[ticket] = {
-                        "symbol": pos.get("symbol", ""),
-                        "volume": pos.get("volume", 0),
-                        "price": pos.get("price", 0),
-                        "profit": pos.get("profit", 0),
+                        "symbol": response.get(f"{prefix}symbol", ""),
+                        "volume": response.get(f"{prefix}volume", 0),
+                        "price_open": response.get(f"{prefix}price_open", 0),
+                        "profit": response.get(f"{prefix}profit", 0),
                     }
 
             logger.debug(f"  Posições em {slave_key}: {list(positions_dict.keys())}")
