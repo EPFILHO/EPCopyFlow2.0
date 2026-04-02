@@ -287,27 +287,27 @@ void HandleGetPositionsCommand(const string request_id)
    response["request_id"] = request_id;
    response["status"] = "OK";
 
-   JSONNode positions_array;
+   // FLATTENAR para evitar bug de serialização de objetos aninhados em array
    int total = PositionsTotal();
+   response["positions_count"] = (long)total;
+
    for(int i = 0; i < total; i++)
    {
       ulong ticket = PositionGetTicket(i);
       if(PositionSelectByTicket(ticket))
       {
-         JSONNode pos;
-         pos["ticket"] = (long)ticket;
-         pos["symbol"] = PositionGetString(POSITION_SYMBOL);
-         pos["type"] = PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY ? "BUY" : "SELL";
-         pos["volume"] = PositionGetDouble(POSITION_VOLUME);
-         pos["price_open"] = PositionGetDouble(POSITION_PRICE_OPEN);
-         pos["sl"] = PositionGetDouble(POSITION_SL);
-         pos["tp"] = PositionGetDouble(POSITION_TP);
-         pos["profit"] = PositionGetDouble(POSITION_PROFIT);
-         pos["comment"] = PositionGetString(POSITION_COMMENT);
-         positions_array.Add(pos);
+         string prefix = StringFormat("pos_%d_", i);
+         response[prefix + "ticket"] = (long)ticket;
+         response[prefix + "symbol"] = PositionGetString(POSITION_SYMBOL);
+         response[prefix + "type"] = PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY ? "BUY" : "SELL";
+         response[prefix + "volume"] = PositionGetDouble(POSITION_VOLUME);
+         response[prefix + "price_open"] = PositionGetDouble(POSITION_PRICE_OPEN);
+         response[prefix + "sl"] = PositionGetDouble(POSITION_SL);
+         response[prefix + "tp"] = PositionGetDouble(POSITION_TP);
+         response[prefix + "profit"] = PositionGetDouble(POSITION_PROFIT);
+         response[prefix + "comment"] = PositionGetString(POSITION_COMMENT);
       }
    }
-   response["positions"] = positions_array;
    SendJsonMessage(response, command_socket, "Command");
 }
 
@@ -873,7 +873,7 @@ void ProcessCommand(JSONNode &json_command)
    {
       HandleGetAccountMarginCommand(request_id);
    }
-   else if(command == "POSITIONS")
+   else if(command == "POSITIONS" || command == "GET_POSITIONS")
    {
       HandleGetPositionsCommand(request_id);
    }

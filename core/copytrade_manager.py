@@ -30,9 +30,16 @@ class CopyTradeManager(QObject):
         self.position_map = {}  # master_ticket -> {slave_key: slave_ticket}
         self.db = sqlite3.connect(DB_FILE)
         self._init_db()
+        self._validate_account_modes()
+
+        # Heartbeat control
+        self.heartbeat_task = None
+        self.heartbeat_running = False
+
         logger.info("CopyTradeManager inicializado.")
 
     def _init_db(self):
+        # Tabela original: histórico de replicações
         self.db.execute("""
             CREATE TABLE IF NOT EXISTS copytrade_history (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -49,25 +56,139 @@ class CopyTradeManager(QObject):
                 error_message TEXT DEFAULT ''
             )
         """)
+
+        # Tabela: Posições abertas (rastreamento ativo)
+        self.db.execute("""
+            CREATE TABLE IF NOT EXISTS open_positions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                master_ticket INTEGER NOT NULL,
+                slave_broker TEXT NOT NULL,
+                slave_ticket INTEGER,
+                symbol TEXT NOT NULL,
+
+                master_volume_original REAL NOT NULL,
+                master_volume_current REAL NOT NULL,
+                slave_volume_current REAL NOT NULL,
+
+                status TEXT NOT NULL,  -- SYNCING / OPEN / SYNCED / CLOSING / CLOSED
+                request_id TEXT UNIQUE,
+
+                opened_at REAL NOT NULL,
+                synced_at REAL,
+                last_heartbeat REAL,
+                closed_at REAL,
+
+                sync_attempts INTEGER DEFAULT 0,
+                last_error TEXT,
+
+                UNIQUE(master_ticket, slave_broker)
+            )
+        """)
+
+        # Tabela: Status de cada slave (paused/active)
+        self.db.execute("""
+            CREATE TABLE IF NOT EXISTS slave_status (
+                slave_broker TEXT PRIMARY KEY,
+                status TEXT NOT NULL,  -- ACTIVE / PAUSED
+                paused_reason TEXT,
+                paused_at REAL,
+                paused_by_ticket INTEGER,
+                can_resume_at REAL,
+                last_heartbeat REAL
+            )
+        """)
+
         self.db.commit()
-        logger.info("Banco de dados SQLite inicializado.")
+        logger.info("Banco de dados SQLite inicializado (3 tabelas).")
+
+    def _validate_account_modes(self):
+        """
+        Valida que todas as contas configuradas são NETTING.
+        CopyTrade só suporta NETTING (não HEDGE) para simplificar lógica de replicação.
+        """
+        brokers = self.broker_manager.get_brokers()
+
+        for broker_key, broker_data in brokers.items():
+            account_mode = self.broker_manager.get_account_mode(broker_key)
+
+            # Normalizar para comparação (case-insensitive)
+            mode_normalized = account_mode.lower()
+
+            if mode_normalized not in ("netting", "netting account"):
+                logger.error(f"❌ {broker_key}: modo '{account_mode}' não suportado")
+                logger.error(f"   CopyTrade requer contas em NETTING mode")
+                logger.error(f"   Configure a conta como NETTING em brokers.json")
+                raise ValueError(
+                    f"CopyTrade não suporta {account_mode}. "
+                    f"Configure {broker_key} como NETTING."
+                )
+
+        logger.info(f"✅ Validação: Todas as {len(brokers)} contas estão em NETTING mode")
+
+    # ──────────────────────────────────────────────
+    # Bloco 1.5 - Gerenciamento de Status de Slaves
+    # ──────────────────────────────────────────────
+    def get_slave_status(self, slave_key: str) -> dict:
+        """Retorna status do slave (ACTIVE/PAUSED)."""
+        cursor = self.db.execute(
+            "SELECT status, paused_reason, paused_at FROM slave_status WHERE slave_broker = ?",
+            (slave_key,)
+        )
+        row = cursor.fetchone()
+        if row:
+            return {
+                "status": row[0],
+                "paused_reason": row[1],
+                "paused_at": row[2]
+            }
+        return {"status": "ACTIVE", "paused_reason": None, "paused_at": None}
+
+    def is_slave_paused(self, slave_key: str) -> bool:
+        """Verifica se slave está pausado."""
+        status = self.get_slave_status(slave_key)
+        return status["status"] == "PAUSED"
+
+    def pause_slave(self, slave_key: str, reason: str, ticket: int = None):
+        """
+        Pausa copytrader para um slave específico.
+        reason: ex. "ALIEN_OPERATION", "MANUAL"
+        """
+        now = time.time()
+        self.db.execute(
+            """INSERT OR REPLACE INTO slave_status
+               (slave_broker, status, paused_reason, paused_at, paused_by_ticket)
+               VALUES (?, ?, ?, ?, ?)""",
+            (slave_key, "PAUSED", reason, now, ticket)
+        )
+        self.db.commit()
+        logger.warning(f"⏸️ CopyTrade PAUSADO para {slave_key}: {reason}")
+
+    def resume_slave(self, slave_key: str):
+        """Reativa copytrader para um slave."""
+        self.db.execute(
+            """UPDATE slave_status SET status = ?, paused_reason = ?, paused_at = NULL
+               WHERE slave_broker = ?""",
+            ("ACTIVE", None, slave_key)
+        )
+        self.db.commit()
+        logger.info(f"▶️ CopyTrade REATIVADO para {slave_key}")
 
     # ──────────────────────────────────────────────
     # Bloco 2 - Cálculo de Lotes
     # ──────────────────────────────────────────────
-    def calculate_slave_lot(self, master_lot: float, multiplier: float) -> int:
-        """B3: arredonda para baixo, mínimo 1."""
-        lot = int(master_lot * multiplier)
-        return max(lot, 1)
+    def calculate_slave_lot(self, master_lot: float, multiplier: float) -> float:
+        """Calcula lote do slave. Arredonda para 2 casas decimais, mínimo 0.01."""
+        lot = round(master_lot * multiplier, 2)
+        return max(lot, 0.01)
 
     def calculate_partial_close_lot(self, master_original: float, master_partial: float,
-                                     slave_current: float) -> int:
+                                     slave_current: float) -> float:
         """Fechamento parcial proporcional."""
         if master_original <= 0:
-            return max(int(slave_current), 1)
+            return max(round(slave_current, 2), 0.01)
         ratio = master_partial / master_original
-        lot = int(slave_current * ratio)
-        return max(lot, 1)
+        lot = round(slave_current * ratio, 2)
+        return max(lot, 0.01)
 
     # ──────────────────────────────────────────────
     # Bloco 3 - Processamento de Trade Events do Master
@@ -125,10 +246,20 @@ class CopyTradeManager(QObject):
         self.copy_trade_log.emit(log_msg)
         logger.info(log_msg)
 
+        # Rastrear posição no DB (abertura ou fechamento)
+        await self._track_master_position(
+            master_ticket, symbol, volume, trade_action, price, sl, tp
+        )
+
         # Replica para cada slave conectado
         slaves = self.broker_manager.get_connected_slave_brokers()
         logger.info(f"  Slaves conectados: {slaves}")
         for slave_key in slaves:
+            # Pular se slave está pausado
+            if self.is_slave_paused(slave_key):
+                logger.warning(f"  Pulando {slave_key} (pausado)")
+                continue
+
             await self._replicate_to_slave(
                 slave_key, master_broker, master_ticket,
                 trade_action, symbol, volume, price, sl, tp,
@@ -150,6 +281,41 @@ class CopyTradeManager(QObject):
             elif order_type == 1:
                 return "SELL"
         return None  # Outras ações não são replicadas por enquanto
+
+    async def _track_master_position(self, master_ticket: int, symbol: str,
+                                     volume: float, trade_action: str,
+                                     price: float, sl: float, tp: float):
+        """
+        Rastreia posição no BD (abertura ou fechamento).
+        """
+        import hashlib
+
+        if trade_action in ("BUY", "SELL"):
+            # Gerar request_id único para idempotência
+            request_id = hashlib.sha256(
+                f"{master_ticket}_{symbol}_{int(time.time() * 1000)}".encode()
+            ).hexdigest()[:32]
+
+            now = time.time()
+            self.db.execute(
+                """INSERT OR IGNORE INTO open_positions
+                   (master_ticket, slave_broker, symbol,
+                    master_volume_original, master_volume_current, slave_volume_current,
+                    status, request_id, opened_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                ("TEMP", symbol, volume, volume, 0, "SYNCING", request_id, now)
+            )
+            self.db.commit()
+            logger.debug(f"  📝 Posição rastreada: ticket={master_ticket}, request_id={request_id}")
+
+        elif trade_action == "CLOSE":
+            # Marcar posição como CLOSING
+            self.db.execute(
+                "UPDATE open_positions SET status = ? WHERE master_ticket = ? AND status != 'CLOSED'",
+                ("CLOSING", master_ticket)
+            )
+            self.db.commit()
+            logger.debug(f"  📝 Posição marcada CLOSING: ticket={master_ticket}")
 
     async def _replicate_to_slave(self, slave_key: str, master_broker: str,
                                    master_ticket: int, trade_action: str,
@@ -225,6 +391,17 @@ class CopyTradeManager(QObject):
                 if master_ticket not in self.position_map:
                     self.position_map[master_ticket] = {}
                 self.position_map[master_ticket][slave_key] = slave_result_ticket
+
+                # Atualizar open_positions com slave_ticket
+                now = time.time()
+                self.db.execute(
+                    """UPDATE open_positions SET slave_ticket = ?, status = ?, synced_at = ?
+                       WHERE master_ticket = ? AND slave_broker = ? AND status = 'SYNCING'""",
+                    (slave_result_ticket, "OPEN", now, master_ticket, slave_key)
+                )
+                self.db.commit()
+                logger.debug(f"  ✅ Posição sincronizada: master={master_ticket}, slave={slave_result_ticket}")
+
             self.copy_trade_executed.emit({
                 "slave": slave_key, "symbol": symbol,
                 "action": trade_action, "lot": slave_lot
@@ -239,7 +416,173 @@ class CopyTradeManager(QObject):
             logger.error(f"Falha ao replicar para {slave_key}: {error}")
 
     # ──────────────────────────────────────────────
-    # Bloco 4 - Fechamento de Emergência
+    # Bloco 4 - Heartbeat de Sincronização
+    # ──────────────────────────────────────────────
+    def start_heartbeat(self):
+        """Inicia o heartbeat em background."""
+        if self.heartbeat_running:
+            logger.debug("Heartbeat já está rodando")
+            return
+
+        self.heartbeat_running = True
+        self.heartbeat_task = asyncio.create_task(self._heartbeat_loop())
+        logger.info("✅ Heartbeat de sincronização iniciado")
+
+    def stop_heartbeat(self):
+        """Para o heartbeat."""
+        if self.heartbeat_task and not self.heartbeat_task.done():
+            self.heartbeat_task.cancel()
+        self.heartbeat_running = False
+        logger.info("⏹️ Heartbeat de sincronização parado")
+
+    async def _heartbeat_loop(self):
+        """
+        Loop principal do heartbeat: a cada HEARTBEAT_INTERVAL segundos,
+        valida sincronização de posições e detecta operações alienígenas.
+        """
+        import configparser
+
+        # Ler intervalo do config
+        config = configparser.ConfigParser()
+        config.read("config.ini")
+        heartbeat_interval = int(config.get("CopyTrade", "heartbeat_interval", fallback="5"))
+
+        logger.info(f"🔄 Heartbeat loop iniciado (intervalo: {heartbeat_interval}s)")
+
+        while self.heartbeat_running:
+            try:
+                await asyncio.sleep(heartbeat_interval)
+
+                if not self.heartbeat_running:
+                    break
+
+                logger.debug("🔄 Heartbeat: iniciando validação")
+                await self._reconcile_positions()
+
+            except asyncio.CancelledError:
+                logger.info("Heartbeat cancelado")
+                break
+            except Exception as e:
+                logger.error(f"❌ Erro no heartbeat: {e}", exc_info=True)
+
+    async def _reconcile_positions(self):
+        """
+        Valida sincronização:
+        - Detecta operações alienígenas
+        - Atualiza heartbeat no DB
+        """
+        try:
+            # Detectar operações alienígenas
+            await self._detect_alien_operations()
+
+            # Atualizar heartbeat timestamp
+            now = time.time()
+            self.db.execute(
+                "UPDATE slave_status SET last_heartbeat = ? WHERE status = 'ACTIVE'",
+                (now,)
+            )
+            self.db.commit()
+
+        except Exception as e:
+            logger.error(f"Erro ao reconciliar: {e}")
+
+    async def _detect_alien_operations(self):
+        """
+        Detecta operações manuais no Slave que não estão mapeadas.
+        Se encontrar, pausa copytrader para aquele slave.
+        """
+        master_brokers = [k for k, v in self.broker_manager.get_brokers().items()
+                         if self.broker_manager.get_broker_role(k) == "master"]
+        slave_brokers = [k for k, v in self.broker_manager.get_brokers().items()
+                        if self.broker_manager.get_broker_role(k) == "slave"]
+
+        if not master_brokers or not slave_brokers:
+            return
+
+        master_key = master_brokers[0]
+
+        for slave_key in slave_brokers:
+            # Pular se já pausado
+            if self.is_slave_paused(slave_key):
+                continue
+
+            try:
+                # Pedir posições do Slave
+                slave_positions = await self._get_slave_positions(slave_key)
+
+                if not slave_positions:
+                    continue
+
+                # Ler mapeamento do DB
+                db_rows = self.db.execute(
+                    "SELECT slave_ticket FROM open_positions WHERE slave_broker = ? AND status != 'CLOSED'",
+                    (slave_key,)
+                ).fetchall()
+
+                mapped_tickets = {row[0] for row in db_rows}
+
+                # Verificar se há tickets no Slave não mapeados
+                for ticket, position in slave_positions.items():
+                    if ticket not in mapped_tickets:
+                        logger.warning(f"🚨 OPERAÇÃO ALIENÍGENA detectada em {slave_key}!")
+                        logger.warning(f"   Ticket: {ticket}, Símbolo: {position.get('symbol')}, Volume: {position.get('volume')}")
+
+                        # Pausar copytrader
+                        self.pause_slave(slave_key, "ALIEN_OPERATION", ticket)
+                        self.copy_trade_log.emit(
+                            f"⚠️ CopyTrade PAUSADO em {slave_key}: operação manual detectada"
+                        )
+                        break
+
+            except Exception as e:
+                logger.error(f"Erro ao detectar alienígenas em {slave_key}: {e}")
+
+    async def _get_slave_positions(self, slave_key: str) -> dict:
+        """
+        Retorna dict de posições abertas do Slave: {ticket: {symbol, volume, ...}}
+        Comunica com Slave EA via ZMQ para pedir lista de posições.
+        """
+        try:
+            # Enviar comando GET_POSITIONS para Slave
+            request_id = f"get_positions_{slave_key}_{int(time.time())}"
+            logger.debug(f"  Pedindo posições de {slave_key}...")
+
+            response = await self.zmq_router.send_command_to_broker(
+                slave_key, "GET_POSITIONS", {}, request_id, timeout=5
+            )
+
+            if response.get("status") != "OK":
+                logger.warning(f"  Falha ao pedir posições de {slave_key}: {response.get('message', '?')}")
+                return {}
+
+            # Parsear resposta flattenada do EA
+            positions_count = response.get("positions_count", 0)
+            positions_dict = {}
+
+            for i in range(positions_count):
+                prefix = f"pos_{i}_"
+                ticket = response.get(f"{prefix}ticket")
+
+                if ticket:
+                    positions_dict[ticket] = {
+                        "symbol": response.get(f"{prefix}symbol", ""),
+                        "volume": response.get(f"{prefix}volume", 0),
+                        "price_open": response.get(f"{prefix}price_open", 0),
+                        "profit": response.get(f"{prefix}profit", 0),
+                    }
+
+            logger.debug(f"  Posições em {slave_key}: {list(positions_dict.keys())}")
+            return positions_dict
+
+        except asyncio.TimeoutError:
+            logger.warning(f"  Timeout ao pedir posições de {slave_key}")
+            return {}
+        except Exception as e:
+            logger.error(f"  Erro ao pedir posições de {slave_key}: {e}")
+            return {}
+
+    # ──────────────────────────────────────────────
+    # Bloco 5 - Fechamento de Emergência
     # ──────────────────────────────────────────────
     async def emergency_close_all(self):
         """Fecha TODAS as posições em TODOS os MT5s (master + slaves)."""
