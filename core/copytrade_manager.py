@@ -278,8 +278,9 @@ class CopyTradeManager(QObject):
         position_ticket = request_data.get("position", 0)
         retcode = result_data.get("retcode", 0)
         master_ticket = result_data.get("deal", 0) or result_data.get("order", 0)
+        position_volume_remaining = trade_event.get("position_volume_remaining")
 
-        logger.info(f"  action={action}, symbol={symbol}, volume={volume}, retcode={retcode}")
+        logger.info(f"  action={action}, symbol={symbol}, volume={volume}, retcode={retcode}, vol_remaining={position_volume_remaining}")
 
         # Só replica trades com sucesso (retcode 10009 = TRADE_RETCODE_DONE)
         if retcode != 10009 and retcode != 0:
@@ -291,7 +292,7 @@ class CopyTradeManager(QObject):
             return
 
         # Determinar tipo de ação para replicação
-        trade_action = self._classify_trade_action(action, order_type, position_ticket)
+        trade_action = self._classify_trade_action(action, order_type, position_ticket, position_volume_remaining)
         logger.info(f"  trade_action={trade_action}")
         if not trade_action:
             logger.debug(f"Ação de trade não replicável: action={action}, type={order_type}")
@@ -302,8 +303,10 @@ class CopyTradeManager(QObject):
         logger.info(log_msg)
 
         # Rastrear posição no DB (abertura ou fechamento)
+        # Para CLOSE/PARTIAL_CLOSE, usar position_ticket (posição original), não master_ticket (deal do close)
+        track_ticket = position_ticket if trade_action in ("CLOSE", "PARTIAL_CLOSE") else master_ticket
         await self._track_master_position(
-            master_ticket, symbol, volume, trade_action, price, sl, tp
+            track_ticket, symbol, volume, trade_action, price, sl, tp
         )
 
         # Replica para cada slave conectado
@@ -321,16 +324,21 @@ class CopyTradeManager(QObject):
                 position_ticket
             )
 
-    def _classify_trade_action(self, action: int, order_type: int, position_ticket: int) -> str:
+    def _classify_trade_action(self, action: int, order_type: int, position_ticket: int,
+                               position_volume_remaining=None) -> str:
         """
         Classifica a ação do trade com base nos dados do MQL5.
         action: TRADE_ACTION_DEAL=1, TRADE_ACTION_PENDING=5, TRADE_ACTION_SLTP=6,
                 TRADE_ACTION_MODIFY=7, TRADE_ACTION_REMOVE=8
         order_type: 0=BUY, 1=SELL, 2=BUY_LIMIT, 3=SELL_LIMIT, 4=BUY_STOP, 5=SELL_STOP
+        position_volume_remaining: volume restante após fechamento (0 = total, >0 = parcial)
         """
         if action == 1:  # TRADE_ACTION_DEAL (market order)
             if position_ticket > 0:
-                return "CLOSE"  # Fechamento de posição
+                # Fechamento — parcial ou total?
+                if position_volume_remaining is not None and position_volume_remaining > 0:
+                    return "PARTIAL_CLOSE"
+                return "CLOSE"
             if order_type == 0:
                 return "BUY"
             elif order_type == 1:
@@ -364,13 +372,22 @@ class CopyTradeManager(QObject):
             logger.debug(f"  📝 Posição rastreada: ticket={master_ticket}, request_id={request_id}")
 
         elif trade_action == "CLOSE":
-            # Marcar posição como CLOSING
+            # Fechamento total — marcar posição como CLOSING
             self.db.execute(
-                "UPDATE open_positions SET status = ? WHERE master_ticket = ? AND status != 'CLOSED'",
+                "UPDATE open_positions SET status = ? WHERE master_ticket = ? AND status = 'OPEN'",
                 ("CLOSING", master_ticket)
             )
             self.db.commit()
             logger.debug(f"  📝 Posição marcada CLOSING: ticket={master_ticket}")
+
+        elif trade_action == "PARTIAL_CLOSE":
+            # Fechamento parcial — atualizar volume do master
+            self.db.execute(
+                "UPDATE open_positions SET master_volume_current = master_volume_current - ? WHERE master_ticket = ? AND status = 'OPEN'",
+                (volume, master_ticket)
+            )
+            self.db.commit()
+            logger.debug(f"  📝 Fechamento parcial master: ticket={master_ticket}, vol_fechado={volume}")
 
     async def _replicate_to_slave(self, slave_key: str, master_broker: str,
                                    master_ticket: int, trade_action: str,
@@ -407,14 +424,66 @@ class CopyTradeManager(QObject):
                 "comment": f"CT:{master_ticket}"
             }
         elif trade_action == "CLOSE":
-            command = "TRADE_POSITION_CLOSE"
-            # Buscar ticket do slave correspondente ao master_ticket
+            # Fechamento TOTAL — usar ticket específico do slave
             slave_ticket = self.position_map.get(position_ticket, {}).get(slave_key)
+            if not slave_ticket:
+                # Tentar buscar do DB
+                row = self.db.execute(
+                    "SELECT slave_ticket FROM open_positions WHERE master_ticket = ? AND slave_broker = ? AND status = 'OPEN'",
+                    (position_ticket, slave_key)
+                ).fetchone()
+                slave_ticket = row[0] if row else None
+
             if slave_ticket:
+                command = "TRADE_POSITION_CLOSE_ID"
                 payload = {"ticket": slave_ticket}
+                logger.info(f"    Fechamento TOTAL por ticket: slave_ticket={slave_ticket}")
             else:
-                # Fechar por símbolo se não temos o mapeamento
-                payload = {"symbol": symbol}
+                logger.error(f"    ❌ Sem mapeamento de ticket para master={position_ticket}, slave={slave_key}. Abortando close.")
+                self._insert_history(
+                    master_broker, master_ticket, symbol, trade_action,
+                    volume, slave_key, 0, 0, "FAILED", "Sem mapeamento de ticket master→slave"
+                )
+                return
+
+        elif trade_action == "PARTIAL_CLOSE":
+            # Fechamento PARCIAL — usar ticket + volume proporcional
+            slave_ticket = self.position_map.get(position_ticket, {}).get(slave_key)
+            if not slave_ticket:
+                row = self.db.execute(
+                    "SELECT slave_ticket FROM open_positions WHERE master_ticket = ? AND slave_broker = ? AND status = 'OPEN'",
+                    (position_ticket, slave_key)
+                ).fetchone()
+                slave_ticket = row[0] if row else None
+
+            if not slave_ticket:
+                logger.error(f"    ❌ Sem mapeamento de ticket para fechamento parcial. master={position_ticket}, slave={slave_key}")
+                self._insert_history(
+                    master_broker, master_ticket, symbol, "PARTIAL_CLOSE",
+                    volume, slave_key, 0, 0, "FAILED", "Sem mapeamento de ticket master→slave"
+                )
+                return
+
+            # Buscar volume original do master e atual do slave para cálculo proporcional
+            row = self.db.execute(
+                "SELECT master_volume_original, slave_volume_current FROM open_positions WHERE master_ticket = ? AND slave_broker = ? AND status = 'OPEN'",
+                (position_ticket, slave_key)
+            ).fetchone()
+
+            if row:
+                master_vol_original = row[0]
+                slave_vol_current = row[1]
+                partial_lot = self.calculate_partial_close_lot(master_vol_original, volume, slave_vol_current)
+            else:
+                # Fallback: usar multiplier direto
+                partial_lot = self.calculate_slave_lot(volume, multiplier)
+                logger.warning(f"    ⚠️ Sem dados no DB para cálculo proporcional, usando multiplier direto: {partial_lot}")
+
+            command = "TRADE_POSITION_PARTIAL"
+            payload = {"ticket": slave_ticket, "volume": float(partial_lot)}
+            slave_lot = partial_lot
+            logger.info(f"    Fechamento PARCIAL: slave_ticket={slave_ticket}, volume={partial_lot}")
+
         else:
             logger.warning(f"Ação não suportada para replicação: {trade_action}")
             return
@@ -441,8 +510,9 @@ class CopyTradeManager(QObject):
         if response.get("status") == "OK":
             slave_result_ticket = response.get("order", 0) or response.get("deal", 0)
             self._update_history(record_id, "SUCCESS", slave_result_ticket)
-            # Mapeia posições para fechamento futuro
+
             if trade_action in ("BUY", "SELL") and master_ticket:
+                # Mapeia posições para fechamento futuro
                 if master_ticket not in self.position_map:
                     self.position_map[master_ticket] = {}
                 self.position_map[master_ticket][slave_key] = slave_result_ticket
@@ -456,6 +526,36 @@ class CopyTradeManager(QObject):
                 )
                 self.db.commit()
                 logger.debug(f"  ✅ Posição sincronizada: master={master_ticket}, slave={slave_result_ticket}")
+
+            elif trade_action == "CLOSE":
+                # Fechamento total — marcar como CLOSED no DB
+                now = time.time()
+                self.db.execute(
+                    """UPDATE open_positions SET status = 'CLOSED', closed_at = ?
+                       WHERE master_ticket = ? AND slave_broker = ?""",
+                    (now, position_ticket, slave_key)
+                )
+                self.db.commit()
+                # Limpar position_map
+                if position_ticket in self.position_map:
+                    self.position_map[position_ticket].pop(slave_key, None)
+                    if not self.position_map[position_ticket]:
+                        del self.position_map[position_ticket]
+                logger.debug(f"  ✅ Posição FECHADA: master={position_ticket}, slave={slave_key}")
+
+            elif trade_action == "PARTIAL_CLOSE":
+                # Fechamento parcial — atualizar volume do slave no DB
+                now = time.time()
+                closed_volume = response.get("volume", slave_lot)
+                self.db.execute(
+                    """UPDATE open_positions
+                       SET slave_volume_current = slave_volume_current - ?,
+                           last_heartbeat = ?
+                       WHERE master_ticket = ? AND slave_broker = ? AND status = 'OPEN'""",
+                    (closed_volume, now, position_ticket, slave_key)
+                )
+                self.db.commit()
+                logger.debug(f"  ✅ Fechamento parcial: master={position_ticket}, slave={slave_key}, vol_fechado={closed_volume}")
 
             self.copy_trade_executed.emit({
                 "slave": slave_key, "symbol": symbol,
