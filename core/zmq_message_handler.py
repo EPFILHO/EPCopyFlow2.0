@@ -176,32 +176,7 @@ class ZmqMessageHandler(QObject):
                 self.heartbeat_active[broker_key] = True
                 logger.debug(f"💓 Primeiro heartbeat de {broker_key} ({role})")
 
-            # Processar heartbeat com posições via copytrade_manager
-            if self.copytrade_manager and role == "SLAVE":
-                # Extrair posições flattenadas (pos_0_ticket, pos_0_symbol, etc)
-                positions_count = message.get("positions_count", 0)
-                heartbeat_data = {
-                    "timestamp": message.get("timestamp_mql", 0),
-                    "positions": []
-                }
-
-                for i in range(positions_count):
-                    prefix = f"pos_{i}_"
-                    ticket = message.get(f"{prefix}ticket")
-                    if ticket:
-                        heartbeat_data["positions"].append({
-                            "ticket": ticket,
-                            "symbol": message.get(f"{prefix}symbol", ""),
-                            "type": message.get(f"{prefix}type", ""),
-                            "volume": message.get(f"{prefix}volume", 0),
-                            "price_open": message.get(f"{prefix}price_open", 0),
-                            "profit": message.get(f"{prefix}profit", 0)
-                        })
-
-                # Processar heartbeat em background
-                asyncio.create_task(
-                    self.copytrade_manager.process_heartbeat_from_ea(broker_key, heartbeat_data)
-                )
+            # TODO: Processar heartbeat com posições para detecção de alienígenas (P2)
 
         # ── RESPONSE events ──
         elif msg_type == "RESPONSE":
