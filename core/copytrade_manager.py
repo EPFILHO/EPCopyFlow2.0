@@ -495,15 +495,23 @@ class CopyTradeManager(QObject):
         # P1: Normalizar volume para BUY/SELL
         if trade_action in ("BUY", "SELL") and symbol_specs:
             raw_lot = slave_lot
-            slave_lot = self.normalize_volume(slave_lot, symbol_specs)
+            # Verificar se slave já tem posição aberta para este position_id
+            # Se sim, é redução de posição (NETTING) → forçar mínimo, não cancelar
+            existing_slave_vol = self._get_slave_volume_current(position_id, slave_key)
+            is_position_reduce = existing_slave_vol is not None and existing_slave_vol > 0
+            slave_lot = self.normalize_volume(slave_lot, symbol_specs, force_min=is_position_reduce)
             if slave_lot <= 0:
                 logger.warning(f"    ❌ Volume {raw_lot} inválido para {symbol} (min={symbol_specs['volume_min']}, step={symbol_specs['volume_step']}). Operação cancelada.")
                 self._insert_history(master_broker, deal_ticket, symbol, trade_action,
                                      volume, slave_key, 0, 0, "SKIPPED",
                                      f"Volume {raw_lot} < mínimo {symbol_specs['volume_min']}")
                 return
+            # P0: Se é redução, não vender mais do que slave tem
+            if is_position_reduce and slave_lot > existing_slave_vol:
+                logger.warning(f"    ⚠️ SELL-THROUGH CAP (NETTING reduce): {slave_lot} > slave_vol={existing_slave_vol}. Limitando.")
+                slave_lot = existing_slave_vol
             if raw_lot != slave_lot:
-                logger.info(f"    📐 Volume normalizado: {raw_lot} → {slave_lot} (step={symbol_specs['volume_step']})")
+                logger.info(f"    📐 Volume normalizado: {raw_lot} → {slave_lot} (step={symbol_specs['volume_step']}, reduce={is_position_reduce})")
 
         # ── Determinar comando e payload ──
         if trade_action == "BUY":
