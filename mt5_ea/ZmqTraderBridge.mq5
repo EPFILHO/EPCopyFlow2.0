@@ -1086,20 +1086,46 @@ void OnTradeTransaction(const MqlTradeTransaction &trans, const MqlTradeRequest 
    stream_msg["result_price"] = result.price;
    stream_msg["result_comment"] = result.comment;
 
-   // Dados extras para copytrade (posição, volume restante)
-   if(request.action == TRADE_ACTION_DEAL && request.position > 0)
+   // Dados extras para copytrade
+   // POSITION_IDENTIFIER é a chave universal que conecta abertura, parcial e fechamento.
+   // Nunca muda, mesmo em NETTING com reversão de posição.
+   long position_id = 0;
+   if(request.action == TRADE_ACTION_DEAL)
    {
-      // Fechamento (total ou parcial) - verificar volume restante
-      if(PositionSelectByTicket(request.position))
+      if(request.position > 0)
       {
-         stream_msg["position_volume_remaining"] = PositionGetDouble(POSITION_VOLUME);
+         // Fechamento (total ou parcial) — request.position É o POSITION_IDENTIFIER
+         position_id = (long)request.position;
+
+         // Volume restante após fechamento
+         if(PositionSelectByTicket(request.position))
+         {
+            stream_msg["position_volume_remaining"] = PositionGetDouble(POSITION_VOLUME);
+         }
+         else
+         {
+            // Posição não existe mais = fechamento total
+            stream_msg["position_volume_remaining"] = 0.0;
+         }
       }
       else
       {
-         // Posição não existe mais = fechamento total
-         stream_msg["position_volume_remaining"] = 0.0;
+         // Abertura — buscar POSITION_IDENTIFIER via posição do símbolo (NETTING = 1 por símbolo)
+         if(PositionSelect(request.symbol))
+         {
+            position_id = PositionGetInteger(POSITION_IDENTIFIER);
+         }
+         else if(result.deal > 0 && HistoryDealSelect(result.deal))
+         {
+            // Fallback: buscar via deal history
+            position_id = HistoryDealGetInteger(result.deal, DEAL_POSITION_ID);
+         }
+
+         if(position_id == 0 && InpDebugLog)
+            PrintFormat("WARNING: Não foi possível obter POSITION_IDENTIFIER para %s", request.symbol);
       }
    }
+   stream_msg["position_id"] = position_id;
 
    if(!SendJsonMessage(stream_msg, event_socket, "Event"))
    {
