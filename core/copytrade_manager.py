@@ -97,6 +97,15 @@ class CopyTradeManager(QObject):
         """)
 
         self.db.commit()
+
+        # Migração: adicionar coluna direction se não existir
+        try:
+            self.db.execute("ALTER TABLE open_positions ADD COLUMN direction TEXT DEFAULT 'BUY'")
+            self.db.commit()
+            logger.info("Migração: coluna 'direction' adicionada a open_positions.")
+        except sqlite3.OperationalError:
+            pass  # Coluna já existe
+
         logger.info("Banco de dados SQLite inicializado (3 tabelas).")
 
     def validate_broker_for_copytrade(self, broker_key: str) -> tuple[bool, str]:
@@ -449,13 +458,15 @@ class CopyTradeManager(QObject):
             volume = slave_vol
         return volume
 
-    def _get_slave_volume_current(self, position_id: int, slave_key: str):
-        """Retorna slave_volume_current do DB para uma posição. None se não encontrado."""
+    def _get_slave_position_info(self, position_id: int, slave_key: str) -> dict:
+        """Retorna info da posição do slave: {volume, direction}. None se não encontrado."""
         row = self.db.execute(
-            "SELECT slave_volume_current FROM open_positions WHERE master_ticket = ? AND slave_broker = ? AND status IN ('OPEN', 'CLOSING')",
+            "SELECT slave_volume_current, direction FROM open_positions WHERE master_ticket = ? AND slave_broker = ? AND status IN ('OPEN', 'CLOSING')",
             (position_id, slave_key)
         ).fetchone()
-        return row[0] if row else None
+        if row:
+            return {"volume": row[0], "direction": row[1] or "BUY"}
+        return None
 
     def _get_slave_ticket(self, position_id: int, slave_key: str):
         """Busca slave_ticket pelo position_id — primeiro em memória, depois no DB."""
@@ -491,9 +502,15 @@ class CopyTradeManager(QObject):
         symbol_specs = await self._fetch_symbol_specs(slave_key, symbol)
         multiplier = self.broker_manager.get_lot_multiplier(slave_key)
 
+        # Estado da posição (usado nos callbacks de sucesso)
+        is_add = False
+        is_reduce = False
+
         # Verificar se slave já tem posição aberta para este position_id
-        existing_slave_vol = self._get_slave_volume_current(position_id, slave_key)
-        has_open_position = existing_slave_vol is not None and existing_slave_vol > 0
+        pos_info = self._get_slave_position_info(position_id, slave_key)
+        has_open_position = pos_info is not None and pos_info["volume"] > 0
+        existing_slave_vol = pos_info["volume"] if pos_info else None
+        existing_direction = pos_info["direction"] if pos_info else None
 
         # ── CLOSE TOTAL ──
         if trade_action == "CLOSE":
@@ -549,19 +566,33 @@ class CopyTradeManager(QObject):
             }
             logger.info(f"    PARTIAL_CLOSE→{command}: vol={slave_lot} (slave_vol={existing_slave_vol})")
 
-        # ── BUY/SELL (abertura ou redução NETTING) ──
+        # ── BUY/SELL (abertura, ADD ou REDUCE em NETTING) ──
         elif trade_action in ("BUY", "SELL"):
             slave_lot = self.calculate_slave_lot(volume, multiplier)
 
             if has_open_position:
-                # NETTING REDUCE: slave já tem posição, este trade reduz
-                logger.info(f"    📊 NETTING REDUCE: slave tem {existing_slave_vol}, master reduzindo {volume}")
-                slave_lot = self._normalize_and_cap(slave_lot, existing_slave_vol, symbol_specs, force_min=True)
-                if slave_lot <= 0:
-                    logger.warning(f"    ⚠️ NETTING REDUCE ignorado: volume=0 após normalização")
-                    self._insert_history(master_broker, deal_ticket, symbol, trade_action,
-                                         volume, slave_key, 0, 0, "SKIPPED", "volume=0 após normalização")
-                    return
+                is_same_direction = (trade_action == existing_direction)
+                if is_same_direction:
+                    # ADD: BUY sobre BUY, ou SELL sobre SELL → aumentar posição
+                    is_add = True
+                    logger.info(f"    📊 NETTING ADD: slave tem {existing_slave_vol} {existing_direction}, adicionando {trade_action} {volume}")
+                    if symbol_specs:
+                        slave_lot = self.normalize_volume(slave_lot, symbol_specs, force_min=False)
+                    if slave_lot <= 0:
+                        logger.warning(f"    ❌ ADD ignorado: volume inválido para {symbol}")
+                        self._insert_history(master_broker, deal_ticket, symbol, trade_action,
+                                             volume, slave_key, 0, 0, "SKIPPED", "volume < mínimo do símbolo")
+                        return
+                else:
+                    # REDUCE: SELL sobre BUY, ou BUY sobre SELL → reduzir posição
+                    is_reduce = True
+                    logger.info(f"    📊 NETTING REDUCE: slave tem {existing_slave_vol} {existing_direction}, reduzindo com {trade_action} {volume}")
+                    slave_lot = self._normalize_and_cap(slave_lot, existing_slave_vol, symbol_specs, force_min=True)
+                    if slave_lot <= 0:
+                        logger.warning(f"    ⚠️ NETTING REDUCE ignorado: volume=0 após normalização")
+                        self._insert_history(master_broker, deal_ticket, symbol, trade_action,
+                                             volume, slave_key, 0, 0, "SKIPPED", "volume=0 após normalização")
+                        return
             else:
                 # Abertura nova
                 if symbol_specs:
@@ -606,7 +637,7 @@ class CopyTradeManager(QObject):
             if trade_action == "CLOSE":
                 self._on_close_success(position_id, slave_key)
 
-            elif trade_action == "PARTIAL_CLOSE" or (trade_action in ("BUY", "SELL") and has_open_position):
+            elif trade_action == "PARTIAL_CLOSE" or (trade_action in ("BUY", "SELL") and is_reduce):
                 # Redução de posição (PARTIAL_CLOSE ou NETTING REDUCE)
                 closed_vol = response.get("volume", slave_lot)
                 if closed_vol >= existing_slave_vol:
@@ -616,9 +647,15 @@ class CopyTradeManager(QObject):
                     logger.info(f"    📊 Redução → PARTIAL (slave_vol={existing_slave_vol}, closed={closed_vol})")
                     self._on_partial_close_success(position_id, slave_key, closed_vol)
 
+            elif trade_action in ("BUY", "SELL") and is_add:
+                # ADD à posição existente (NETTING)
+                added_vol = response.get("volume", slave_lot)
+                logger.info(f"    📊 ADD ok: +{added_vol} lotes (slave_vol: {existing_slave_vol} → {existing_slave_vol + added_vol})")
+                self._on_add_success(position_id, slave_key, added_vol, volume)
+
             else:
                 # Abertura nova
-                self._on_open_success(position_id, slave_key, slave_result_ticket, slave_lot, symbol, volume)
+                self._on_open_success(position_id, slave_key, slave_result_ticket, slave_lot, symbol, volume, direction=trade_action)
 
             self.copy_trade_executed.emit({
                 "slave": slave_key, "symbol": symbol,
@@ -637,7 +674,7 @@ class CopyTradeManager(QObject):
 
     def _on_open_success(self, position_id: int, slave_key: str,
                          slave_ticket: int, slave_lot: float,
-                         symbol: str, master_volume: float):
+                         symbol: str, master_volume: float, direction: str = "BUY"):
         """BUY/SELL confirmado pelo slave — cria row no open_positions e atualiza position_map."""
         now = time.time()
         # position_map: position_id → {slave_key: slave_ticket}
@@ -654,14 +691,14 @@ class CopyTradeManager(QObject):
             """INSERT OR REPLACE INTO open_positions
                (master_ticket, slave_broker, slave_ticket, symbol,
                 master_volume_original, master_volume_current, slave_volume_current,
-                status, request_id, opened_at, synced_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, 'OPEN', ?, ?, ?)""",
+                direction, status, request_id, opened_at, synced_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?, ?, ?)""",
             (position_id, slave_key, slave_ticket, symbol,
              master_volume, master_volume, slave_lot,
-             request_id, now, now)
+             direction, request_id, now, now)
         )
         self.db.commit()
-        logger.debug(f"  ✅ Posição aberta: pos_id={position_id}, slave={slave_key}, slave_ticket={slave_ticket}, slave_lot={slave_lot}")
+        logger.debug(f"  ✅ Posição aberta: pos_id={position_id}, slave={slave_key}, slave_ticket={slave_ticket}, slave_lot={slave_lot}, dir={direction}")
 
     def _on_close_success(self, position_id: int, slave_key: str):
         """Fechamento total confirmado — marcar CLOSED, limpar position_map."""
@@ -676,6 +713,20 @@ class CopyTradeManager(QObject):
             if not self.position_map[position_id]:
                 del self.position_map[position_id]
         logger.debug(f"  ✅ Posição FECHADA: pos_id={position_id}, slave={slave_key}")
+
+    def _on_add_success(self, position_id: int, slave_key: str, added_volume: float, master_volume: float):
+        """ADD à posição confirmado — incrementar volumes no DB."""
+        now = time.time()
+        self.db.execute(
+            """UPDATE open_positions
+               SET slave_volume_current = slave_volume_current + ?,
+                   master_volume_current = master_volume_current + ?,
+                   last_heartbeat = ?
+               WHERE master_ticket = ? AND slave_broker = ? AND status = 'OPEN'""",
+            (added_volume, master_volume, now, position_id, slave_key)
+        )
+        self.db.commit()
+        logger.debug(f"  ✅ ADD ok: pos_id={position_id}, slave={slave_key}, +{added_volume} lotes")
 
     def _on_partial_close_success(self, position_id: int, slave_key: str, closed_volume: float):
         """Fechamento parcial confirmado — decrementar volume do slave."""
