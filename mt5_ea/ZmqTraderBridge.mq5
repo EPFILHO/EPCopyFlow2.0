@@ -1088,16 +1088,38 @@ void OnTradeTransaction(const MqlTradeTransaction &trans, const MqlTradeRequest 
 
    // Dados extras para copytrade
    // POSITION_IDENTIFIER é a chave universal que conecta abertura, parcial e fechamento.
-   // Nunca muda, mesmo em NETTING com reversão de posição.
+   // Nunca muda, mesmo em NETTING com adição de volume ou reversão de posição.
+   // Fonte primária: DEAL_POSITION_ID do histórico — é o único campo 100% consistente
+   // em todos os cenários (abertura, parcial, fechamento total, mesmo após posição encerrada).
    long position_id = 0;
    if(request.action == TRADE_ACTION_DEAL)
    {
+      // 1ª tentativa: DEAL_POSITION_ID via histórico — método mais confiável
+      if(result.deal > 0 && HistoryDealSelect(result.deal))
+      {
+         position_id = HistoryDealGetInteger(result.deal, DEAL_POSITION_ID);
+      }
+
+      // 2ª tentativa: POSITION_IDENTIFIER via posição ativa (abertura ou fechamento parcial)
+      if(position_id == 0)
+      {
+         if(request.position > 0 && PositionSelectByTicket(request.position))
+         {
+            position_id = PositionGetInteger(POSITION_IDENTIFIER);
+         }
+         else if(request.position == 0 && PositionSelect(request.symbol))
+         {
+            position_id = PositionGetInteger(POSITION_IDENTIFIER);
+         }
+      }
+
+      if(position_id == 0 && InpDebugLog)
+         PrintFormat("WARNING: Não foi possível obter POSITION_IDENTIFIER para %s (deal=%lld, pos=%lld)",
+                     request.symbol, result.deal, request.position);
+
+      // Volume restante após fechamento (só em fechamentos)
       if(request.position > 0)
       {
-         // Fechamento (total ou parcial) — request.position É o POSITION_IDENTIFIER
-         position_id = (long)request.position;
-
-         // Volume restante após fechamento
          if(PositionSelectByTicket(request.position))
          {
             stream_msg["position_volume_remaining"] = PositionGetDouble(POSITION_VOLUME);
@@ -1107,22 +1129,6 @@ void OnTradeTransaction(const MqlTradeTransaction &trans, const MqlTradeRequest 
             // Posição não existe mais = fechamento total
             stream_msg["position_volume_remaining"] = 0.0;
          }
-      }
-      else
-      {
-         // Abertura — buscar POSITION_IDENTIFIER via posição do símbolo (NETTING = 1 por símbolo)
-         if(PositionSelect(request.symbol))
-         {
-            position_id = PositionGetInteger(POSITION_IDENTIFIER);
-         }
-         else if(result.deal > 0 && HistoryDealSelect(result.deal))
-         {
-            // Fallback: buscar via deal history
-            position_id = HistoryDealGetInteger(result.deal, DEAL_POSITION_ID);
-         }
-
-         if(position_id == 0 && InpDebugLog)
-            PrintFormat("WARNING: Não foi possível obter POSITION_IDENTIFIER para %s", request.symbol);
       }
    }
    stream_msg["position_id"] = position_id;

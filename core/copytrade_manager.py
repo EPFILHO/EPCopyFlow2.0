@@ -236,12 +236,17 @@ class CopyTradeManager(QObject):
         lot = round(master_lot * multiplier, 2)
         return max(lot, 0.01)
 
-    def calculate_partial_close_lot(self, master_original: float, master_partial: float,
+    def calculate_partial_close_lot(self, master_current_before: float, master_partial: float,
                                      slave_current: float) -> float:
-        """Fechamento parcial proporcional."""
-        if master_original <= 0:
+        """
+        Fechamento parcial proporcional baseado no volume ATUAL (não original).
+        master_current_before: volume do master ANTES deste fechamento parcial
+        master_partial: volume que o master está fechando agora
+        slave_current: volume atual do slave
+        """
+        if master_current_before <= 0:
             return max(round(slave_current, 2), 0.01)
-        ratio = master_partial / master_original
+        ratio = master_partial / master_current_before
         lot = round(slave_current * ratio, 2)
         return max(lot, 0.01)
 
@@ -269,8 +274,13 @@ class CopyTradeManager(QObject):
             logger.debug(f"Trade event ignorado: {master_broker} não é master.")
             return
 
-        # Extrair informações do trade
+        # Filtrar ações não replicáveis antes de extrair tudo (reduz barulho no log)
         action = request_data.get("action", 0)
+        if action != 1:  # Só TRADE_ACTION_DEAL (1) é replicável
+            logger.debug(f"Trade event ignorado: action={action} (não é DEAL)")
+            return
+
+        # Extrair informações do trade
         symbol = request_data.get("symbol", "")
         volume = request_data.get("volume", 0)
         price = request_data.get("price", 0)
@@ -435,13 +445,16 @@ class CopyTradeManager(QObject):
                 return
 
             # Calcular volume proporcional
+            # NOTA: master_volume_current já foi decrementado em _track_master_position,
+            # então somamos volume de volta para obter o valor ANTES do fechamento
             row = self.db.execute(
-                "SELECT master_volume_original, slave_volume_current FROM open_positions WHERE master_ticket = ? AND slave_broker = ? AND status = 'OPEN'",
+                "SELECT master_volume_current, slave_volume_current FROM open_positions WHERE master_ticket = ? AND slave_broker = ? AND status = 'OPEN'",
                 (position_id, slave_key)
             ).fetchone()
 
             if row and row[1] > 0:
-                partial_lot = self.calculate_partial_close_lot(row[0], volume, row[1])
+                master_current_before = row[0] + volume  # compensar decremento já feito
+                partial_lot = self.calculate_partial_close_lot(master_current_before, volume, row[1])
             else:
                 partial_lot = self.calculate_slave_lot(volume, multiplier)
                 logger.warning(f"    ⚠️ Sem dados no DB para proporcional, usando multiplier: {partial_lot}")
