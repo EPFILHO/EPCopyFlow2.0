@@ -380,6 +380,14 @@ class CopyTradeManager(QObject):
             self.db.commit()
             logger.debug(f"  📝 Fechamento parcial master: position_id={position_id}, vol_fechado={volume}")
 
+    def _get_slave_volume_current(self, position_id: int, slave_key: str):
+        """Retorna slave_volume_current do DB para uma posição. None se não encontrado."""
+        row = self.db.execute(
+            "SELECT slave_volume_current FROM open_positions WHERE master_ticket = ? AND slave_broker = ? AND status IN ('OPEN', 'CLOSING')",
+            (position_id, slave_key)
+        ).fetchone()
+        return row[0] if row else None
+
     def _get_slave_ticket(self, position_id: int, slave_key: str):
         """Busca slave_ticket pelo position_id — primeiro em memória, depois no DB."""
         # 1. Cache em memória (rápido)
@@ -432,9 +440,18 @@ class CopyTradeManager(QObject):
                 self._insert_history(master_broker, deal_ticket, symbol, trade_action,
                                      volume, slave_key, 0, 0, "FAILED", "Sem mapeamento position_id→slave_ticket")
                 return
+
+            # P0 SELL-THROUGH PREVENTION: verificar se slave tem posição antes de fechar
+            db_slave_vol = self._get_slave_volume_current(position_id, slave_key)
+            if db_slave_vol is not None and db_slave_vol <= 0:
+                logger.warning(f"    ⚠️ SELL-THROUGH BLOQUEADO: slave {slave_key} já tem volume 0 para pos_id={position_id}. Ignorando CLOSE.")
+                self._insert_history(master_broker, deal_ticket, symbol, trade_action,
+                                     volume, slave_key, 0, 0, "SKIPPED", "Sell-through prevention: slave volume=0")
+                return
+
             command = "TRADE_POSITION_CLOSE_ID"
             payload = {"ticket": slave_ticket}
-            logger.info(f"    CLOSE total: slave_ticket={slave_ticket}")
+            logger.info(f"    CLOSE total: slave_ticket={slave_ticket}, slave_vol_db={db_slave_vol}")
 
         elif trade_action == "PARTIAL_CLOSE":
             slave_ticket = self._get_slave_ticket(position_id, slave_key)
@@ -442,6 +459,14 @@ class CopyTradeManager(QObject):
                 logger.error(f"    ❌ Sem mapeamento para PARTIAL_CLOSE: pos_id={position_id}, slave={slave_key}")
                 self._insert_history(master_broker, deal_ticket, symbol, trade_action,
                                      volume, slave_key, 0, 0, "FAILED", "Sem mapeamento position_id→slave_ticket")
+                return
+
+            # P0 SELL-THROUGH PREVENTION: verificar volume real do slave antes de calcular
+            db_slave_vol = self._get_slave_volume_current(position_id, slave_key)
+            if db_slave_vol is not None and db_slave_vol <= 0:
+                logger.warning(f"    ⚠️ SELL-THROUGH BLOQUEADO: slave {slave_key} já tem volume 0 para pos_id={position_id}. Ignorando PARTIAL_CLOSE.")
+                self._insert_history(master_broker, deal_ticket, symbol, trade_action,
+                                     volume, slave_key, 0, 0, "SKIPPED", "Sell-through prevention: slave volume=0")
                 return
 
             # Calcular volume proporcional
@@ -459,10 +484,22 @@ class CopyTradeManager(QObject):
                 partial_lot = self.calculate_slave_lot(volume, multiplier)
                 logger.warning(f"    ⚠️ Sem dados no DB para proporcional, usando multiplier: {partial_lot}")
 
+            # P0 SELL-THROUGH PREVENTION: NUNCA fechar mais do que slave realmente tem
+            if db_slave_vol is not None and partial_lot > db_slave_vol:
+                logger.warning(f"    ⚠️ SELL-THROUGH CAP: partial_lot={partial_lot} > slave_vol={db_slave_vol}. Limitando a {db_slave_vol}")
+                partial_lot = db_slave_vol
+
+            # Se após o cap o volume ficou <= 0, não enviar
+            if partial_lot <= 0:
+                logger.warning(f"    ⚠️ SELL-THROUGH BLOQUEADO: volume calculado <= 0 após cap. Ignorando.")
+                self._insert_history(master_broker, deal_ticket, symbol, trade_action,
+                                     volume, slave_key, 0, 0, "SKIPPED", "Sell-through prevention: volume=0 após cap")
+                return
+
             command = "TRADE_POSITION_PARTIAL"
             payload = {"ticket": slave_ticket, "volume": float(partial_lot)}
             slave_lot = partial_lot
-            logger.info(f"    PARTIAL_CLOSE: slave_ticket={slave_ticket}, volume={partial_lot}")
+            logger.info(f"    PARTIAL_CLOSE: slave_ticket={slave_ticket}, volume={partial_lot} (slave_vol_db={db_slave_vol})")
 
         else:
             logger.warning(f"Ação não suportada: {trade_action}")
