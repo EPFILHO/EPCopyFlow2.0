@@ -155,6 +155,7 @@ class ZmqMessageHandler(QObject):
                 "request": request,
                 "result": result,
                 "position_volume_remaining": message.get("position_volume_remaining"),
+                "position_id": message.get("position_id", 0),
             }
             self.trade_event_received.emit(trade_event_data)
             logger.info(f"TRADE_EVENT de {identified_broker_key} - symbol={request.get('symbol', 'N/A')}")
