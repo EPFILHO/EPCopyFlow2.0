@@ -310,6 +310,44 @@ void HandleGetAccountModeCommand(const string request_id)
    SendJsonMessage(response, command_socket, "Command");
 }
 
+void HandleGetSymbolInfoCommand(const string request_id, JSONNode &payload)
+{
+   JSONNode response;
+   response["type"] = "RESPONSE";
+   response["request_id"] = request_id;
+
+   // Extrair símbolo do payload
+   JSONNode *symbol_node = payload["symbol"];
+   if(CheckPointer(symbol_node) == POINTER_INVALID)
+   {
+      response["status"] = "ERROR";
+      response["error_message"] = "symbol parameter required";
+      SendJsonMessage(response, command_socket, "Command");
+      return;
+   }
+
+   string symbol = symbol_node.ToString();
+
+   // Verificar se símbolo existe
+   if(!SymbolSelect(symbol, true))
+   {
+      response["status"] = "ERROR";
+      response["error_message"] = StringFormat("Symbol not found: %s", symbol);
+      SendJsonMessage(response, command_socket, "Command");
+      return;
+   }
+
+   response["status"] = "OK";
+   response["symbol"] = symbol;
+   response["volume_min"] = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MIN);
+   response["volume_max"] = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MAX);
+   response["volume_step"] = SymbolInfoDouble(symbol, SYMBOL_VOLUME_STEP);
+   response["digits"] = (long)SymbolInfoInteger(symbol, SYMBOL_DIGITS);
+   response["trade_mode"] = (long)SymbolInfoInteger(symbol, SYMBOL_TRADE_MODE);
+
+   SendJsonMessage(response, command_socket, "Command");
+}
+
 void HandleSetHeartbeatIntervalCommand(const string request_id, JSONNode &payload)
 {
    JSONNode response;
@@ -980,6 +1018,10 @@ void ProcessCommand(JSONNode &json_command)
    else if(command == "GET_ACCOUNT_MODE")
    {
       HandleGetAccountModeCommand(request_id);
+   }
+   else if(command == "GET_SYMBOL_INFO")
+   {
+      HandleGetSymbolInfoCommand(request_id, payload);
    }
    else if(command == "SET_HEARTBEAT_INTERVAL")
    {

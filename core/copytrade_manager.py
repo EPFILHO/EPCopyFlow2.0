@@ -28,6 +28,7 @@ class CopyTradeManager(QObject):
         self.broker_manager = broker_manager
         self.zmq_router = zmq_router
         self.position_map = {}  # position_id (POSITION_IDENTIFIER) -> {slave_key: slave_ticket}
+        self.symbol_specs_cache = {}  # (broker_key, symbol) -> {volume_min, volume_max, volume_step}
         self.db = sqlite3.connect(DB_FILE)
         self._init_db()
         self._validate_account_modes()
@@ -236,6 +237,77 @@ class CopyTradeManager(QObject):
         lot = round(master_lot * multiplier, 2)
         return max(lot, 0.01)
 
+    async def _fetch_symbol_specs(self, broker_key: str, symbol: str) -> dict:
+        """
+        Busca VOLUME_MIN, VOLUME_MAX, VOLUME_STEP do símbolo via EA.
+        Cacheia resultado para não repetir.
+        Retorna dict com specs ou None se falhar.
+        """
+        cache_key = (broker_key, symbol)
+        if cache_key in self.symbol_specs_cache:
+            return self.symbol_specs_cache[cache_key]
+
+        try:
+            request_id = f"symbol_info_{broker_key}_{symbol}_{int(time.time())}"
+            response = await self.zmq_router.send_command_to_broker(
+                broker_key, "GET_SYMBOL_INFO", {"symbol": symbol}, request_id
+            )
+
+            if response.get("status") == "OK":
+                specs = {
+                    "volume_min": response.get("volume_min", 0.01),
+                    "volume_max": response.get("volume_max", 100.0),
+                    "volume_step": response.get("volume_step", 0.01),
+                }
+                self.symbol_specs_cache[cache_key] = specs
+                logger.info(f"  📐 Symbol specs {symbol}@{broker_key}: min={specs['volume_min']}, max={specs['volume_max']}, step={specs['volume_step']}")
+                return specs
+            else:
+                logger.warning(f"  ⚠️ Falha ao buscar specs de {symbol}@{broker_key}: {response.get('message', '?')}")
+                return None
+        except Exception as e:
+            logger.error(f"  Erro ao buscar symbol specs de {symbol}@{broker_key}: {e}")
+            return None
+
+    def normalize_volume(self, volume: float, specs: dict, force_min: bool = False) -> float:
+        """
+        Normaliza volume de acordo com as especificações do símbolo.
+        - Arredonda para o VOLUME_STEP mais próximo
+        - Garante >= VOLUME_MIN e <= VOLUME_MAX
+        - force_min=True (para PARTIAL_CLOSE): arredonda para CIMA ao step mais próximo,
+          e se < VOLUME_MIN usa VOLUME_MIN. Parciais DEVEM acontecer.
+        - force_min=False (para BUY/SELL): arredonda para BAIXO, retorna 0 se < VOLUME_MIN.
+        """
+        step = specs.get("volume_step", 0.01)
+        vol_min = specs.get("volume_min", 0.01)
+        vol_max = specs.get("volume_max", 100.0)
+
+        if step <= 0:
+            step = 0.01
+
+        if force_min:
+            # PARTIAL_CLOSE: arredondar para o mais próximo (round), mínimo = vol_min
+            import math
+            steps_count = round(volume / step)  # round normal (0.5 → 1)
+            normalized = round(steps_count * step, 8)
+            if normalized < vol_min:
+                normalized = vol_min
+                logger.info(f"    📐 Parcial forçado ao mínimo: {volume} → {normalized}")
+        else:
+            # BUY/SELL: arredondar para baixo (floor)
+            steps_count = int(volume / step)
+            normalized = round(steps_count * step, 8)
+            if normalized < vol_min:
+                logger.warning(f"    ⚠️ Volume {volume} → normalizado {normalized} < mínimo {vol_min}. Operação cancelada.")
+                return 0.0
+
+        # Verificar máximo
+        if normalized > vol_max:
+            normalized = round(int(vol_max / step) * step, 8)
+            logger.warning(f"    ⚠️ Volume {volume} excede máximo. Limitado a {normalized}")
+
+        return normalized
+
     def calculate_partial_close_lot(self, master_current_before: float, master_partial: float,
                                      slave_current: float) -> float:
         """
@@ -414,8 +486,24 @@ class CopyTradeManager(QObject):
         """
         logger.info(f"  ➜ _replicate_to_slave: slave={slave_key}, action={trade_action}, symbol={symbol}, pos_id={position_id}")
 
+        # P1: Buscar specs do símbolo para validação de volume (cacheado)
+        symbol_specs = await self._fetch_symbol_specs(slave_key, symbol)
+
         multiplier = self.broker_manager.get_lot_multiplier(slave_key)
         slave_lot = self.calculate_slave_lot(volume, multiplier)
+
+        # P1: Normalizar volume para BUY/SELL
+        if trade_action in ("BUY", "SELL") and symbol_specs:
+            raw_lot = slave_lot
+            slave_lot = self.normalize_volume(slave_lot, symbol_specs)
+            if slave_lot <= 0:
+                logger.warning(f"    ❌ Volume {raw_lot} inválido para {symbol} (min={symbol_specs['volume_min']}, step={symbol_specs['volume_step']}). Operação cancelada.")
+                self._insert_history(master_broker, deal_ticket, symbol, trade_action,
+                                     volume, slave_key, 0, 0, "SKIPPED",
+                                     f"Volume {raw_lot} < mínimo {symbol_specs['volume_min']}")
+                return
+            if raw_lot != slave_lot:
+                logger.info(f"    📐 Volume normalizado: {raw_lot} → {slave_lot} (step={symbol_specs['volume_step']})")
 
         # ── Determinar comando e payload ──
         if trade_action == "BUY":
@@ -489,12 +577,25 @@ class CopyTradeManager(QObject):
                 logger.warning(f"    ⚠️ SELL-THROUGH CAP: partial_lot={partial_lot} > slave_vol={db_slave_vol}. Limitando a {db_slave_vol}")
                 partial_lot = db_slave_vol
 
-            # Se após o cap o volume ficou <= 0, não enviar
+            # P1: Normalizar volume parcial para specs do símbolo
+            if symbol_specs:
+                raw_partial = partial_lot
+                partial_lot = self.normalize_volume(partial_lot, symbol_specs, force_min=True)
+                if raw_partial != partial_lot and partial_lot > 0:
+                    logger.info(f"    📐 Parcial normalizado: {raw_partial} → {partial_lot} (step={symbol_specs['volume_step']})")
+
+            # Se após o cap/normalização o volume ficou <= 0, não enviar
             if partial_lot <= 0:
-                logger.warning(f"    ⚠️ SELL-THROUGH BLOQUEADO: volume calculado <= 0 após cap. Ignorando.")
+                logger.warning(f"    ⚠️ BLOQUEADO: volume calculado <= 0 após cap/normalização. Ignorando.")
                 self._insert_history(master_broker, deal_ticket, symbol, trade_action,
-                                     volume, slave_key, 0, 0, "SKIPPED", "Sell-through prevention: volume=0 após cap")
+                                     volume, slave_key, 0, 0, "SKIPPED",
+                                     f"Volume {partial_lot} inválido após normalização (min={symbol_specs.get('volume_min') if symbol_specs else '?'})")
                 return
+
+            # P0+P1: Re-verificar sell-through após normalização (normalize pode arredondar para cima em edge cases)
+            if db_slave_vol is not None and partial_lot > db_slave_vol:
+                logger.warning(f"    ⚠️ SELL-THROUGH CAP pós-normalização: {partial_lot} > {db_slave_vol}. Limitando.")
+                partial_lot = db_slave_vol
 
             command = "TRADE_POSITION_PARTIAL"
             payload = {"ticket": slave_ticket, "volume": float(partial_lot)}
