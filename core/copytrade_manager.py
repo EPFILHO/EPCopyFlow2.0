@@ -269,12 +269,14 @@ class CopyTradeManager(QObject):
             logger.error(f"  Erro ao buscar symbol specs de {symbol}@{broker_key}: {e}")
             return None
 
-    def normalize_volume(self, volume: float, specs: dict) -> float:
+    def normalize_volume(self, volume: float, specs: dict, force_min: bool = False) -> float:
         """
         Normaliza volume de acordo com as especificações do símbolo.
-        - Arredonda para o VOLUME_STEP mais próximo (para baixo)
+        - Arredonda para o VOLUME_STEP mais próximo
         - Garante >= VOLUME_MIN e <= VOLUME_MAX
-        - Retorna 0 se volume < VOLUME_MIN (operação deve ser cancelada)
+        - force_min=True (para PARTIAL_CLOSE): arredonda para CIMA ao step mais próximo,
+          e se < VOLUME_MIN usa VOLUME_MIN. Parciais DEVEM acontecer.
+        - force_min=False (para BUY/SELL): arredonda para BAIXO, retorna 0 se < VOLUME_MIN.
         """
         step = specs.get("volume_step", 0.01)
         vol_min = specs.get("volume_min", 0.01)
@@ -283,16 +285,23 @@ class CopyTradeManager(QObject):
         if step <= 0:
             step = 0.01
 
-        # Arredondar para baixo ao step mais próximo
-        # Ex: volume=1.5, step=1.0 → 1.0  |  volume=2.5, step=1.0 → 2.0
-        steps_count = int(volume / step)
-        normalized = round(steps_count * step, 8)  # round para evitar floating point
+        if force_min:
+            # PARTIAL_CLOSE: arredondar para o mais próximo (round), mínimo = vol_min
+            import math
+            steps_count = round(volume / step)  # round normal (0.5 → 1)
+            normalized = round(steps_count * step, 8)
+            if normalized < vol_min:
+                normalized = vol_min
+                logger.info(f"    📐 Parcial forçado ao mínimo: {volume} → {normalized}")
+        else:
+            # BUY/SELL: arredondar para baixo (floor)
+            steps_count = int(volume / step)
+            normalized = round(steps_count * step, 8)
+            if normalized < vol_min:
+                logger.warning(f"    ⚠️ Volume {volume} → normalizado {normalized} < mínimo {vol_min}. Operação cancelada.")
+                return 0.0
 
-        # Verificar limites
-        if normalized < vol_min:
-            logger.warning(f"    ⚠️ Volume {volume} → normalizado {normalized} < mínimo {vol_min}. Operação cancelada.")
-            return 0.0
-
+        # Verificar máximo
         if normalized > vol_max:
             normalized = round(int(vol_max / step) * step, 8)
             logger.warning(f"    ⚠️ Volume {volume} excede máximo. Limitado a {normalized}")
@@ -571,7 +580,7 @@ class CopyTradeManager(QObject):
             # P1: Normalizar volume parcial para specs do símbolo
             if symbol_specs:
                 raw_partial = partial_lot
-                partial_lot = self.normalize_volume(partial_lot, symbol_specs)
+                partial_lot = self.normalize_volume(partial_lot, symbol_specs, force_min=True)
                 if raw_partial != partial_lot and partial_lot > 0:
                     logger.info(f"    📐 Parcial normalizado: {raw_partial} → {partial_lot} (step={symbol_specs['volume_step']})")
 
