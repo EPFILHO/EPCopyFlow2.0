@@ -715,9 +715,15 @@ void HandleTradePositionPartialCommand(const string request_id, JSONNode &payloa
       SendErrorResponse(request_id, "Posição não encontrada");
       return;
    }
-   if(!trade.PositionClosePartial(ticket, volume))
+
+   // PositionClosePartial pode retornar false mesmo com execução bem-sucedida (bug CTrade).
+   // Verificar pelo retcode em vez do retorno do método.
+   trade.PositionClosePartial(ticket, volume);
+   uint retcode = trade.ResultRetcode();
+
+   if(retcode != TRADE_RETCODE_DONE && retcode != TRADE_RETCODE_PLACED && retcode != TRADE_RETCODE_DONE_PARTIAL)
    {
-      SendErrorResponse(request_id, StringFormat("Falha fechamento parcial: %s", trade.ResultComment()));
+      SendErrorResponse(request_id, StringFormat("Falha fechamento parcial (retcode=%d): %s", retcode, trade.ResultComment()));
       return;
    }
 
@@ -725,7 +731,7 @@ void HandleTradePositionPartialCommand(const string request_id, JSONNode &payloa
    response["type"] = "RESPONSE";
    response["request_id"] = request_id;
    response["status"] = "OK";
-   response["retcode"] = (long)trade.ResultRetcode();
+   response["retcode"] = (long)retcode;
    response["result"] = trade.ResultComment();
    response["deal"] = (long)trade.ResultDeal();
    response["order"] = (long)trade.ResultOrder();
