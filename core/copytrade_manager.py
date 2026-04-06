@@ -7,6 +7,8 @@ import sqlite3
 import time
 import logging
 import asyncio
+import hashlib
+import datetime
 from PySide6.QtCore import QObject, Signal
 
 logger = logging.getLogger(__name__)
@@ -31,11 +33,6 @@ class CopyTradeManager(QObject):
         self.symbol_specs_cache = {}  # (broker_key, symbol) -> {volume_min, volume_max, volume_step}
         self.db = sqlite3.connect(DB_FILE)
         self._init_db()
-        self._validate_account_modes()
-
-        # Heartbeat control
-        self.heartbeat_task = None
-        self.heartbeat_running = False
 
         logger.info("CopyTradeManager inicializado.")
 
@@ -101,14 +98,6 @@ class CopyTradeManager(QObject):
 
         self.db.commit()
         logger.info("Banco de dados SQLite inicializado (3 tabelas).")
-
-    def _validate_account_modes(self):
-        """
-        Validação silenciosa na inicialização.
-        Account mode será detectado do MT5 e validado quando tenta usar CopyTrade.
-        """
-        # Apenas inicializa sem warnings - a detecção real vem do EA
-        pass
 
     def validate_broker_for_copytrade(self, broker_key: str) -> tuple[bool, str]:
         """
@@ -287,7 +276,6 @@ class CopyTradeManager(QObject):
 
         if force_min:
             # PARTIAL_CLOSE: arredondar para o mais próximo (round), mínimo = vol_min
-            import math
             steps_count = round(volume / step)  # round normal (0.5 → 1)
             normalized = round(steps_count * step, 8)
             if normalized < vol_min:
@@ -600,7 +588,9 @@ class CopyTradeManager(QObject):
             master_broker, deal_ticket, symbol, trade_action,
             volume, slave_key, 0, slave_lot, "PENDING"
         )
-        logger.info(f"    COPY [{slave_key}]: {trade_action} {symbol} {slave_lot} lotes → {command}")
+        log_msg = f"COPY [{slave_key}]: {trade_action} {symbol} {slave_lot} lotes"
+        self.copy_trade_log.emit(log_msg)
+        logger.info(f"    {log_msg} → {command}")
 
         request_id = f"trade_{slave_key}_{int(time.time())}"
         response = await self.zmq_router.send_command_to_broker(
@@ -656,7 +646,6 @@ class CopyTradeManager(QObject):
         self.position_map[position_id][slave_key] = slave_ticket
 
         # Inserir row definitiva no open_positions (uma por slave, com dados reais)
-        import hashlib
         request_id = hashlib.sha256(
             f"{position_id}_{slave_key}_{int(now * 1000)}".encode()
         ).hexdigest()[:32]
@@ -701,193 +690,7 @@ class CopyTradeManager(QObject):
         logger.debug(f"  ✅ Parcial ok: pos_id={position_id}, slave={slave_key}, vol_fechado={closed_volume}")
 
     # ──────────────────────────────────────────────
-    # Bloco 4 - Heartbeat de Sincronização
-    # ──────────────────────────────────────────────
-    def start_heartbeat(self):
-        """
-        DEPRECATED: Heartbeat agora é gerenciado pelo EA (Master).
-        O EA envia heartbeat periódico via ZMQ, não há polling do Python.
-        """
-        logger.debug("start_heartbeat() obsoleto - heartbeat vem do EA")
-
-    async def process_heartbeat_from_ea(self, broker_key: str, heartbeat_data: dict):
-        """
-        Processa heartbeat recebido do EA (Master).
-        O EA envia periodicamente: posições abertas, timestamp, etc.
-        """
-        try:
-            logger.debug(f"💓 Heartbeat de {broker_key}: {len(heartbeat_data.get('positions', []))} posições")
-
-            # Aqui o Python pode:
-            # 1. Validar sincronização com slaves
-            # 2. Detectar operações alienígenas
-            # 3. Atualizar timestamp do heartbeat no DB
-
-            # Por enquanto, apenas loga. Será implementado quando o EA enviar.
-            await self._detect_alien_operations()
-
-        except Exception as e:
-            logger.error(f"Erro ao processar heartbeat de {broker_key}: {e}", exc_info=True)
-
-    # ────────────────────────────────────────────────
-    # Métodos de Heartbeat (DEPRECATED - mantidos para referência)
-    # ────────────────────────────────────────────────
-
-    def stop_heartbeat(self):
-        """Para o heartbeat."""
-        if self.heartbeat_task and not self.heartbeat_task.done():
-            self.heartbeat_task.cancel()
-        self.heartbeat_running = False
-        logger.info("⏹️ Heartbeat de sincronização parado")
-
-    async def _heartbeat_loop(self):
-        """
-        Loop principal do heartbeat: a cada HEARTBEAT_INTERVAL segundos,
-        valida sincronização de posições e detecta operações alienígenas.
-        """
-        import configparser
-
-        # Ler intervalo do config
-        config = configparser.ConfigParser()
-        config.read("config.ini")
-        heartbeat_interval = int(config.get("CopyTrade", "heartbeat_interval", fallback="5"))
-
-        logger.info(f"🔄 Heartbeat loop iniciado (intervalo: {heartbeat_interval}s)")
-
-        while self.heartbeat_running:
-            try:
-                await asyncio.sleep(heartbeat_interval)
-
-                if not self.heartbeat_running:
-                    break
-
-                logger.debug("🔄 Heartbeat: iniciando validação")
-                await self._reconcile_positions()
-
-            except asyncio.CancelledError:
-                logger.info("Heartbeat cancelado")
-                break
-            except Exception as e:
-                logger.error(f"❌ Erro no heartbeat: {e}", exc_info=True)
-
-    async def _reconcile_positions(self):
-        """
-        Valida sincronização:
-        - Detecta operações alienígenas
-        - Atualiza heartbeat no DB
-        """
-        try:
-            # Detectar operações alienígenas
-            await self._detect_alien_operations()
-
-            # Atualizar heartbeat timestamp
-            now = time.time()
-            self.db.execute(
-                "UPDATE slave_status SET last_heartbeat = ? WHERE status = 'ACTIVE'",
-                (now,)
-            )
-            self.db.commit()
-
-        except Exception as e:
-            logger.error(f"Erro ao reconciliar: {e}")
-
-    async def _detect_alien_operations(self):
-        """
-        Detecta operações manuais no Slave que não estão mapeadas.
-        Se encontrar, pausa copytrader para aquele slave.
-        """
-        master_brokers = [k for k, v in self.broker_manager.get_brokers().items()
-                         if self.broker_manager.get_broker_role(k) == "master"]
-        slave_brokers = [k for k, v in self.broker_manager.get_brokers().items()
-                        if self.broker_manager.get_broker_role(k) == "slave"]
-
-        if not master_brokers or not slave_brokers:
-            return
-
-        master_key = master_brokers[0]
-
-        for slave_key in slave_brokers:
-            # Pular se já pausado
-            if self.is_slave_paused(slave_key):
-                continue
-
-            try:
-                # Pedir posições do Slave
-                slave_positions = await self._get_slave_positions(slave_key)
-
-                if not slave_positions:
-                    continue
-
-                # Ler mapeamento do DB
-                db_rows = self.db.execute(
-                    "SELECT slave_ticket FROM open_positions WHERE slave_broker = ? AND status != 'CLOSED'",
-                    (slave_key,)
-                ).fetchall()
-
-                mapped_tickets = {row[0] for row in db_rows}
-
-                # Verificar se há tickets no Slave não mapeados
-                for ticket, position in slave_positions.items():
-                    if ticket not in mapped_tickets:
-                        logger.warning(f"🚨 OPERAÇÃO ALIENÍGENA detectada em {slave_key}!")
-                        logger.warning(f"   Ticket: {ticket}, Símbolo: {position.get('symbol')}, Volume: {position.get('volume')}")
-
-                        # Pausar copytrader
-                        self.pause_slave(slave_key, "ALIEN_OPERATION", ticket)
-                        self.copy_trade_log.emit(
-                            f"⚠️ CopyTrade PAUSADO em {slave_key}: operação manual detectada"
-                        )
-                        break
-
-            except Exception as e:
-                logger.error(f"Erro ao detectar alienígenas em {slave_key}: {e}")
-
-    async def _get_slave_positions(self, slave_key: str) -> dict:
-        """
-        Retorna dict de posições abertas do Slave: {ticket: {symbol, volume, ...}}
-        Comunica com Slave EA via ZMQ para pedir lista de posições.
-        """
-        try:
-            # Enviar comando GET_POSITIONS para Slave
-            request_id = f"get_positions_{slave_key}_{int(time.time())}"
-            logger.debug(f"  Pedindo posições de {slave_key}...")
-
-            response = await self.zmq_router.send_command_to_broker(
-                slave_key, "GET_POSITIONS", {}, request_id
-            )
-
-            if response.get("status") != "OK":
-                logger.warning(f"  Falha ao pedir posições de {slave_key}: {response.get('message', '?')}")
-                return {}
-
-            # Parsear resposta flattenada do EA
-            positions_count = response.get("positions_count", 0)
-            positions_dict = {}
-
-            for i in range(positions_count):
-                prefix = f"pos_{i}_"
-                ticket = response.get(f"{prefix}ticket")
-
-                if ticket:
-                    positions_dict[ticket] = {
-                        "symbol": response.get(f"{prefix}symbol", ""),
-                        "volume": response.get(f"{prefix}volume", 0),
-                        "price_open": response.get(f"{prefix}price_open", 0),
-                        "profit": response.get(f"{prefix}profit", 0),
-                    }
-
-            logger.debug(f"  Posições em {slave_key}: {list(positions_dict.keys())}")
-            return positions_dict
-
-        except asyncio.TimeoutError:
-            logger.warning(f"  Timeout ao pedir posições de {slave_key}")
-            return {}
-        except Exception as e:
-            logger.error(f"  Erro ao pedir posições de {slave_key}: {e}")
-            return {}
-
-    # ──────────────────────────────────────────────
-    # Bloco 5 - Fechamento de Emergência
+    # Bloco 4 - Fechamento de Emergência
     # ──────────────────────────────────────────────
     async def emergency_close_all(self):
         """Fecha TODAS as posições em TODOS os MT5s (master + slaves)."""
@@ -946,7 +749,7 @@ class CopyTradeManager(QObject):
         logger.warning(msg)
 
     # ──────────────────────────────────────────────
-    # Bloco 5 - Histórico (SQLite)
+    # Bloco 5 - Histórico e Estatísticas (SQLite)
     # ──────────────────────────────────────────────
     def _insert_history(self, master_broker, master_ticket, symbol, action,
                         master_lot, slave_broker, slave_ticket, slave_lot, status,
@@ -996,7 +799,6 @@ class CopyTradeManager(QObject):
 
     def get_today_stats(self):
         """Retorna estatísticas do dia (trades copiados, sucesso, falha)."""
-        import datetime
         today_start = datetime.datetime.now().replace(
             hour=0, minute=0, second=0, microsecond=0).timestamp()
         row = self.db.execute(
