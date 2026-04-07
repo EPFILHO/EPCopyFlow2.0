@@ -137,18 +137,50 @@ string RobustJsonSerialize(JSONNode &json_message)
 {
    string msg = json_message.Serialize();
    int real_len = StringLen(msg);
+
+   // Bug do MQL5: Serialize() pode truncar strings >= 255 chars.
+   // Workaround: chamar Serialize() de novo até obter resultado consistente.
    if(real_len >= 255)
    {
-      msg = msg + msg;
-      msg = StringSubstr(msg, 0, real_len);
+      string msg2 = json_message.Serialize();
+      int len2 = StringLen(msg2);
+      // Usar a versão mais longa (a truncada é mais curta)
+      if(len2 > real_len)
+      {
+         msg = msg2;
+         real_len = len2;
+      }
    }
-   if(real_len == 0 || msg[real_len-1] != '}')
+
+   // Verificar se termina com '}'
+   if(real_len == 0)
    {
-      Print("WARN: JSON não termina com '}'. Corrigindo.");
-      msg = StringSubstr(msg, 0, StringFind(msg, "}") + 1);
-      if(StringFind(msg, "}") == -1)
-         msg += "}";
+      Print("WARN: JSON serializado vazio");
+      return "{}";
    }
+
+   // Encontrar o último '}' (não o primeiro — pode ter strings com '}' dentro)
+   int last_brace = -1;
+   for(int i = real_len - 1; i >= 0; i--)
+   {
+      if(msg[i] == '}')
+      {
+         last_brace = i;
+         break;
+      }
+   }
+
+   if(last_brace == -1)
+   {
+      Print("WARN: JSON sem '}' final. Adicionando.");
+      msg += "}";
+   }
+   else if(last_brace < real_len - 1)
+   {
+      // Lixo após o último '}' — cortar
+      msg = StringSubstr(msg, 0, last_brace + 1);
+   }
+
    return msg;
 }
 
