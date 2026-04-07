@@ -808,14 +808,14 @@ class CopyTradeManager(QObject):
                         error = close_response.get("message", "erro")
                         errors.append(f"{broker_key}/{symbol}: {error}")
 
-        # Marcar TODAS as posições como CLOSED no DB (evita replicação de eventos atrasados)
+        # Marcar TODAS as posições como PANIC no DB (diferencia de CLOSED normal)
         now = time.time()
         self.db.execute(
-            "UPDATE open_positions SET status = 'CLOSED', closed_at = ? WHERE status IN ('OPEN', 'SYNCING', 'CLOSING')",
+            "UPDATE open_positions SET status = 'PANIC', closed_at = ? WHERE status IN ('OPEN', 'SYNCING', 'CLOSING')",
             (now,)
         )
         self.db.commit()
-        logger.info("  📝 Todas as posições marcadas como CLOSED no DB")
+        logger.info("  📝 Todas as posições marcadas como PANIC no DB")
 
         # Limpa mapa de posições
         self.position_map.clear()
