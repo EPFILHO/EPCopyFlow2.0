@@ -779,7 +779,13 @@ void HandleTradePositionPartialCommand(const string request_id, JSONNode &payloa
 
 void HandleTradePositionCloseIdCommand(const string request_id, JSONNode &payload)
 {
-   if(g_role == "MASTER")
+   // Emergency close bypassa proteção do MASTER
+   bool is_emergency = false;
+   JSONNode *emergency_node = payload["emergency"];
+   if(CheckPointer(emergency_node) != POINTER_INVALID)
+      is_emergency = (emergency_node.ToBool() || emergency_node.ToString() == "true");
+
+   if(g_role == "MASTER" && !is_emergency)
    {
       SendErrorResponse(request_id, "MASTER não aceita comandos de trade");
       return;
