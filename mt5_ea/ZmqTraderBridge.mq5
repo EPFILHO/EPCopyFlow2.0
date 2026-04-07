@@ -135,20 +135,25 @@ bool ValidatePorts()
 //+------------------------------------------------------------------+
 string RobustJsonSerialize(JSONNode &json_message)
 {
-   string msg = json_message.Serialize();
+   // Usa SerializeTo() que passa string por referência — contorna bug do MQL5
+   // onde return de string em funções trunca em ~255 chars.
+   // REQUER: método SerializeTo(string &out) adicionado ao Json.mqh
+   string msg = "";
+   json_message.SerializeTo(msg);
    int real_len = StringLen(msg);
-   if(real_len >= 255)
+
+   if(real_len == 0)
    {
-      msg = msg + msg;
-      msg = StringSubstr(msg, 0, real_len);
+      // Fallback: tentar Serialize() padrão (para Json.mqh sem SerializeTo)
+      msg = json_message.Serialize();
+      real_len = StringLen(msg);
+      if(real_len == 0)
+      {
+         Print("WARN: JSON serializado vazio");
+         return "{}";
+      }
    }
-   if(real_len == 0 || msg[real_len-1] != '}')
-   {
-      Print("WARN: JSON não termina com '}'. Corrigindo.");
-      msg = StringSubstr(msg, 0, StringFind(msg, "}") + 1);
-      if(StringFind(msg, "}") == -1)
-         msg += "}";
-   }
+
    return msg;
 }
 
@@ -779,7 +784,13 @@ void HandleTradePositionPartialCommand(const string request_id, JSONNode &payloa
 
 void HandleTradePositionCloseIdCommand(const string request_id, JSONNode &payload)
 {
-   if(g_role == "MASTER")
+   // Emergency close bypassa proteção do MASTER
+   bool is_emergency = false;
+   JSONNode *emergency_node = payload["emergency"];
+   if(CheckPointer(emergency_node) != POINTER_INVALID)
+      is_emergency = (emergency_node.ToBool() || emergency_node.ToString() == "true");
+
+   if(g_role == "MASTER" && !is_emergency)
    {
       SendErrorResponse(request_id, "MASTER não aceita comandos de trade");
       return;

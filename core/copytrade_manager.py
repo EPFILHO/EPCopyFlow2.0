@@ -780,7 +780,7 @@ class CopyTradeManager(QObject):
                     close_id = f"close_{broker_key}_{ticket}_{int(time.time())}"
                     close_response = await self.zmq_router.send_command_to_broker(
                         broker_key, "TRADE_POSITION_CLOSE_ID",
-                        {"ticket": ticket}, close_id
+                        {"ticket": ticket, "emergency": True}, close_id
                     )
                     if close_response.get("status") == "OK":
                         total_closed += 1
