@@ -1181,12 +1181,14 @@ void OnTradeTransaction(const MqlTradeTransaction &trans, const MqlTradeRequest 
    // Fonte primária: DEAL_POSITION_ID do histórico — é o único campo 100% consistente
    // em todos os cenários (abertura, parcial, fechamento total, mesmo após posição encerrada).
    long position_id = 0;
+   long deal_magic = 0;  // Lido junto com position_id (evita segundo HistoryDealSelect)
    if(request.action == TRADE_ACTION_DEAL)
    {
       // 1ª tentativa: DEAL_POSITION_ID via histórico — método mais confiável
       if(result.deal > 0 && HistoryDealSelect(result.deal))
       {
          position_id = HistoryDealGetInteger(result.deal, DEAL_POSITION_ID);
+         deal_magic = HistoryDealGetInteger(result.deal, DEAL_MAGIC);
       }
 
       // 2ª tentativa: POSITION_IDENTIFIER via posição ativa (abertura ou fechamento parcial)
@@ -1228,38 +1230,29 @@ void OnTradeTransaction(const MqlTradeTransaction &trans, const MqlTradeRequest 
    }
 
    // ── Detecção de operação alienígena (apenas SLAVE, apenas trades com sucesso) ──
+   // Reutiliza deal_magic já lido no HistoryDealSelect acima (sem chamada duplicada)
    if(g_magic_number > 0 && g_role == "SLAVE" && result.retcode == TRADE_RETCODE_DONE
-      && result.deal > 0 && request.action == TRADE_ACTION_DEAL)
+      && result.deal > 0 && request.action == TRADE_ACTION_DEAL
+      && deal_magic != g_magic_number)
    {
-      if(HistoryDealSelect(result.deal))
-      {
-         long deal_magic = HistoryDealGetInteger(result.deal, DEAL_MAGIC);
-         if(deal_magic != g_magic_number)
-         {
-            // Trade não veio do nosso EA — operação alienígena
-            string deal_symbol = HistoryDealGetString(result.deal, DEAL_SYMBOL);
-            double deal_volume = HistoryDealGetDouble(result.deal, DEAL_VOLUME);
-            long deal_type = HistoryDealGetInteger(result.deal, DEAL_TYPE);
-            string type_str = (deal_type == DEAL_TYPE_BUY) ? "BUY" : "SELL";
+      string type_str = (request.type == ORDER_TYPE_BUY) ? "BUY" : "SELL";
 
-            PrintFormat("ALIEN TRADE detectado! magic=%lld (esperado=%lld), symbol=%s, %s %.2f lotes",
-                        deal_magic, g_magic_number, deal_symbol, type_str, deal_volume);
+      PrintFormat("ALIEN TRADE detectado! magic=%lld (esperado=%lld), symbol=%s, %s %.2f lotes",
+                  deal_magic, g_magic_number, request.symbol, type_str, request.volume);
 
-            JSONNode alien_msg;
-            alien_msg["type"] = "STREAM";
-            alien_msg["event"] = "ALIEN_TRADE";
-            alien_msg["timestamp_mql"] = (long)TimeCurrent();
-            alien_msg["role"] = g_role;
-            alien_msg["deal"] = (long)result.deal;
-            alien_msg["deal_magic"] = deal_magic;
-            alien_msg["expected_magic"] = g_magic_number;
-            alien_msg["symbol"] = deal_symbol;
-            alien_msg["volume"] = deal_volume;
-            alien_msg["deal_type"] = type_str;
+      JSONNode alien_msg;
+      alien_msg["type"] = "STREAM";
+      alien_msg["event"] = "ALIEN_TRADE";
+      alien_msg["timestamp_mql"] = (long)TimeCurrent();
+      alien_msg["role"] = g_role;
+      alien_msg["deal"] = (long)result.deal;
+      alien_msg["deal_magic"] = deal_magic;
+      alien_msg["expected_magic"] = g_magic_number;
+      alien_msg["symbol"] = request.symbol;
+      alien_msg["volume"] = request.volume;
+      alien_msg["deal_type"] = type_str;
 
-            if(!SendJsonMessage(alien_msg, event_socket, "Event"))
-               Print("ERROR: Falha ao enviar ALIEN_TRADE via EventSocket");
-         }
-      }
+      if(!SendJsonMessage(alien_msg, event_socket, "Event"))
+         Print("ERROR: Falha ao enviar ALIEN_TRADE via EventSocket");
    }
 }
