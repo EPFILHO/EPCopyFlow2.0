@@ -18,21 +18,36 @@
 
 ## Bugs Descobertos em Teste Funcional
 - [x] **SQL BINDING ERROR** — INSERT em open_positions com número errado de placeholders ✅ FIXADO
-  - Faltava master_ticket no tuple de valores
-  - Arquivo: `core/copytrade_manager.py` linha 361 em `_track_master_position()`
   - Commit: `0b467ca`
 
-- [ ] **FECHAMENTO PARCIAL FECHA TUDO** — Fechar 1.0 de 2.0 no Master fecha TODAS posições no Slave
-  - Master: 2.0 lotes abertos → fecha parcial 1.0 (1.0 restante)
-  - Python envia: `TRADE_POSITION_CLOSE` com symbol=USDJPY (sem ticket)
-  - Slave: fecha TODAS posições USDJPY (inclusive a alienígena 0.01)
-  - Causa: falta de mapeamento Master_ticket → Slave_ticket na BD
-  - Solução: guardar mapping no open_positions, enviar comando com ticket específico
+- [x] **FECHAMENTO PARCIAL FECHA TUDO** ✅ FIXADO
+  - Causa: falta de mapeamento Master_ticket → Slave_ticket + uso de TRADE_POSITION_PARTIAL (bugado no CTrade)
+  - Fix: rastreamento por POSITION_IDENTIFIER, PARTIAL_CLOSE convertido para SELL/BUY com volume proporcional
+  - Eliminado TRADE_POSITION_PARTIAL do fluxo Python (EA mantém suporte legado com fix de retcode)
 
-- [ ] **ALIEN OPERATIONS NÃO DETECTADAS** — Ordem aberta no Slave não foi pausada
-  - Python deveria detectar (não tem ticket no open_positions) e pausar
+- [x] **SELL-THROUGH (P0)** — Slave podia ficar com posição negativa ✅ FIXADO
+  - Fix: `_normalize_and_cap()` limita volume ao `slave_volume_current` do DB
+  - CLOSE bloqueado se slave_vol=0, PARTIAL_CLOSE capped ao slave_vol
+
+- [x] **VOLUME VALIDATION (P1)** — Volumes inválidos para specs do símbolo ✅ FIXADO
+  - Fix: EA `GET_SYMBOL_INFO` → cache Python → `normalize_volume()` com floor/ceil modes
+  - `force_min=True` para reduces/closes (arredonda UP, força mínimo)
+  - `force_min=False` para opens (arredonda DOWN, cancela se < mínimo)
+
+- [x] **NETTING ADD vs REDUCE INVERTIDO** — BUY sobre BUY era tratado como REDUCE ✅ FIXADO
+  - Causa: sem tracking de direção (BUY/SELL) da posição existente
+  - Fix: coluna `direction` em open_positions, comparação com `trade_action`
+  - BUY sobre BUY = ADD (incrementa), SELL sobre BUY = REDUCE (diminui)
+
+- [x] **CTrade PositionClosePartial retorna false em sucesso** ✅ FIXADO no EA
+  - Bug do MQL5: retcode=10009 (DONE) mas método retorna false
+  - Fix: EA agora verifica `trade.ResultRetcode()` em vez do return value
+
+- [ ] **ALIEN OPERATIONS NÃO DETECTADAS (P2)** — Ordem aberta manualmente no Slave não é detectada
+  - Python deveria detectar (não tem ticket no open_positions) e pausar CopyTrade
   - Causa: heartbeat é enviado pelo EA mas Python não processa para detecção
   - Falta: implementação de `_detect_alien_operations()` que comparar posições Slave vs BD
+  - **PRÓXIMO PASSO**
 
 ## CopyTrade - Implementação em Andamento
 - [x] Fix JSON serialization bug (flattening nested JSONNode objects)
@@ -40,30 +55,36 @@
 - [x] Schema SQLite para rastreamento de posições e status de slaves
 - [x] Estrutura base do heartbeat de sincronização
 - [x] Detecção de operações alienígenas (estrutura)
-- [x] Rastreamento de posições em open_positions
+- [x] Rastreamento de posições em open_positions (com POSITION_IDENTIFIER)
 - [x] GET_POSITIONS no EA com formato flattenado
 - [x] Validação NETTING feita ao ATIVAR CopyTrade, não no startup
 - [x] GET_ACCOUNT_MODE no EA (auto-detecção de modo da conta)
 - [x] cache_detected_mode() + detect_all_account_modes() no Python
 - [x] Heartbeat push do EA (não polling do Python) com intervalo configurável
-- [x] **FIX IMEDIATO:** SQL binding error em _track_master_position() ✅ FIXADO
-- [ ] **FIX IMEDIATO:** Guardar Master_ticket → Slave_ticket mapping em open_positions
-- [ ] **FIX IMEDIATO:** Usar ticket específico ao fechar posição (não symbol)
-- [ ] Implementar _detect_alien_operations() - comparar heartbeat Slave vs open_positions
-- [ ] Pausar CopyTrade automaticamente quando alien detectado (com mensagem clara)
-- [ ] Atualizar open_positions quando posição fecha - marcar status CLOSED quando Slave confirma
-- [ ] Retry com validação preço/tempo - max_price_deviation e max_retry_age (skeleton em config.ini)
+- [x] Guardar Master_ticket → Slave_ticket mapping em open_positions
+- [x] Usar ticket específico ao fechar posição (TRADE_POSITION_CLOSE_ID)
+- [x] GET_SYMBOL_INFO no EA (VOLUME_MIN/MAX/STEP)
+- [x] normalize_volume() com floor/ceil modes (force_min)
+- [x] Sell-through prevention (_normalize_and_cap)
+- [x] Padrão ouro NETTING: só 3 comandos EA (BUY/SELL/CLOSE_ID)
+- [x] PARTIAL_CLOSE convertido para SELL/BUY (elimina TRADE_POSITION_PARTIAL bugado)
+- [x] Tracking de direction (BUY/SELL) para distinguir ADD vs REDUCE
+- [x] Callbacks diferenciados: _on_open, _on_close, _on_add, _on_partial_close
+- [x] Limpeza de código morto (heartbeat, reconcile, alien stubs, validate_account_modes)
+- [ ] **P2: Implementar _detect_alien_operations()** — comparar heartbeat Slave vs open_positions ← PRÓXIMO
+- [ ] **P2: Pausar CopyTrade automaticamente** quando alien detectado (com mensagem clara)
+- [ ] **P3: Auto-detecção HEDGE/NETTING** — adaptar fluxo conforme modo da conta
+- [ ] Retry com validação preço/tempo - max_price_deviation e max_retry_age
 - [ ] UI para visualizar status de slaves (ACTIVE/PAUSED com motivo da pausa)
 - [ ] UI para botão "Reativar CopyTrade" (100% manual, sem auto-resume)
 - [ ] UI para visualizar/alterar account mode (Configurações -> Corretoras)
 - [ ] Testes unitários do CopyTrade
 - [ ] Documentação do CopyTrade
-- [ ] Melhorias em logging/auditoria do CopyTrade
 
 ## Prioridade Alta (Trading / Segurança)
-- [ ] Tracking de posições fraco — no modo hedge pode fechar posição errada no slave
-- [ ] Sem validação de parâmetros de trade — ordens inválidas cascateiam para todos os slaves
-- [ ] Cálculo de lote ignora mínimo do broker — ordens rejeitadas silenciosamente
+- [x] Tracking de posições fraco — resolvido com POSITION_IDENTIFIER + open_positions DB ✅
+- [x] Cálculo de lote ignora mínimo do broker — resolvido com GET_SYMBOL_INFO + normalize_volume ✅
+- [ ] HEDGE mode não suportado — tracking assume NETTING (uma posição por símbolo)
 - [ ] Emergency close não verifica se realmente fechou — limpa estado antes de confirmar
 - [ ] Senhas em texto puro no brokers.json e nos argumentos de CLI do MT5
 - [ ] Sem sanitização de input — path traversal possível pelo nome do broker
