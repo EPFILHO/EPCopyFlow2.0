@@ -135,50 +135,23 @@ bool ValidatePorts()
 //+------------------------------------------------------------------+
 string RobustJsonSerialize(JSONNode &json_message)
 {
-   string msg = json_message.Serialize();
+   // Usa SerializeTo() que passa string por referência — contorna bug do MQL5
+   // onde return de string em funções trunca em ~255 chars.
+   // REQUER: método SerializeTo(string &out) adicionado ao Json.mqh
+   string msg = "";
+   json_message.SerializeTo(msg);
    int real_len = StringLen(msg);
 
-   // Bug do MQL5: Serialize() pode truncar strings >= 255 chars.
-   // Workaround: chamar Serialize() de novo até obter resultado consistente.
-   if(real_len >= 255)
-   {
-      string msg2 = json_message.Serialize();
-      int len2 = StringLen(msg2);
-      // Usar a versão mais longa (a truncada é mais curta)
-      if(len2 > real_len)
-      {
-         msg = msg2;
-         real_len = len2;
-      }
-   }
-
-   // Verificar se termina com '}'
    if(real_len == 0)
    {
-      Print("WARN: JSON serializado vazio");
-      return "{}";
-   }
-
-   // Encontrar o último '}' (não o primeiro — pode ter strings com '}' dentro)
-   int last_brace = -1;
-   for(int i = real_len - 1; i >= 0; i--)
-   {
-      if(msg[i] == '}')
+      // Fallback: tentar Serialize() padrão (para Json.mqh sem SerializeTo)
+      msg = json_message.Serialize();
+      real_len = StringLen(msg);
+      if(real_len == 0)
       {
-         last_brace = i;
-         break;
+         Print("WARN: JSON serializado vazio");
+         return "{}";
       }
-   }
-
-   if(last_brace == -1)
-   {
-      Print("WARN: JSON sem '}' final. Adicionando.");
-      msg += "}";
-   }
-   else if(last_brace < real_len - 1)
-   {
-      // Lixo após o último '}' — cortar
-      msg = StringSubstr(msg, 0, last_brace + 1);
    }
 
    return msg;
