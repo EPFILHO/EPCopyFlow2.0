@@ -100,6 +100,45 @@ class SettingsPage(QWidget):
 
         layout.addWidget(app_group)
 
+        # ── CopyTrade Settings ──
+        ct_group = QFrame()
+        ct_group.setProperty("class", "settings-group")
+        ct_layout = QVBoxLayout(ct_group)
+
+        ct_title = QLabel("CopyTrade")
+        ct_title.setProperty("class", "section-title")
+        ct_layout.addWidget(ct_title)
+
+        row_magic = QHBoxLayout()
+        row_magic.addWidget(QLabel("Magic Number:"))
+        self.magic_number_spin = QSpinBox()
+        self.magic_number_spin.setRange(1, 2147483647)
+        self.magic_number_spin.setValue(123456789)
+        self.magic_number_spin.setMaximumWidth(200)
+        self.magic_number_spin.setToolTip(
+            "Identifica trades do CopyTrade vs manuais.\n"
+            "Alterar com posicoes abertas pode afetar o rastreamento."
+        )
+        row_magic.addWidget(self.magic_number_spin)
+        row_magic.addStretch()
+        ct_layout.addLayout(row_magic)
+
+        row_hb = QHBoxLayout()
+        row_hb.addWidget(QLabel("Heartbeat (s):"))
+        self.heartbeat_spin = QSpinBox()
+        self.heartbeat_spin.setRange(1, 600)
+        self.heartbeat_spin.setValue(5)
+        self.heartbeat_spin.setMaximumWidth(200)
+        self.heartbeat_spin.setToolTip(
+            "Intervalo de heartbeat do EA (em segundos).\n"
+            "Valores menores = deteccao mais rapida, mais trafego."
+        )
+        row_hb.addWidget(self.heartbeat_spin)
+        row_hb.addStretch()
+        ct_layout.addLayout(row_hb)
+
+        layout.addWidget(ct_group)
+
         layout.addStretch()
 
         # Save button
@@ -128,6 +167,13 @@ class SettingsPage(QWidget):
         idx = self.theme_combo.findText(saved_theme)
         if idx >= 0:
             self.theme_combo.setCurrentIndex(idx)
+        # CopyTrade
+        self.magic_number_spin.setValue(
+            self.config.getint('CopyTrade', 'magic_number', fallback=123456789)
+        )
+        self.heartbeat_spin.setValue(
+            self.config.getint('CopyTrade', 'heartbeat_interval', fallback=5)
+        )
 
     def apply_theme(self):
         self.setStyleSheet(themes.settings_page_style())
@@ -146,8 +192,12 @@ class SettingsPage(QWidget):
             if self._on_theme_changed:
                 self._on_theme_changed()
 
+            # CopyTrade
+            self.config.set('CopyTrade', 'magic_number', str(self.magic_number_spin.value()))
+            self.config.set('CopyTrade', 'heartbeat_interval', str(self.heartbeat_spin.value()))
+
             self.config.save_config()
-            QMessageBox.information(self, "Sucesso", "Configuracoes salvas.")
+            QMessageBox.information(self, "Sucesso", "Configuracoes salvas.\n\nAlteracoes de CopyTrade serao aplicadas na proxima conexao dos EAs.")
             logger.info("Configuracoes salvas.")
         except Exception as e:
             QMessageBox.critical(self, "Erro", f"Erro ao salvar: {e}")
