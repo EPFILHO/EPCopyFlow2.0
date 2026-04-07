@@ -31,6 +31,7 @@ class CopyTradeManager(QObject):
         self.zmq_router = zmq_router
         self.position_map = {}  # position_id (POSITION_IDENTIFIER) -> {slave_key: slave_ticket}
         self._emergency_active = False  # Suprime replicação durante emergency close
+        self._emergency_completed_at = 0  # Timestamp do fim do emergency (grace period)
         self.symbol_specs_cache = {}  # (broker_key, symbol) -> {volume_min, volume_max, volume_step}
         self.db = sqlite3.connect(DB_FILE)
         self._init_db()
@@ -342,6 +343,16 @@ class CopyTradeManager(QObject):
         if self._emergency_active:
             logger.warning(f"  Replicação suprimida: emergency close ativo")
             return
+
+        # Grace period: suprimir TRADE_EVENTs que chegam logo após emergency
+        # (o master envia TRADE_EVENT async, pode chegar após _emergency_active=False)
+        if self._emergency_completed_at > 0:
+            elapsed = time.time() - self._emergency_completed_at
+            if elapsed < 5.0:
+                logger.warning(f"  Replicação suprimida: grace period pós-emergency ({elapsed:.1f}s < 5s)")
+                return
+            else:
+                self._emergency_completed_at = 0  # Grace period expirado
 
         # Verifica se é realmente do master
         broker_role = self.broker_manager.get_broker_role(master_broker)
@@ -797,8 +808,18 @@ class CopyTradeManager(QObject):
                         error = close_response.get("message", "erro")
                         errors.append(f"{broker_key}/{symbol}: {error}")
 
+        # Marcar TODAS as posições como PANIC no DB (diferencia de CLOSED normal)
+        now = time.time()
+        self.db.execute(
+            "UPDATE open_positions SET status = 'PANIC', closed_at = ? WHERE status IN ('OPEN', 'SYNCING', 'CLOSING')",
+            (now,)
+        )
+        self.db.commit()
+        logger.info("  📝 Todas as posições marcadas como PANIC no DB")
+
         # Limpa mapa de posições
         self.position_map.clear()
+        self._emergency_completed_at = time.time()  # Inicia grace period de 5s
         self._emergency_active = False
 
         if errors:
