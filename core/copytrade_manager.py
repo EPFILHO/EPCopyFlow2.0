@@ -788,12 +788,17 @@ class CopyTradeManager(QObject):
                 prefix = f"pos_{i}_"
                 ticket = response.get(f"{prefix}ticket", 0)
                 symbol = response.get(f"{prefix}symbol", "")
+                volume = response.get(f"{prefix}volume", 0.0)
                 if ticket and ticket > 0:
-                    positions.append({"ticket": ticket, "symbol": symbol})
+                    positions.append({"ticket": ticket, "symbol": symbol, "volume": volume})
+
+            broker_role = self.broker_manager.get_broker_role(broker_key)
+            master_broker = broker_key if broker_role == "master" else self.broker_manager.get_master_broker()
 
             for pos in positions:
                 ticket = pos.get("ticket", 0)
                 symbol = pos.get("symbol", "")
+                volume = pos.get("volume", 0.0)
                 if ticket > 0:
                     close_id = f"close_{broker_key}_{ticket}_{int(time.time())}"
                     close_response = await self.zmq_router.send_command_to_broker(
@@ -802,11 +807,22 @@ class CopyTradeManager(QObject):
                     )
                     if close_response.get("status") == "OK":
                         total_closed += 1
+                        deal_ticket = close_response.get("deal", 0) or close_response.get("order", 0)
+                        self._insert_history(
+                            master_broker or broker_key, deal_ticket, symbol,
+                            "EMERGENCY_CLOSE", volume,
+                            broker_key, ticket, volume, "SUCCESS"
+                        )
                         self.copy_trade_log.emit(
                             f"EMERGÊNCIA: Fechado {symbol} ticket={ticket} em {broker_key}")
                     else:
                         error = close_response.get("message", "erro")
                         errors.append(f"{broker_key}/{symbol}: {error}")
+                        self._insert_history(
+                            master_broker or broker_key, ticket, symbol,
+                            "EMERGENCY_CLOSE", volume,
+                            broker_key, ticket, volume, "FAILED", error
+                        )
 
         # Marcar TODAS as posições como PANIC no DB (diferencia de CLOSED normal)
         now = time.time()
