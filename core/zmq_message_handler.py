@@ -29,6 +29,7 @@ class ZmqMessageHandler(QObject):
     connection_status_received = Signal(dict)
     trade_event_received = Signal(dict)
     trade_response_received = Signal(dict)
+    alien_trade_detected = Signal(dict)
 
     # ──────────────────────────────────────────────
     # Bloco 1 - Inicialização
@@ -85,10 +86,13 @@ class ZmqMessageHandler(QObject):
                 if hasattr(self, 'mt5_monitor') and self.mt5_monitor:
                     self.mt5_monitor.on_broker_registered(broker_key)
 
-                # Configurar intervalo de heartbeat no EA
+                # Configurar EA: heartbeat interval + magic number
                 if self.zmq_router:
                     asyncio.create_task(
                         self.zmq_router.configure_heartbeat_interval(broker_key)
+                    )
+                    asyncio.create_task(
+                        self.zmq_router.configure_magic_number(broker_key)
                     )
 
         elif msg_type == "INTERNAL" and event == "CLIENT_UNREGISTERED":
@@ -176,7 +180,29 @@ class ZmqMessageHandler(QObject):
                 self.heartbeat_active[broker_key] = True
                 logger.debug(f"💓 Primeiro heartbeat de {broker_key} ({role})")
 
-            # TODO: Processar heartbeat com posições para detecção de alienígenas (P2)
+        elif msg_type == "STREAM" and event == "ALIEN_TRADE":
+            alien_data = {
+                "broker_key": identified_broker_key,
+                "deal": message.get("deal", 0),
+                "deal_magic": message.get("deal_magic", 0),
+                "expected_magic": message.get("expected_magic", 0),
+                "symbol": message.get("symbol", ""),
+                "volume": message.get("volume", 0),
+                "deal_type": message.get("deal_type", ""),
+                "timestamp_mql": message.get("timestamp_mql", 0),
+            }
+            logger.warning(
+                f"ALIEN TRADE em {identified_broker_key}: "
+                f"{alien_data['deal_type']} {alien_data['symbol']} "
+                f"{alien_data['volume']} lotes (magic={alien_data['deal_magic']}, "
+                f"esperado={alien_data['expected_magic']})"
+            )
+            self.log_message_received.emit(
+                f"ALIEN TRADE detectado em {identified_broker_key}: "
+                f"{alien_data['deal_type']} {alien_data['symbol']} "
+                f"{alien_data['volume']} lotes — operacao NAO originada pelo CopyTrade!"
+            )
+            self.alien_trade_detected.emit(alien_data)
 
         # ── RESPONSE events ──
         elif msg_type == "RESPONSE":

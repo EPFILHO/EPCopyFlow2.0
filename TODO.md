@@ -43,11 +43,11 @@
   - Bug do MQL5: retcode=10009 (DONE) mas método retorna false
   - Fix: EA agora verifica `trade.ResultRetcode()` em vez do return value
 
-- [ ] **ALIEN OPERATIONS NÃO DETECTADAS (P2)** — Ordem aberta manualmente no Slave não é detectada
-  - Python deveria detectar (não tem ticket no open_positions) e pausar CopyTrade
-  - Causa: heartbeat é enviado pelo EA mas Python não processa para detecção
-  - Falta: implementação de `_detect_alien_operations()` que comparar posições Slave vs BD
-  - **PRÓXIMO PASSO**
+- [x] **ALIEN OPERATIONS DETECTADAS (P2)** — Detecção via magic number no EA ✅ FIXADO
+  - EA recebe magic number do Python (SET_MAGIC_NUMBER) e seta no CTrade
+  - OnTradeTransaction: DEAL_MAGIC != nosso magic → envia ALIEN_TRADE event
+  - Python: handler loga warning + emite signal alien_trade_detected para UI
+  - Abordagem mais robusta que heartbeat: detecta em tempo real, sem race conditions
 
 ## CopyTrade - Implementação em Andamento
 - [x] Fix JSON serialization bug (flattening nested JSONNode objects)
@@ -71,8 +71,8 @@
 - [x] Tracking de direction (BUY/SELL) para distinguir ADD vs REDUCE
 - [x] Callbacks diferenciados: _on_open, _on_close, _on_add, _on_partial_close
 - [x] Limpeza de código morto (heartbeat, reconcile, alien stubs, validate_account_modes)
-- [ ] **P2: Implementar _detect_alien_operations()** — comparar heartbeat Slave vs open_positions ← PRÓXIMO
-- [ ] **P2: Pausar CopyTrade automaticamente** quando alien detectado (com mensagem clara)
+- [x] **P2: Detecção de alien via magic number no EA** — DEAL_MAGIC check em OnTradeTransaction ✅
+- [ ] **P2: Pausar CopyTrade automaticamente** quando alien detectado (conectar signal à UI)
 - [ ] **P3: Auto-detecção HEDGE/NETTING** — adaptar fluxo conforme modo da conta
 - [ ] Retry com validação preço/tempo - max_price_deviation e max_retry_age
 - [ ] UI para visualizar status de slaves (ACTIVE/PAUSED com motivo da pausa)

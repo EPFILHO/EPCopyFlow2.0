@@ -48,6 +48,9 @@ bool g_initial_connection_status_sent = false;
 ulong g_heartbeat_interval_ms = 5000;  // Padrão: 5 segundos (será configurado pelo Python)
 ulong g_last_heartbeat_time = 0;       // Timestamp do último heartbeat enviado
 
+//--- Magic number para identificar trades do CopyTrade (configurado pelo Python)
+long g_magic_number = 0;               // 0 = não configurado (desabilita detecção de aliens)
+
 //+------------------------------------------------------------------+
 //| Função auxiliar para trim de string                              |
 //+------------------------------------------------------------------+
@@ -381,6 +384,40 @@ void HandleSetHeartbeatIntervalCommand(const string request_id, JSONNode &payloa
    SendJsonMessage(response, command_socket, "Command");
 
    PrintFormat("Intervalo de heartbeat configurado: %d ms", interval);
+}
+
+void HandleSetMagicNumberCommand(const string request_id, JSONNode &payload)
+{
+   JSONNode response;
+   response["type"] = "RESPONSE";
+   response["request_id"] = request_id;
+
+   JSONNode *magic_node = payload["magic_number"];
+   if(CheckPointer(magic_node) == POINTER_INVALID)
+   {
+      response["status"] = "ERROR";
+      response["error_message"] = "magic_number nao fornecido";
+      SendJsonMessage(response, command_socket, "Command");
+      return;
+   }
+
+   long magic = StringToInteger(magic_node.ToString());
+   if(magic <= 0)
+   {
+      response["status"] = "ERROR";
+      response["error_message"] = StringFormat("magic_number invalido: %lld", magic);
+      SendJsonMessage(response, command_socket, "Command");
+      return;
+   }
+
+   g_magic_number = magic;
+   trade.SetExpertMagicNumber((ulong)magic);
+
+   response["status"] = "OK";
+   response["magic_number"] = magic;
+   SendJsonMessage(response, command_socket, "Command");
+
+   PrintFormat("Magic number configurado: %lld (CTrade atualizado)", magic);
 }
 
 void HandleGetPositionsCommand(const string request_id)
@@ -1033,6 +1070,10 @@ void ProcessCommand(JSONNode &json_command)
    {
       HandleSetHeartbeatIntervalCommand(request_id, payload);
    }
+   else if(command == "SET_MAGIC_NUMBER")
+   {
+      HandleSetMagicNumberCommand(request_id, payload);
+   }
    else if(command == "POSITIONS" || command == "GET_POSITIONS")
    {
       HandleGetPositionsCommand(request_id);
@@ -1184,5 +1225,41 @@ void OnTradeTransaction(const MqlTradeTransaction &trans, const MqlTradeRequest 
    if(!SendJsonMessage(stream_msg, event_socket, "Event"))
    {
       Print("ERROR: Falha ao enviar TRADE_EVENT via EventSocket");
+   }
+
+   // ── Detecção de operação alienígena (apenas SLAVE, apenas trades com sucesso) ──
+   if(g_magic_number > 0 && g_role == "SLAVE" && result.retcode == TRADE_RETCODE_DONE
+      && result.deal > 0 && request.action == TRADE_ACTION_DEAL)
+   {
+      if(HistoryDealSelect(result.deal))
+      {
+         long deal_magic = HistoryDealGetInteger(result.deal, DEAL_MAGIC);
+         if(deal_magic != g_magic_number)
+         {
+            // Trade não veio do nosso EA — operação alienígena
+            string deal_symbol = HistoryDealGetString(result.deal, DEAL_SYMBOL);
+            double deal_volume = HistoryDealGetDouble(result.deal, DEAL_VOLUME);
+            long deal_type = HistoryDealGetInteger(result.deal, DEAL_TYPE);
+            string type_str = (deal_type == DEAL_TYPE_BUY) ? "BUY" : "SELL";
+
+            PrintFormat("ALIEN TRADE detectado! magic=%lld (esperado=%lld), symbol=%s, %s %.2f lotes",
+                        deal_magic, g_magic_number, deal_symbol, type_str, deal_volume);
+
+            JSONNode alien_msg;
+            alien_msg["type"] = "STREAM";
+            alien_msg["event"] = "ALIEN_TRADE";
+            alien_msg["timestamp_mql"] = (long)TimeCurrent();
+            alien_msg["role"] = g_role;
+            alien_msg["deal"] = (long)result.deal;
+            alien_msg["deal_magic"] = deal_magic;
+            alien_msg["expected_magic"] = g_magic_number;
+            alien_msg["symbol"] = deal_symbol;
+            alien_msg["volume"] = deal_volume;
+            alien_msg["deal_type"] = type_str;
+
+            if(!SendJsonMessage(alien_msg, event_socket, "Event"))
+               Print("ERROR: Falha ao enviar ALIEN_TRADE via EventSocket");
+         }
+      }
    }
 }

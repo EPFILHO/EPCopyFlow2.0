@@ -138,6 +138,36 @@ class ZmqRouter:
         except Exception as e:
             logger.error(f"Erro ao configurar heartbeat em {broker_key}: {e}", exc_info=True)
 
+    async def configure_magic_number(self, broker_key: str):
+        """
+        Configura o magic number no EA.
+        Lê do config.ini e envia SET_MAGIC_NUMBER.
+        """
+        try:
+            import configparser
+            config = configparser.ConfigParser()
+            config.read("config.ini")
+
+            magic_number = int(config.get("CopyTrade", "magic_number", fallback="0"))
+            if magic_number <= 0:
+                logger.debug(f"Magic number não configurado, pulando para {broker_key}")
+                return
+
+            response = await self.send_command_to_broker(
+                broker_key,
+                "SET_MAGIC_NUMBER",
+                {"magic_number": magic_number},
+                f"set_magic_{broker_key}_{int(time.time())}"
+            )
+
+            if response.get("status") == "OK":
+                logger.info(f"Magic number configurado em {broker_key}: {magic_number}")
+            else:
+                logger.warning(f"Falha ao configurar magic number em {broker_key}: {response.get('error_message', '?')}")
+
+        except Exception as e:
+            logger.error(f"Erro ao configurar magic number em {broker_key}: {e}", exc_info=True)
+
     # ──────────────────────────────────────────────
     # Bloco 5 - Processamento de Mensagens
     # ──────────────────────────────────────────────
