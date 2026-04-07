@@ -1,15 +1,10 @@
 # EPCopyFlow 2.0 - TODO
 
 ## Prioridade CRÍTICA (Bugs encontrados em teste)
-- [ ] **CRASH LOOP** — Process monitor reinicia MT5 infinitamente se ele fechar logo após iniciar
-  - MT5 inicia, morre em <5s, reinicia, morre de novo — loop infinito por 2+ minutos
-  - Solução: adicionar max retry count (ex: 3 tentativas), backoff exponencial (1s, 2s, 4s)
-  - Após N falhas, parar de reiniciar e notificar usuário em popup/log
-  - Arquivo: `core/mt5_process_monitor.py` — método `restart_mt5_instance()`
-  
-- [ ] **MT5 CARDS CINZA** — Indicadores ficam cinza com MT5 aberto porque processo morre rapidamente
-  - Causado pelo crash loop acima — processo sobe/desce a cada 5s, QTimer vê processo morto
-  - Será resolvido automaticamente quando crash loop for corrigido
+- [x] **CRASH LOOP** — Process monitor reinicia MT5 infinitamente ✅ RESOLVIDO
+  - Configurado max_retries + backoff no [ProcessMonitor] do config.ini
+
+- [x] **MT5 CARDS CINZA** — Resolvido com fix do crash loop ✅
 
 - [ ] **BROKER_STATUS STALE** — Quando process monitor reinicia MT5, `broker_status[key]` pode ficar True
   - O EA não envia UNREGISTER em tempo antes do restart
@@ -72,8 +67,10 @@
 - [x] Callbacks diferenciados: _on_open, _on_close, _on_add, _on_partial_close
 - [x] Limpeza de código morto (heartbeat, reconcile, alien stubs, validate_account_modes)
 - [x] **P2: Detecção de alien via magic number no EA** — DEAL_MAGIC check em OnTradeTransaction ✅
-- [ ] **P2: Pausar CopyTrade automaticamente** quando alien detectado (conectar signal à UI)
-- [ ] **P3: Auto-detecção HEDGE/NETTING** — adaptar fluxo conforme modo da conta
+- [x] **P2: Popup de alerta na UI** quando alien detectado (QMessageBox.warning) ✅
+- [x] **Magic Number configurável na GUI** — seção CopyTrade na página Configurações ✅
+- [x] **Heartbeat interval configurável na GUI** — seção CopyTrade na página Configurações ✅
+- ~~**P3: Auto-detecção HEDGE/NETTING**~~ — descartado: operaremos apenas NETTING
 - [ ] Retry com validação preço/tempo - max_price_deviation e max_retry_age
 - [ ] UI para visualizar status de slaves (ACTIVE/PAUSED com motivo da pausa)
 - [ ] UI para botão "Reativar CopyTrade" (100% manual, sem auto-resume)

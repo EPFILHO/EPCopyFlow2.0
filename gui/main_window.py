@@ -250,6 +250,8 @@ class MainWindow(QMainWindow):
             self.copytrade_manager.copy_trade_log.connect(self.logs_page.append_log)
             self.copytrade_manager.copy_trade_executed.connect(self.history_page.refresh)
             self.copytrade_manager.copy_trade_failed.connect(self.history_page.refresh)
+        # Alien trade detection
+        self.zmq_message_handler.alien_trade_detected.connect(self._on_alien_trade_detected)
 
     @Slot(str)
     def _handle_zmq_messages(self, message: str):
@@ -276,6 +278,23 @@ class MainWindow(QMainWindow):
                 self.zmq_message_handler.clear_broker_status(key)
         self.dashboard_page.refresh_brokers()
         self.brokers_page.refresh_brokers()
+
+    @Slot(dict)
+    def _on_alien_trade_detected(self, data: dict):
+        """Exibe popup de alerta quando trade alienígena é detectado no slave."""
+        broker = data.get("broker_key", "?")
+        symbol = data.get("symbol", "?")
+        volume = data.get("volume", 0)
+        deal_type = data.get("deal_type", "?")
+        QMessageBox.warning(
+            self,
+            "Operacao Alienígena Detectada",
+            f"Trade NAO originado pelo CopyTrade detectado!\n\n"
+            f"Corretora: {broker}\n"
+            f"Operacao: {deal_type} {symbol} ({volume} lotes)\n\n"
+            f"Isso pode corromper o rastreamento de posicoes.\n"
+            f"Verifique a conta e tome as medidas necessarias."
+        )
 
     def _update_all_indicators(self):
         """Update indicators on both dashboard and brokers page."""
