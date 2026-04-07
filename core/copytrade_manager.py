@@ -30,6 +30,7 @@ class CopyTradeManager(QObject):
         self.broker_manager = broker_manager
         self.zmq_router = zmq_router
         self.position_map = {}  # position_id (POSITION_IDENTIFIER) -> {slave_key: slave_ticket}
+        self._emergency_active = False  # Suprime replicação durante emergency close
         self.symbol_specs_cache = {}  # (broker_key, symbol) -> {volume_min, volume_max, volume_step}
         self.db = sqlite3.connect(DB_FILE)
         self._init_db()
@@ -336,6 +337,11 @@ class CopyTradeManager(QObject):
         result_data = trade_event.get("result", {})
 
         logger.info(f"🔍 handle_master_trade_event recebido de {master_broker}")
+
+        # Suprimir replicação durante emergency close (evita double close)
+        if self._emergency_active:
+            logger.warning(f"  Replicação suprimida: emergency close ativo")
+            return
 
         # Verifica se é realmente do master
         broker_role = self.broker_manager.get_broker_role(master_broker)
@@ -746,6 +752,7 @@ class CopyTradeManager(QObject):
     async def emergency_close_all(self):
         """Fecha TODAS as posições em TODOS os MT5s (master + slaves)."""
         logger.warning("EMERGÊNCIA: Fechando todas as posições!")
+        self._emergency_active = True
         self.copy_trade_log.emit("EMERGÊNCIA: Iniciando fechamento de todas as posições...")
 
         connected = self.broker_manager.get_connected_brokers()
@@ -792,6 +799,7 @@ class CopyTradeManager(QObject):
 
         # Limpa mapa de posições
         self.position_map.clear()
+        self._emergency_active = False
 
         if errors:
             msg = f"Fechadas {total_closed} posições. Erros: {'; '.join(errors)}"
