@@ -133,28 +133,23 @@ bool ValidatePorts()
 //+------------------------------------------------------------------+
 //| Serializa JSON de forma robusta                                 |
 //+------------------------------------------------------------------+
-string RobustJsonSerialize(JSONNode &json_message)
+void RobustJsonSerialize(JSONNode &json_message, string &out)
 {
-   // Usa SerializeTo() que passa string por referência — contorna bug do MQL5
-   // onde return de string em funções trunca em ~255 chars.
-   // REQUER: método SerializeTo(string &out) adicionado ao Json.mqh
-   string msg = "";
-   json_message.SerializeTo(msg);
-   int real_len = StringLen(msg);
+   // CRÍTICO: string NUNCA pode ser retornada via return — MQL5 trunca em ~255 chars.
+   // Toda a cadeia usa passagem por referência (SerializeTo → out → SendJsonMessage).
+   out = "";
+   json_message.SerializeTo(out);
 
-   if(real_len == 0)
+   if(StringLen(out) == 0)
    {
-      // Fallback: tentar Serialize() padrão (para Json.mqh sem SerializeTo)
-      msg = json_message.Serialize();
-      real_len = StringLen(msg);
-      if(real_len == 0)
+      // Fallback: Serialize() padrão (para Json.mqh sem SerializeTo)
+      out = json_message.Serialize();
+      if(StringLen(out) == 0)
       {
          Print("WARN: JSON serializado vazio");
-         return "{}";
+         out = "{}";
       }
    }
-
-   return msg;
 }
 
 //+------------------------------------------------------------------+
@@ -168,7 +163,8 @@ bool SendJsonMessage(JSONNode &json_message, Socket &target_socket, string socke
       Print("ERROR: Tentativa de envio sem conexão em ", socket_name);
       return false;
    }
-   string message_str = RobustJsonSerialize(json_message);
+   string message_str;
+   RobustJsonSerialize(json_message, message_str);
    if(InpDebugLog)
       Print("TX (", socket_name, "): ", message_str);
 
