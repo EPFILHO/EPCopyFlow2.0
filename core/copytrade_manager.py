@@ -33,6 +33,7 @@ class CopyTradeManager(QObject):
         self._emergency_active = False  # Suprime replicação durante emergency close
         self._emergency_completed_at = 0  # Timestamp do fim do emergency (grace period)
         self.symbol_specs_cache = {}  # (broker_key, symbol) -> {volume_min, volume_max, volume_step}
+        self._position_locks = {}  # position_id -> asyncio.Lock (serializa eventos do mesmo position_id)
         self.db = sqlite3.connect(DB_FILE)
         self._init_db()
 
@@ -329,9 +330,25 @@ class CopyTradeManager(QObject):
     # O campo "master_ticket" no DB open_positions armazena o POSITION_IDENTIFIER (NÃO o deal).
     # O campo "master_ticket" no DB copytrade_history armazena o deal (log/auditoria).
 
+    def _get_position_lock(self, position_id: int) -> asyncio.Lock:
+        """Retorna (ou cria) um asyncio.Lock para o position_id dado.
+        Garante que eventos para o mesmo position_id sejam processados em ordem
+        (ex: BUY antes de CLOSE), evitando race condition."""
+        if position_id not in self._position_locks:
+            self._position_locks[position_id] = asyncio.Lock()
+        return self._position_locks[position_id]
+
+    def _cleanup_position_lock(self, position_id: int):
+        """Remove lock de position_id quando não há mais posições abertas para ele."""
+        lock = self._position_locks.get(position_id)
+        if lock and not lock.locked():
+            self._position_locks.pop(position_id, None)
+
     async def handle_master_trade_event(self, trade_event: dict):
         """
         Recebe TRADE_EVENT do Master EA e replica para todos os Slaves conectados.
+        Validações rápidas são feitas fora do lock. A replicação é serializada
+        por position_id para garantir ordem (BUY antes de CLOSE).
         """
         master_broker = trade_event.get("broker_key")
         request_data = trade_event.get("request", {})
@@ -405,25 +422,38 @@ class CopyTradeManager(QObject):
             logger.error(f"  ❌ TRADE_EVENT sem position_id! EA pode estar desatualizado. deal={deal_ticket}")
             return
 
-        log_msg = f"MASTER [{master_broker}]: {trade_action} {symbol} {volume} lotes (pos_id={position_id}, deal={deal_ticket})"
-        self.copy_trade_log.emit(log_msg)
-        logger.info(log_msg)
+        # ── Serializar por position_id ──
+        # Garante que BUY completa antes de CLOSE para o mesmo position_id.
+        # Eventos de position_ids diferentes rodam em paralelo (tasks separadas).
+        lock = self._get_position_lock(position_id)
+        async with lock:
+            log_msg = f"MASTER [{master_broker}]: {trade_action} {symbol} {volume} lotes (pos_id={position_id}, deal={deal_ticket})"
+            self.copy_trade_log.emit(log_msg)
+            logger.info(log_msg)
 
-        # Atualizar tracking master no DB (CLOSE/PARTIAL_CLOSE)
-        self._track_master_position(position_id, volume, trade_action)
+            # Atualizar tracking master no DB (CLOSE/PARTIAL_CLOSE)
+            self._track_master_position(position_id, volume, trade_action)
 
-        # Replica para cada slave conectado
-        slaves = self.broker_manager.get_connected_slave_brokers()
-        logger.info(f"  Slaves conectados: {slaves}")
-        for slave_key in slaves:
-            if self.is_slave_paused(slave_key):
-                logger.warning(f"  Pulando {slave_key} (pausado)")
-                continue
+            # Replica para cada slave conectado (em paralelo entre slaves)
+            slaves = self.broker_manager.get_connected_slave_brokers()
+            logger.info(f"  Slaves conectados: {slaves}")
+            tasks = []
+            for slave_key in slaves:
+                if self.is_slave_paused(slave_key):
+                    logger.warning(f"  Pulando {slave_key} (pausado)")
+                    continue
 
-            await self._replicate_to_slave(
-                slave_key, master_broker, deal_ticket, position_id,
-                trade_action, symbol, volume, order_type, price, sl, tp
-            )
+                tasks.append(self._replicate_to_slave(
+                    slave_key, master_broker, deal_ticket, position_id,
+                    trade_action, symbol, volume, order_type, price, sl, tp
+                ))
+
+            if tasks:
+                await asyncio.gather(*tasks)
+
+        # Limpar lock se posição foi fechada (não há mais eventos esperados)
+        if trade_action == "CLOSE":
+            self._cleanup_position_lock(position_id)
 
     def _classify_trade_action(self, action: int, order_type: int, position_ticket: int,
                                position_volume_remaining=None) -> str:
@@ -833,8 +863,9 @@ class CopyTradeManager(QObject):
         self.db.commit()
         logger.info("  📝 Todas as posições marcadas como PANIC no DB")
 
-        # Limpa mapa de posições
+        # Limpa mapa de posições e locks
         self.position_map.clear()
+        self._position_locks.clear()
         self._emergency_completed_at = time.time()  # Inicia grace period de 5s
         self._emergency_active = False
 

@@ -482,31 +482,15 @@ void HandleGetOrdersCommand(const string request_id)
 
 void SendHeartbeat()
 {
-   // Envia heartbeat periódico com as posições atuais
+   // Heartbeat leve: apenas keep-alive + contagem de posições.
+   // Dados completos de posição são obtidos via GET_POSITIONS (sob demanda).
+   // Isso elimina serialização JSON pesada a cada heartbeat_interval.
    JSONNode heartbeat;
    heartbeat["type"] = "STREAM";
    heartbeat["event"] = "HEARTBEAT";
    heartbeat["timestamp_mql"] = (long)TimeCurrent();
    heartbeat["role"] = g_role;
-
-   // Flattenizar posições (mesmo formato que GET_POSITIONS)
-   int total = PositionsTotal();
-   heartbeat["positions_count"] = (long)total;
-
-   for(int i = 0; i < total; i++)
-   {
-      ulong ticket = PositionGetTicket(i);
-      if(PositionSelectByTicket(ticket))
-      {
-         string prefix = StringFormat("pos_%d_", i);
-         heartbeat[prefix + "ticket"] = (long)ticket;
-         heartbeat[prefix + "symbol"] = PositionGetString(POSITION_SYMBOL);
-         heartbeat[prefix + "type"] = PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY ? "BUY" : "SELL";
-         heartbeat[prefix + "volume"] = PositionGetDouble(POSITION_VOLUME);
-         heartbeat[prefix + "price_open"] = PositionGetDouble(POSITION_PRICE_OPEN);
-         heartbeat[prefix + "profit"] = PositionGetDouble(POSITION_PROFIT);
-      }
-   }
+   heartbeat["positions_count"] = (long)PositionsTotal();
 
    SendJsonMessage(heartbeat, event_socket, "Event");
 }
@@ -1131,6 +1115,12 @@ void ProcessCommand(JSONNode &json_command)
 //+------------------------------------------------------------------+
 void OnTradeTransaction(const MqlTradeTransaction &trans, const MqlTradeRequest &request, const MqlTradeResult &result)
 {
+   // Só processa TRADE_TRANSACTION_REQUEST — o único tipo que preenche request/result.
+   // Outros tipos (DEAL_ADD, ORDER_ADD, etc.) chegam com result.retcode==0 e request zerado.
+   // Filtro explícito evita debug logging e HistoryDealSelect desnecessários.
+   if(trans.type != TRADE_TRANSACTION_REQUEST)
+      return;
+
    // Ignora retcodes irrelevantes
    if(result.retcode == 0 || result.retcode == TRADE_RETCODE_NO_CHANGES)
       return;
