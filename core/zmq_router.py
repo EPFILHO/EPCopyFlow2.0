@@ -3,6 +3,7 @@
 # Roteador ZMQ simplificado: 2 sockets por broker (CommandSocket + EventSocket).
 
 import zmq
+import zmq.asyncio
 import asyncio
 import json
 import logging
@@ -22,7 +23,7 @@ class ZmqRouter:
         self._clients = {}
         self._responses = {}
         self._response_events = {}
-        self.context = zmq.Context()
+        self.context = zmq.asyncio.Context()
 
         # 2 sockets por broker (simplificado de 5)
         self.command_sockets = {}   # DEALER - bidirecional (admin + trade)
@@ -87,7 +88,7 @@ class ZmqRouter:
         self._response_events[request_id] = asyncio.Event()
         try:
             message_str = json.dumps(message)
-            self.command_sockets[broker_key].send(message_str.encode('utf-8'), zmq.NOBLOCK)
+            await self.command_sockets[broker_key].send(message_str.encode('utf-8'), zmq.NOBLOCK)
             logger.debug(f"Comando {command} enviado para {broker_key} (id={request_id})")
 
             await asyncio.wait_for(self._response_events[request_id].wait(), timeout=5.0)
@@ -169,51 +170,52 @@ class ZmqRouter:
             logger.error(f"Erro ao configurar magic number em {broker_key}: {e}", exc_info=True)
 
     # ──────────────────────────────────────────────
-    # Bloco 5 - Processamento de Mensagens
+    # Bloco 5 - Processamento de Mensagens (fast-path síncrono)
     # ──────────────────────────────────────────────
-    async def _process_message(self, message_data: dict, broker_key: str):
+    def _process_message(self, message_data: dict, broker_key: str):
+        """Fast-path síncrono: sinaliza respostas e atualiza estado.
+        Processamento pesado é despachado em tasks de background."""
         msg_type = message_data.get("type")
         event = message_data.get("event")
         broker_key_msg = message_data.get("broker_key")
         request_id = message_data.get("request_id")
 
-        if msg_type == "SYSTEM" and event == "REGISTER":
-            if broker_key_msg:
-                self._clients[broker_key_msg] = broker_key
-                if self._message_handler:
-                    await self._message_handler.handle_zmq_message(
-                        broker_key.encode('utf-8'), message_data)
-        elif msg_type == "SYSTEM" and event == "UNREGISTER":
-            removed_key = None
-            if broker_key_msg and broker_key_msg in self._clients:
-                del self._clients[broker_key_msg]
-                removed_key = broker_key_msg
-            if self._message_handler:
+        # RESPONSE: sinalizar o Future/Event que send_command_to_broker está aguardando
+        if msg_type == "RESPONSE" and request_id:
+            self._responses[request_id] = message_data
+            if request_id in self._response_events:
+                self._response_events[request_id].set()
+
+        # REGISTER/UNREGISTER: atualizar mapa de clientes (rápido)
+        if msg_type == "SYSTEM" and event == "REGISTER" and broker_key_msg:
+            self._clients[broker_key_msg] = broker_key
+        elif msg_type == "SYSTEM" and event == "UNREGISTER" and broker_key_msg:
+            self._clients.pop(broker_key_msg, None)
+
+        # Despachar todo o processamento pesado (GUI, copytrade, etc.) em background
+        if self._message_handler:
+            asyncio.create_task(self._dispatch_message(broker_key, message_data))
+
+    async def _dispatch_message(self, broker_key: str, message_data: dict):
+        """Background task: processa mensagem no message_handler sem bloquear o receive loop."""
+        try:
+            msg_type = message_data.get("type")
+            event = message_data.get("event")
+
+            if msg_type == "SYSTEM" and event == "UNREGISTER":
                 notification = {
                     "type": "INTERNAL",
                     "event": "CLIENT_UNREGISTERED",
-                    "broker_key": removed_key,
+                    "broker_key": message_data.get("broker_key"),
                     "zmq_id_hex": broker_key
                 }
                 await self._message_handler.handle_zmq_message(
                     broker_key.encode('utf-8'), notification)
-        elif msg_type == "RESPONSE":
-            if request_id:
-                self._responses[request_id] = message_data
-                if request_id in self._response_events:
-                    self._response_events[request_id].set()
-            if self._message_handler:
+            else:
                 await self._message_handler.handle_zmq_message(
                     broker_key.encode('utf-8'), message_data)
-        elif msg_type == "STREAM":
-            if self._message_handler:
-                await self._message_handler.handle_zmq_message(
-                    broker_key.encode('utf-8'), message_data)
-        else:
-            logger.warning(f"Mensagem não tratada de {broker_key}: {message_data}")
-            if self._message_handler:
-                await self._message_handler.handle_zmq_message(
-                    broker_key.encode('utf-8'), message_data)
+        except Exception as e:
+            logger.exception(f"Erro ao processar mensagem de {broker_key}: {e}")
 
     # ──────────────────────────────────────────────
     # Bloco 6 - Setup / Teardown de Sockets
@@ -273,56 +275,75 @@ class ZmqRouter:
                     logger.warning(f"Erro ao fechar {name} para {broker_key}: {e}")
 
     # ──────────────────────────────────────────────
-    # Bloco 7 - Loop Principal
+    # Bloco 7 - Loop Principal (zmq.asyncio + Poller)
     # ──────────────────────────────────────────────
     async def _receive_loop(self):
-        logger.info("Loop de recebimento ZMQ iniciado.")
+        """Loop principal usando zmq.asyncio.Poller.
+        Reage instantaneamente a mensagens (sem sleep fixo).
+        Processamento pesado é despachado em background tasks."""
+        logger.info("Loop de recebimento ZMQ iniciado (async poller).")
         self._running = True
+
         while self._running:
             try:
-                # Processa comandos de controle
-                while not self._socket_control_queue.empty():
-                    cmd_type, broker_key, *args = await self._socket_control_queue.get()
-                    if cmd_type == "CONNECT":
-                        await self._setup_single_broker_sockets(broker_key, args[0])
-                    elif cmd_type == "DISCONNECT":
-                        await self._teardown_single_broker_sockets(broker_key)
-                    self._socket_control_queue.task_done()
+                # 1. Processar comandos de controle (CONNECT/DISCONNECT)
+                while True:
+                    try:
+                        cmd_type, broker_key, *args = self._socket_control_queue.get_nowait()
+                        if cmd_type == "CONNECT":
+                            await self._setup_single_broker_sockets(broker_key, args[0])
+                        elif cmd_type == "DISCONNECT":
+                            await self._teardown_single_broker_sockets(broker_key)
+                        self._socket_control_queue.task_done()
+                    except asyncio.QueueEmpty:
+                        break
 
-                # Processa mensagens dos sockets (polling não-bloqueante)
-                had_messages = False
-                for socket_map, port_name in [
-                    (self.command_sockets, 'CommandSocket'),
-                    (self.event_sockets, 'EventSocket'),
-                ]:
-                    for broker_key, socket in list(socket_map.items()):
-                        if socket.closed:
-                            continue
+                # 2. Construir poller com sockets atuais
+                poller = zmq.asyncio.Poller()
+                socket_map = {}  # socket → (broker_key, port_name)
+
+                for bk, sock in list(self.command_sockets.items()):
+                    if not sock.closed:
+                        poller.register(sock, zmq.POLLIN)
+                        socket_map[sock] = (bk, 'CommandSocket')
+                for bk, sock in list(self.event_sockets.items()):
+                    if not sock.closed:
+                        poller.register(sock, zmq.POLLIN)
+                        socket_map[sock] = (bk, 'EventSocket')
+
+                if not socket_map:
+                    # Sem sockets ativos — esperar brevemente
+                    await asyncio.sleep(0.1)
+                    continue
+
+                # 3. Poll — suspende até chegarem dados ou timeout (50ms)
+                events = await poller.poll(timeout=50)
+
+                # 4. Drenar todas as mensagens dos sockets prontos
+                for sock, _ in events:
+                    info = socket_map.get(sock)
+                    if not info:
+                        continue
+                    bk, port_name = info
+
+                    while not sock.closed:
                         try:
-                            while True:
-                                raw = socket.recv(zmq.NOBLOCK)
-                                had_messages = True
-                                msg_str = raw.decode('utf-8', errors='ignore')
-                                # Correção de JSON malformado
-                                if not msg_str.startswith('{'):
-                                    msg_str = '{' + msg_str
-                                if not msg_str.endswith('}'):
-                                    msg_str += '}'
-                                data = json.loads(msg_str)
-                                await self._process_message(data, broker_key)
+                            raw = await sock.recv(zmq.NOBLOCK)
+                            msg_str = raw.decode('utf-8', errors='ignore')
+                            # Correção de JSON malformado (DEALER pode prefixar frame vazio)
+                            if not msg_str.startswith('{'):
+                                msg_str = '{' + msg_str
+                            if not msg_str.endswith('}'):
+                                msg_str += '}'
+                            data = json.loads(msg_str)
+                            self._process_message(data, bk)
                         except zmq.Again:
-                            pass  # Sem mensagens pendentes
+                            break  # Socket drenado
                         except json.JSONDecodeError as e:
-                            logger.error(f"JSON inválido de {broker_key} ({port_name}): {e}")
-                        except zmq.ZMQError as e:
-                            if e.errno == zmq.ETERM:
-                                self._running = False
-                                break
+                            logger.error(f"JSON inválido de {bk} ({port_name}): {e}")
                         except Exception as e:
-                            logger.exception(f"Erro ao receber de {broker_key} ({port_name}): {e}")
-
-                # Yield para o event loop - intervalo menor se havia mensagens
-                await asyncio.sleep(0.01 if had_messages else 0.05)
+                            logger.exception(f"Erro ao receber de {bk} ({port_name}): {e}")
+                            break
 
             except zmq.ZMQError as e:
                 if e.errno == zmq.ETERM:
