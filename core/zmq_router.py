@@ -29,6 +29,7 @@ class ZmqRouter:
         self.event_sockets = {}     # SUB - recebe eventos do EA
 
         self._socket_control_queue = asyncio.Queue()
+        self._background_tasks: set = set()
         logger.debug("ZmqRouter inicializado (2 sockets por broker).")
 
     # ──────────────────────────────────────────────
@@ -196,7 +197,9 @@ class ZmqRouter:
 
         # Despachar todo o processamento pesado (GUI, copytrade, etc.) em background
         if self._message_handler:
-            asyncio.create_task(self._dispatch_message(broker_key, message_data))
+            task = asyncio.create_task(self._dispatch_message(broker_key, message_data))
+            self._background_tasks.add(task)
+            task.add_done_callback(self._background_tasks.discard)
 
     async def _dispatch_message(self, broker_key: str, message_data: dict):
         """Background task: processa mensagem no message_handler sem bloquear o receive loop."""

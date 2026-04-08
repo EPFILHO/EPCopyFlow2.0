@@ -41,6 +41,7 @@ class ZmqMessageHandler(QObject):
         self.broker_manager = broker_manager
         self.copytrade_manager = copytrade_manager
         self.heartbeat_active = {}
+        self._background_tasks: set = set()
 
     def set_copytrade_manager(self, copytrade_manager):
         self.copytrade_manager = copytrade_manager
@@ -88,12 +89,13 @@ class ZmqMessageHandler(QObject):
 
                 # Configurar EA: heartbeat interval + magic number
                 if self.zmq_router:
-                    asyncio.create_task(
-                        self.zmq_router.configure_heartbeat_interval(broker_key)
-                    )
-                    asyncio.create_task(
-                        self.zmq_router.configure_magic_number(broker_key)
-                    )
+                    for coro in (
+                        self.zmq_router.configure_heartbeat_interval(broker_key),
+                        self.zmq_router.configure_magic_number(broker_key),
+                    ):
+                        t = asyncio.create_task(coro)
+                        self._background_tasks.add(t)
+                        t.add_done_callback(self._background_tasks.discard)
 
         elif msg_type == "INTERNAL" and event == "CLIENT_UNREGISTERED":
             broker_key = message.get("broker_key")
@@ -167,9 +169,11 @@ class ZmqMessageHandler(QObject):
             # Copytrade: se é do Master, replica para Slaves
             if self.copytrade_manager and self.broker_manager:
                 if self.broker_manager.get_broker_role(identified_broker_key) == "master":
-                    asyncio.create_task(
+                    t = asyncio.create_task(
                         self.copytrade_manager.handle_master_trade_event(trade_event_data)
                     )
+                    self._background_tasks.add(t)
+                    t.add_done_callback(self._background_tasks.discard)
 
         elif msg_type == "STREAM" and event == "HEARTBEAT":
             broker_key = message.get("broker_key")
@@ -301,21 +305,27 @@ class ZmqMessageHandler(QObject):
     # ──────────────────────────────────────────────
     # Bloco 4 - Envio de Comandos
     # ──────────────────────────────────────────────
+    def _track_task(self, task):
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
+
     def send_ping(self, broker_key: str):
         timestamp = time.time()
-        asyncio.create_task(self.zmq_router.send_command_to_broker(
+        t = asyncio.create_task(self.zmq_router.send_command_to_broker(
             broker_key, "PING",
             {"timestamp": timestamp},
             f"ping_{broker_key}_{timestamp}"
         ))
+        self._track_task(t)
 
     def send_get_status_info(self, broker_key: str):
         timestamp = time.time()
-        asyncio.create_task(self.zmq_router.send_command_to_broker(
+        t = asyncio.create_task(self.zmq_router.send_command_to_broker(
             broker_key, "GET_STATUS_INFO",
             {"timestamp": timestamp},
             f"get_status_info_{broker_key}_{int(timestamp)}"
         ))
+        self._track_task(t)
 
     # ──────────────────────────────────────────────
     # Bloco 5 - Auxiliares
