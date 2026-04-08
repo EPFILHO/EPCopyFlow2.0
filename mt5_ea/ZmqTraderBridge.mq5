@@ -51,6 +51,10 @@ ulong g_last_heartbeat_time = 0;       // Timestamp do último heartbeat enviado
 //--- Magic number para identificar trades do CopyTrade (configurado pelo Python)
 long g_magic_number = 0;               // 0 = não configurado (desabilita detecção de aliens)
 
+//--- REGISTER retry (OnInit pode enviar antes do Python conectar)
+bool g_register_sent = false;          // true quando REGISTER foi enviado com sucesso
+int  g_register_retries = 0;           // Contador de tentativas
+
 //--- OrderSendAsync: mapa de requests pendentes (request_id MQL5 → zmq_request_id)
 //    Quando o broker responde, OnTradeTransaction recebe o resultado e envia a resposta ZMQ.
 #define MAX_PENDING_REQUESTS 64
@@ -1061,8 +1065,17 @@ int OnInit()
 
    g_is_connected = true;
    InitPendingRequests();
-   if(!SendRegisterMessage())
-      Print("Falha ao enviar REGISTER.");
+   if(SendRegisterMessage())
+   {
+      g_register_sent = true;
+      g_register_retries = 0;
+   }
+   else
+   {
+      Print("REGISTER falhou no OnInit (Python pode não estar conectado ainda). Retry via OnTimer.");
+      g_register_sent = false;
+      g_register_retries = 0;
+   }
 
    if(!EventSetMillisecondTimer(InpTimerIntervalMs))
    {
@@ -1100,6 +1113,17 @@ void OnDeinit(const int reason)
 void OnTimer()
 {
    if(!g_is_connected) return;
+
+   // Retry REGISTER se falhou no OnInit (Python pode não ter conectado ainda)
+   if(!g_register_sent && g_register_retries < 30)
+   {
+      g_register_retries++;
+      if(SendRegisterMessage())
+      {
+         g_register_sent = true;
+         PrintFormat("REGISTER enviado com sucesso na tentativa %d.", g_register_retries);
+      }
+   }
 
    // Processa comandos recebidos via CommandSocket
    CheckIncomingCommands();

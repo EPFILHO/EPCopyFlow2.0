@@ -121,6 +121,8 @@
 - [ ] JSON repair hack no zmq_router é frágil — pode esconder erros reais
 
 ## Prioridade Baixa (Melhorias / Features)
+- [ ] **Cópia de ordens pendentes** — replicar BUY_LIMIT, SELL_LIMIT, BUY_STOP, SELL_STOP do Master para Slaves (#44)
+- [ ] **Conectar apenas corretoras selecionadas** — checkbox nos cards + botão "Conectar Selecionadas" (#45)
 - [ ] Sem filtro de símbolos no copytrade (bloquear ativos específicos)
 - [ ] Sem limite de volume para prevenir trades acidentais grandes
 - [ ] Copy trades enviados sequencialmente — lag compensation ausente

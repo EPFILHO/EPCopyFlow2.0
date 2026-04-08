@@ -31,6 +31,7 @@ class BrokerManager(QObject):
         self.connected_brokers = {}
         self.mt5_processes = {}
         self.zmq_router = zmq_router
+        self._background_tasks: set = set()
         logger.debug("BrokerManager inicializado.")
 
     # ──────────────────────────────────────────────
@@ -321,7 +322,9 @@ class BrokerManager(QObject):
             logger.warning(f"MT5 já em execução para {key}. Reconectando sockets.")
             if self.zmq_router:
                 broker_config = self.brokers[key]
-                asyncio.create_task(self.zmq_router.connect_broker_sockets(key, broker_config))
+                t = asyncio.create_task(self.zmq_router.connect_broker_sockets(key, broker_config))
+                self._background_tasks.add(t)
+                t.add_done_callback(self._background_tasks.discard)
             self.connected_brokers[key] = True
             self.brokers_updated.emit()
             return True
@@ -353,7 +356,9 @@ class BrokerManager(QObject):
 
             if self.zmq_router:
                 broker_config = self.brokers[key]
-                asyncio.create_task(self.zmq_router.connect_broker_sockets(key, broker_config))
+                t = asyncio.create_task(self.zmq_router.connect_broker_sockets(key, broker_config))
+                self._background_tasks.add(t)
+                t.add_done_callback(self._background_tasks.discard)
             self.brokers_updated.emit()
             return True
         except Exception as e:
@@ -366,7 +371,9 @@ class BrokerManager(QObject):
             return False
 
         if self.zmq_router:
-            asyncio.create_task(self.zmq_router.disconnect_broker_sockets(key))
+            t = asyncio.create_task(self.zmq_router.disconnect_broker_sockets(key))
+            self._background_tasks.add(t)
+            t.add_done_callback(self._background_tasks.discard)
 
         if key in self.mt5_processes:
             process = self.mt5_processes[key]
