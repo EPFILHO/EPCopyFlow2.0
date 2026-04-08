@@ -171,7 +171,7 @@ class ZmqMessageHandler(QObject):
                         self.copytrade_manager.handle_master_trade_event(trade_event_data)
                     )
 
-        elif msg_type == "EVENT" and event == "HEARTBEAT":
+        elif msg_type == "STREAM" and event == "HEARTBEAT":
             broker_key = message.get("broker_key")
             role = message.get("role", "SLAVE")
 
