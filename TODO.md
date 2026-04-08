@@ -44,6 +44,27 @@
   - Python: handler loga warning + emite signal alien_trade_detected para UI
   - Abordagem mais robusta que heartbeat: detecta em tempo real, sem race conditions
 
+- [x] **JSON TRUNCATION (~255 chars)** ✅ FIXADO
+  - Causa raiz: MQL5 trunca string em `return` de funções (~255 chars)
+  - `SerializeTo(string &out)` preenchia por referência, mas `return msg;` em
+    `RobustJsonSerialize()` re-truncava ao retornar
+  - Fix: `RobustJsonSerialize` agora é `void` com `string &out` por referência
+  - Toda a cadeia é por referência: `SerializeTo() → out → SendJsonMessage()`
+  - **REQUER recompilação do EA no MetaEditor**
+
+- [x] **EMERGENCY CLOSE DOUBLE-CLOSE (race condition)** ✅ FIXADO
+  - Causa: `_emergency_active=False` resetava antes do TRADE_EVENT async do master chegar
+  - Fix duplo:
+    1. Marca todas `open_positions` como `PANIC` no DB antes de resetar flag
+       → `_get_slave_position_info()` retorna None → CLOSE ignorado
+    2. Grace period de 5s via timestamp (`_emergency_completed_at`)
+       → TRADE_EVENTs atrasados suprimidos com log de aviso
+
+- [x] **EMERGENCY CLOSE SEM LOG NO DB** ✅ FIXADO
+  - `emergency_close_all()` não chamava `_insert_history()` → `copytrade_history` vazio
+  - Fix: cada posição fechada (ou falha) agora gera registro com `action=EMERGENCY_CLOSE`
+  - Inclui `volume` do parsing de posições flattenadas e resolve `master_broker` por role
+
 ## CopyTrade - Implementação em Andamento
 - [x] Fix JSON serialization bug (flattening nested JSONNode objects)
 - [x] Fix cálculo de lotes para Forex (fracionários em vez de inteiros)
@@ -70,6 +91,8 @@
 - [x] **P2: Popup de alerta na UI** quando alien detectado (QMessageBox.warning) ✅
 - [x] **Magic Number configurável na GUI** — seção CopyTrade na página Configurações ✅
 - [x] **Heartbeat interval configurável na GUI** — seção CopyTrade na página Configurações ✅
+- [x] **Emergency close com status PANIC** — diferencia de CLOSED normal no DB ✅
+- [x] **Emergency close registrado no copytrade_history** — ação EMERGENCY_CLOSE ✅
 - ~~**P3: Auto-detecção HEDGE/NETTING**~~ — descartado: operaremos apenas NETTING
 - [ ] Retry com validação preço/tempo - max_price_deviation e max_retry_age
 - [ ] UI para visualizar status de slaves (ACTIVE/PAUSED com motivo da pausa)
@@ -82,7 +105,8 @@
 - [x] Tracking de posições fraco — resolvido com POSITION_IDENTIFIER + open_positions DB ✅
 - [x] Cálculo de lote ignora mínimo do broker — resolvido com GET_SYMBOL_INFO + normalize_volume ✅
 - [ ] HEDGE mode não suportado — tracking assume NETTING (uma posição por símbolo)
-- [ ] Emergency close não verifica se realmente fechou — limpa estado antes de confirmar
+- [x] Emergency close não verifica se realmente fechou — limpa estado antes de confirmar ✅
+  - Fix: agora marca PANIC no DB, grace period 5s, log de cada close no copytrade_history
 - [ ] Senhas em texto puro no brokers.json e nos argumentos de CLI do MT5
 - [ ] Sem sanitização de input — path traversal possível pelo nome do broker
 
