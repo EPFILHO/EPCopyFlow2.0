@@ -51,6 +51,17 @@ ulong g_last_heartbeat_time = 0;       // Timestamp do último heartbeat enviado
 //--- Magic number para identificar trades do CopyTrade (configurado pelo Python)
 long g_magic_number = 0;               // 0 = não configurado (desabilita detecção de aliens)
 
+//--- OrderSendAsync: mapa de requests pendentes (request_id MQL5 → zmq_request_id)
+//    Quando o broker responde, OnTradeTransaction recebe o resultado e envia a resposta ZMQ.
+#define MAX_PENDING_REQUESTS 64
+struct PendingTradeRequest {
+   ulong  mql_request_id;     // request_id retornado por OrderSendAsync
+   string zmq_request_id;     // request_id do Python (para enviar resposta via ZMQ)
+   ulong  created_at;         // GetTickCount64() — para timeout/cleanup
+   bool   is_used;            // slot ativo?
+};
+PendingTradeRequest g_pending_requests[MAX_PENDING_REQUESTS];
+
 //+------------------------------------------------------------------+
 //| Função auxiliar para trim de string                              |
 //+------------------------------------------------------------------+
@@ -169,13 +180,83 @@ bool SendJsonMessage(JSONNode &json_message, Socket &target_socket, string socke
       Print("TX (", socket_name, "): ", message_str);
 
    ZmqMsg msg(message_str);
-   bool sent = target_socket.send(msg);
+   bool sent = target_socket.send(msg, ZMQ_DONTWAIT);
    if(!sent)
    {
-      PrintFormat("ERROR: Falha ao enviar em %s. GetLastError(): %d", socket_name, GetLastError());
+      PrintFormat("WARN: Falha ao enviar em %s (DONTWAIT). GetLastError(): %d", socket_name, GetLastError());
       return false;
    }
    return true;
+}
+
+//+------------------------------------------------------------------+
+//| Gerenciamento de requests pendentes (OrderSendAsync)             |
+//+------------------------------------------------------------------+
+void InitPendingRequests()
+{
+   for(int i = 0; i < MAX_PENDING_REQUESTS; i++)
+      g_pending_requests[i].is_used = false;
+}
+
+bool AddPendingRequest(ulong mql_request_id, string zmq_request_id)
+{
+   for(int i = 0; i < MAX_PENDING_REQUESTS; i++)
+   {
+      if(!g_pending_requests[i].is_used)
+      {
+         g_pending_requests[i].mql_request_id = mql_request_id;
+         g_pending_requests[i].zmq_request_id = zmq_request_id;
+         g_pending_requests[i].created_at = GetTickCount64();
+         g_pending_requests[i].is_used = true;
+         return true;
+      }
+   }
+   Print("WARN: Tabela de pending requests cheia (", MAX_PENDING_REQUESTS, ")");
+   return false;
+}
+
+string FindAndRemovePendingRequest(ulong mql_request_id)
+{
+   for(int i = 0; i < MAX_PENDING_REQUESTS; i++)
+   {
+      if(g_pending_requests[i].is_used && g_pending_requests[i].mql_request_id == mql_request_id)
+      {
+         string zmq_id = g_pending_requests[i].zmq_request_id;
+         g_pending_requests[i].is_used = false;
+         return zmq_id;
+      }
+   }
+   return "";
+}
+
+void CleanupStalePendingRequests()
+{
+   // Remove requests com mais de 30 segundos (timeout de segurança)
+   ulong now = GetTickCount64();
+   for(int i = 0; i < MAX_PENDING_REQUESTS; i++)
+   {
+      if(g_pending_requests[i].is_used && (now - g_pending_requests[i].created_at) > 30000)
+      {
+         PrintFormat("WARN: Pending request expirado: zmq_id=%s, mql_id=%llu",
+                     g_pending_requests[i].zmq_request_id, g_pending_requests[i].mql_request_id);
+         // Envia timeout para o Python
+         SendErrorResponse(g_pending_requests[i].zmq_request_id, "Trade timeout (30s) no EA");
+         g_pending_requests[i].is_used = false;
+      }
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Determina filling mode suportado pelo símbolo                   |
+//+------------------------------------------------------------------+
+ENUM_ORDER_TYPE_FILLING GetSymbolFillingMode(string symbol)
+{
+   long filling_mode = SymbolInfoInteger(symbol, SYMBOL_FILLING_MODE);
+   if((filling_mode & SYMBOL_FILLING_FOK) != 0)
+      return ORDER_FILLING_FOK;
+   if((filling_mode & SYMBOL_FILLING_IOC) != 0)
+      return ORDER_FILLING_IOC;
+   return ORDER_FILLING_RETURN;
 }
 
 //+------------------------------------------------------------------+
@@ -635,25 +716,42 @@ void HandleTradeBuyCommand(const string request_id, JSONNode &payload)
    int deviation = (int)payload["deviation"].ToInteger();
    string comment = payload["comment"].ToString();
 
-   trade.SetDeviationInPoints(deviation);
-   if(!trade.Buy(volume, symbol, price, sl, tp, comment))
+   if(price <= 0)
+      price = SymbolInfoDouble(symbol, SYMBOL_ASK);
+
+   MqlTradeRequest req;
+   MqlTradeResult res;
+   ZeroMemory(req);
+   ZeroMemory(res);
+
+   req.action = TRADE_ACTION_DEAL;
+   req.symbol = symbol;
+   req.volume = volume;
+   req.type = ORDER_TYPE_BUY;
+   req.price = price;
+   req.sl = sl;
+   req.tp = tp;
+   req.deviation = (ulong)deviation;
+   req.magic = (ulong)g_magic_number;
+   req.comment = comment;
+   req.type_filling = GetSymbolFillingMode(symbol);
+
+   if(!OrderSendAsync(req, res))
    {
-      SendErrorResponse(request_id, StringFormat("Falha BUY: %s", trade.ResultComment()));
+      SendErrorResponse(request_id, StringFormat("OrderSendAsync BUY falhou: retcode=%d, %s",
+                        res.retcode, res.comment));
       return;
    }
 
-   JSONNode response;
-   response["type"] = "RESPONSE";
-   response["request_id"] = request_id;
-   response["status"] = "OK";
-   response["retcode"] = (long)trade.ResultRetcode();
-   response["result"] = trade.ResultComment();
-   response["deal"] = (long)trade.ResultDeal();
-   response["order"] = (long)trade.ResultOrder();
-   response["volume"] = trade.ResultVolume();
-   response["price"] = trade.ResultPrice();
-   response["ticket"] = (long)trade.ResultDeal();
-   SendJsonMessage(response, command_socket, "Command");
+   if(!AddPendingRequest((ulong)res.request_id, request_id))
+   {
+      SendErrorResponse(request_id, "Pending requests table full");
+      return;
+   }
+
+   if(InpDebugLog)
+      PrintFormat("OrderSendAsync BUY: symbol=%s, vol=%.2f, mql_req=%u, zmq_req=%s",
+                  symbol, volume, res.request_id, request_id);
 }
 
 void HandleTradeSellCommand(const string request_id, JSONNode &payload)
@@ -672,25 +770,42 @@ void HandleTradeSellCommand(const string request_id, JSONNode &payload)
    int deviation = (int)payload["deviation"].ToInteger();
    string comment = payload["comment"].ToString();
 
-   trade.SetDeviationInPoints(deviation);
-   if(!trade.Sell(volume, symbol, price, sl, tp, comment))
+   if(price <= 0)
+      price = SymbolInfoDouble(symbol, SYMBOL_BID);
+
+   MqlTradeRequest req;
+   MqlTradeResult res;
+   ZeroMemory(req);
+   ZeroMemory(res);
+
+   req.action = TRADE_ACTION_DEAL;
+   req.symbol = symbol;
+   req.volume = volume;
+   req.type = ORDER_TYPE_SELL;
+   req.price = price;
+   req.sl = sl;
+   req.tp = tp;
+   req.deviation = (ulong)deviation;
+   req.magic = (ulong)g_magic_number;
+   req.comment = comment;
+   req.type_filling = GetSymbolFillingMode(symbol);
+
+   if(!OrderSendAsync(req, res))
    {
-      SendErrorResponse(request_id, StringFormat("Falha SELL: %s", trade.ResultComment()));
+      SendErrorResponse(request_id, StringFormat("OrderSendAsync SELL falhou: retcode=%d, %s",
+                        res.retcode, res.comment));
       return;
    }
 
-   JSONNode response;
-   response["type"] = "RESPONSE";
-   response["request_id"] = request_id;
-   response["status"] = "OK";
-   response["retcode"] = (long)trade.ResultRetcode();
-   response["result"] = trade.ResultComment();
-   response["deal"] = (long)trade.ResultDeal();
-   response["order"] = (long)trade.ResultOrder();
-   response["volume"] = trade.ResultVolume();
-   response["price"] = trade.ResultPrice();
-   response["ticket"] = (long)trade.ResultDeal();
-   SendJsonMessage(response, command_socket, "Command");
+   if(!AddPendingRequest((ulong)res.request_id, request_id))
+   {
+      SendErrorResponse(request_id, "Pending requests table full");
+      return;
+   }
+
+   if(InpDebugLog)
+      PrintFormat("OrderSendAsync SELL: symbol=%s, vol=%.2f, mql_req=%u, zmq_req=%s",
+                  symbol, volume, res.request_id, request_id);
 }
 
 void HandleTradePositionModifyCommand(const string request_id, JSONNode &payload)
@@ -738,28 +853,40 @@ void HandleTradePositionPartialCommand(const string request_id, JSONNode &payloa
       return;
    }
 
-   // PositionClosePartial pode retornar false mesmo com execução bem-sucedida (bug CTrade).
-   // Verificar pelo retcode em vez do retorno do método.
-   trade.PositionClosePartial(ticket, volume);
-   uint retcode = trade.ResultRetcode();
+   string symbol = PositionGetString(POSITION_SYMBOL);
+   ENUM_POSITION_TYPE pos_type = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
 
-   if(retcode != TRADE_RETCODE_DONE && retcode != TRADE_RETCODE_PLACED && retcode != TRADE_RETCODE_DONE_PARTIAL)
+   MqlTradeRequest req;
+   MqlTradeResult res;
+   ZeroMemory(req);
+   ZeroMemory(res);
+
+   req.action = TRADE_ACTION_DEAL;
+   req.symbol = symbol;
+   req.volume = volume;
+   req.position = (ulong)ticket;
+   req.type = (pos_type == POSITION_TYPE_BUY) ? ORDER_TYPE_SELL : ORDER_TYPE_BUY;
+   req.price = (pos_type == POSITION_TYPE_BUY) ? SymbolInfoDouble(symbol, SYMBOL_BID) : SymbolInfoDouble(symbol, SYMBOL_ASK);
+   req.deviation = 100;
+   req.magic = (ulong)g_magic_number;
+   req.type_filling = GetSymbolFillingMode(symbol);
+
+   if(!OrderSendAsync(req, res))
    {
-      SendErrorResponse(request_id, StringFormat("Falha fechamento parcial (retcode=%d): %s", retcode, trade.ResultComment()));
+      SendErrorResponse(request_id, StringFormat("OrderSendAsync PARTIAL falhou: retcode=%d, %s",
+                        res.retcode, res.comment));
       return;
    }
 
-   JSONNode response;
-   response["type"] = "RESPONSE";
-   response["request_id"] = request_id;
-   response["status"] = "OK";
-   response["retcode"] = (long)retcode;
-   response["result"] = trade.ResultComment();
-   response["deal"] = (long)trade.ResultDeal();
-   response["order"] = (long)trade.ResultOrder();
-   response["volume"] = trade.ResultVolume();
-   response["ticket"] = ticket;
-   SendJsonMessage(response, command_socket, "Command");
+   if(!AddPendingRequest((ulong)res.request_id, request_id))
+   {
+      SendErrorResponse(request_id, "Pending requests table full");
+      return;
+   }
+
+   if(InpDebugLog)
+      PrintFormat("OrderSendAsync PARTIAL: ticket=%lld, vol=%.2f, mql_req=%u, zmq_req=%s",
+                  ticket, volume, res.request_id, request_id);
 }
 
 void HandleTradePositionCloseIdCommand(const string request_id, JSONNode &payload)
@@ -778,22 +905,47 @@ void HandleTradePositionCloseIdCommand(const string request_id, JSONNode &payloa
 
    long ticket = payload["ticket"].ToInteger();
 
-   if(!trade.PositionClose(ticket))
+   if(!PositionSelectByTicket(ticket))
    {
-      SendErrorResponse(request_id, StringFormat("Falha fechar posição: %s", trade.ResultComment()));
+      SendErrorResponse(request_id, "Posição não encontrada");
       return;
    }
 
-   JSONNode response;
-   response["type"] = "RESPONSE";
-   response["request_id"] = request_id;
-   response["status"] = "OK";
-   response["retcode"] = (long)trade.ResultRetcode();
-   response["result"] = trade.ResultComment();
-   response["deal"] = (long)trade.ResultDeal();
-   response["order"] = (long)trade.ResultOrder();
-   response["ticket"] = ticket;
-   SendJsonMessage(response, command_socket, "Command");
+   string symbol = PositionGetString(POSITION_SYMBOL);
+   double volume = PositionGetDouble(POSITION_VOLUME);
+   ENUM_POSITION_TYPE pos_type = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
+
+   MqlTradeRequest req;
+   MqlTradeResult res;
+   ZeroMemory(req);
+   ZeroMemory(res);
+
+   req.action = TRADE_ACTION_DEAL;
+   req.symbol = symbol;
+   req.volume = volume;
+   req.position = (ulong)ticket;
+   req.type = (pos_type == POSITION_TYPE_BUY) ? ORDER_TYPE_SELL : ORDER_TYPE_BUY;
+   req.price = (pos_type == POSITION_TYPE_BUY) ? SymbolInfoDouble(symbol, SYMBOL_BID) : SymbolInfoDouble(symbol, SYMBOL_ASK);
+   req.deviation = 100;
+   req.magic = (ulong)g_magic_number;
+   req.type_filling = GetSymbolFillingMode(symbol);
+
+   if(!OrderSendAsync(req, res))
+   {
+      SendErrorResponse(request_id, StringFormat("OrderSendAsync CLOSE falhou: retcode=%d, %s",
+                        res.retcode, res.comment));
+      return;
+   }
+
+   if(!AddPendingRequest((ulong)res.request_id, request_id))
+   {
+      SendErrorResponse(request_id, "Pending requests table full");
+      return;
+   }
+
+   if(InpDebugLog)
+      PrintFormat("OrderSendAsync CLOSE: ticket=%lld, symbol=%s, mql_req=%u, zmq_req=%s",
+                  ticket, symbol, res.request_id, request_id);
 }
 
 void HandleTradePositionCloseSymbolCommand(const string request_id, JSONNode &payload)
@@ -805,26 +957,45 @@ void HandleTradePositionCloseSymbolCommand(const string request_id, JSONNode &pa
    }
 
    string symbol = payload["symbol"].ToString();
+   int submitted = 0;
 
    for(int i = PositionsTotal() - 1; i >= 0; i--)
    {
       ulong ticket = PositionGetTicket(i);
       if(PositionSelectByTicket(ticket) && PositionGetString(POSITION_SYMBOL) == symbol)
       {
-         if(!trade.PositionClose(ticket))
-         {
-            SendErrorResponse(request_id, StringFormat("Falha fechar posição: %s", trade.ResultComment()));
-            return;
-         }
+         double volume = PositionGetDouble(POSITION_VOLUME);
+         ENUM_POSITION_TYPE pos_type = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
+
+         MqlTradeRequest req;
+         MqlTradeResult res;
+         ZeroMemory(req);
+         ZeroMemory(res);
+
+         req.action = TRADE_ACTION_DEAL;
+         req.symbol = symbol;
+         req.volume = volume;
+         req.position = ticket;
+         req.type = (pos_type == POSITION_TYPE_BUY) ? ORDER_TYPE_SELL : ORDER_TYPE_BUY;
+         req.price = (pos_type == POSITION_TYPE_BUY) ? SymbolInfoDouble(symbol, SYMBOL_BID) : SymbolInfoDouble(symbol, SYMBOL_ASK);
+         req.deviation = 100;
+         req.magic = (ulong)g_magic_number;
+         req.type_filling = GetSymbolFillingMode(symbol);
+
+         if(OrderSendAsync(req, res))
+            submitted++;
+         else
+            PrintFormat("WARN: OrderSendAsync CLOSE falhou para ticket=%llu: %s", ticket, res.comment);
       }
    }
 
+   // Resposta imediata: ordens submetidas (resultados individuais via TRADE_EVENT)
    JSONNode response;
    response["type"] = "RESPONSE";
    response["request_id"] = request_id;
    response["status"] = "OK";
-   response["retcode"] = TRADE_RETCODE_DONE;
-   response["result"] = "Positions closed";
+   response["retcode"] = (long)TRADE_RETCODE_PLACED;
+   response["result"] = StringFormat("%d close requests submitted for %s", submitted, symbol);
    SendJsonMessage(response, command_socket, "Command");
 }
 
@@ -877,6 +1048,7 @@ int OnInit()
    }
 
    g_is_connected = true;
+   InitPendingRequests();
    if(!SendRegisterMessage())
       Print("Falha ao enviar REGISTER.");
 
@@ -985,6 +1157,9 @@ void OnTimer()
       SendHeartbeat();
       g_last_heartbeat_time = current_time;
    }
+
+   // Limpar requests assíncronos expirados (timeout 30s)
+   CleanupStalePendingRequests();
 }
 
 //+------------------------------------------------------------------+
@@ -1130,6 +1305,50 @@ void OnTradeTransaction(const MqlTradeTransaction &trans, const MqlTradeRequest 
       PrintFormat("OnTradeTransaction - role=%s, action=%s, retcode=%d, deal=%lld, order=%lld, symbol=%s, volume=%.2f",
                   g_role, EnumToString(request.action), result.retcode,
                   result.deal, result.order, request.symbol, request.volume);
+   }
+
+   // ── Resposta assíncrona para OrderSendAsync pendentes ──
+   // Deve ficar ANTES do filtro de retcode do TRADE_EVENT, pois precisamos responder
+   // ao Python para qualquer retcode (sucesso ou erro).
+   if(result.request_id > 0)
+   {
+      string zmq_id = FindAndRemovePendingRequest((ulong)result.request_id);
+      if(zmq_id != "")
+      {
+         JSONNode async_response;
+         async_response["type"] = "RESPONSE";
+         async_response["request_id"] = zmq_id;
+
+         if(result.retcode == TRADE_RETCODE_DONE || result.retcode == TRADE_RETCODE_PLACED
+            || result.retcode == TRADE_RETCODE_DONE_PARTIAL)
+         {
+            async_response["status"] = "OK";
+         }
+         else
+         {
+            async_response["status"] = "ERROR";
+            async_response["error_message"] = StringFormat("Trade retcode=%d: %s", result.retcode, result.comment);
+         }
+
+         async_response["retcode"] = (long)result.retcode;
+         async_response["result"] = result.comment;
+         async_response["deal"] = (long)result.deal;
+         async_response["order"] = (long)result.order;
+         async_response["volume"] = result.volume;
+         async_response["price"] = result.price;
+
+         // ticket: posição (para close) ou deal (para abertura)
+         if(request.position > 0)
+            async_response["ticket"] = (long)request.position;
+         else
+            async_response["ticket"] = (long)result.deal;
+
+         SendJsonMessage(async_response, command_socket, "Command");
+
+         if(InpDebugLog)
+            PrintFormat("Async RESPONSE enviado: zmq_req=%s, retcode=%d, deal=%lld",
+                        zmq_id, result.retcode, result.deal);
+      }
    }
 
    // Só envia para retcodes relevantes
