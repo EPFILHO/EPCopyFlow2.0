@@ -280,6 +280,12 @@ class BrokerManager(QObject):
         command_port = broker_data.get("command_port", 15555)
         event_port = broker_data.get("event_port", 15556)
 
+        # Ler magic_number do config.ini principal
+        import configparser
+        main_config = configparser.ConfigParser()
+        main_config.read("config.ini")
+        magic_number = int(main_config.get("CopyTrade", "magic_number", fallback="0"))
+
         lines = [
             "[General]",
             f"BrokerKey={key}",
@@ -287,6 +293,8 @@ class BrokerManager(QObject):
             "[Ports]",
             f"CommandPort={command_port}",
             f"EventPort={event_port}",
+            "[CopyTrade]",
+            f"MagicNumber={magic_number}",
         ]
         content = "\n".join(lines)
         try:

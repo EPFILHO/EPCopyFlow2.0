@@ -116,13 +116,25 @@ bool ReadConfigFile(string &brokerKey, string &role, int &commandPort, int &even
          if(chave == "CommandPort") commandPort = (int)StringToInteger(valor);
          else if(chave == "EventPort") eventPort = (int)StringToInteger(valor);
       }
+      else if(currentSection == "[CopyTrade]")
+      {
+         if(chave == "MagicNumber")
+         {
+            long magic = StringToInteger(valor);
+            if(magic > 0)
+            {
+               g_magic_number = magic;
+               trade.SetExpertMagicNumber((ulong)magic);
+            }
+         }
+      }
    }
    FileClose(file_handle);
 
    if(InpDebugLog)
    {
-      PrintFormat("Config: BrokerKey=%s, Role=%s, CommandPort=%d, EventPort=%d",
-                  brokerKey, role, commandPort, eventPort);
+      PrintFormat("Config: BrokerKey=%s, Role=%s, CommandPort=%d, EventPort=%d, MagicNumber=%lld",
+                  brokerKey, role, commandPort, eventPort, g_magic_number);
    }
    return true;
 }
