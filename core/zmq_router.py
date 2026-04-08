@@ -30,6 +30,8 @@ class ZmqRouter:
         self.event_sockets = {}     # SUB - recebe eventos do EA
 
         self._socket_control_queue = asyncio.Queue()
+        self._poller = zmq.asyncio.Poller()
+        self._socket_broker_map = {}  # socket → (broker_key, port_name)
         logger.debug("ZmqRouter inicializado (2 sockets por broker).")
 
     # ──────────────────────────────────────────────
@@ -236,6 +238,8 @@ class ZmqRouter:
                 sock.connect(address)
                 sock.setsockopt(zmq.LINGER, 0)
                 self.command_sockets[broker_key] = sock
+                self._poller.register(sock, zmq.POLLIN)
+                self._socket_broker_map[sock] = (broker_key, 'CommandSocket')
                 logger.info(f"CommandSocket conectado em {address} para {broker_key}")
             except zmq.ZMQError as e:
                 logger.error(f"Erro ao conectar CommandSocket para {broker_key}: {e}")
@@ -253,6 +257,8 @@ class ZmqRouter:
                 sock.setsockopt_string(zmq.SUBSCRIBE, "")
                 sock.setsockopt(zmq.LINGER, 0)
                 self.event_sockets[broker_key] = sock
+                self._poller.register(sock, zmq.POLLIN)
+                self._socket_broker_map[sock] = (broker_key, 'EventSocket')
                 logger.info(f"EventSocket conectado em {address} para {broker_key}")
             except zmq.ZMQError as e:
                 logger.error(f"Erro ao conectar EventSocket para {broker_key}: {e}")
@@ -268,6 +274,11 @@ class ZmqRouter:
         ]:
             sock = socket_dict.pop(broker_key, None)
             if sock and not sock.closed:
+                try:
+                    self._poller.unregister(sock)
+                except KeyError:
+                    pass  # Socket nunca foi registrado (falha na conexão)
+                self._socket_broker_map.pop(sock, None)
                 try:
                     sock.close()
                     logger.debug(f"{name} para {broker_key} fechado.")
@@ -298,30 +309,16 @@ class ZmqRouter:
                     except asyncio.QueueEmpty:
                         break
 
-                # 2. Construir poller com sockets atuais
-                poller = zmq.asyncio.Poller()
-                socket_map = {}  # socket → (broker_key, port_name)
-
-                for bk, sock in list(self.command_sockets.items()):
-                    if not sock.closed:
-                        poller.register(sock, zmq.POLLIN)
-                        socket_map[sock] = (bk, 'CommandSocket')
-                for bk, sock in list(self.event_sockets.items()):
-                    if not sock.closed:
-                        poller.register(sock, zmq.POLLIN)
-                        socket_map[sock] = (bk, 'EventSocket')
-
-                if not socket_map:
-                    # Sem sockets ativos — esperar brevemente
+                # 2. Poll — suspende até chegarem dados ou timeout (50ms)
+                if not self._socket_broker_map:
                     await asyncio.sleep(0.1)
                     continue
 
-                # 3. Poll — suspende até chegarem dados ou timeout (50ms)
-                events = await poller.poll(timeout=50)
+                events = await self._poller.poll(timeout=50)
 
-                # 4. Drenar todas as mensagens dos sockets prontos
+                # 3. Drenar todas as mensagens dos sockets prontos
                 for sock, _ in events:
-                    info = socket_map.get(sock)
+                    info = self._socket_broker_map.get(sock)
                     if not info:
                         continue
                     bk, port_name = info
