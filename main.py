@@ -14,7 +14,7 @@ from PySide6.QtGui import QFont
 from PySide6.QtCore import Qt
 from core.config_manager import ConfigManager
 from core.broker_manager import BrokerManager
-from core.zmq_router import ZmqRouter
+from core.tcp_router import TcpRouter
 from core.copytrade_manager import CopyTradeManager
 from core.mt5_process_monitor import MT5ProcessMonitor
 from gui.main_window import MainWindow
@@ -27,12 +27,11 @@ logger = logging.getLogger(__name__)
 
 # ── Bloco 1 - Configuração Inicial ──
 def filter_warnings():
-    warnings.filterwarnings("ignore", category=RuntimeWarning, module="zmq.*")
     warnings.filterwarnings("ignore", message="not a socket")
     warnings.filterwarnings("ignore", category=DeprecationWarning, module="asyncio.*")
 
 
-# ── Bloco 2 - (Reservado - patch ZMQ removido, usa polling sync) ──
+# ── Bloco 2 - (Reservado) ──
 
 
 # ── Bloco 3 - Logging ──
@@ -85,8 +84,8 @@ def setup_logging(config_manager_instance: ConfigManager):
 
 # ── Bloco 4 - Variáveis Globais ──
 shutdown_event = asyncio.Event()
-zmq_task = None
-zmq_router_instance = None
+router_task = None
+tcp_router_instance = None
 mt5_processes = {}
 broker_manager = None
 mt5_monitor = None
@@ -95,29 +94,29 @@ copytrade_manager = None
 
 # ── Bloco 5 - Encerramento ──
 async def shutdown_cleanup():
-    global zmq_task, zmq_router_instance, mt5_processes, broker_manager, mt5_monitor
+    global router_task, tcp_router_instance, mt5_processes, broker_manager, mt5_monitor
     logger.info("Iniciando shutdown_cleanup...")
 
     if mt5_monitor:
         mt5_monitor.stop()
         logger.info("MT5ProcessMonitor parado.")
 
-    if zmq_router_instance:
+    if tcp_router_instance:
         try:
-            await zmq_router_instance.stop()
+            await tcp_router_instance.stop()
         except Exception as e:
-            logger.warning(f"Erro ao parar ZmqRouter: {e}")
+            logger.warning(f"Erro ao parar TcpRouter: {e}")
 
-    if zmq_task and not zmq_task.done():
+    if router_task and not router_task.done():
         try:
-            await asyncio.wait_for(zmq_task, timeout=2.0)
+            await asyncio.wait_for(router_task, timeout=2.0)
         except asyncio.TimeoutError:
             try:
-                zmq_task.cancel()
+                router_task.cancel()
             except Exception:
                 pass
         except Exception as e:
-            logger.exception(f"Erro ao esperar tarefa ZMQ: {e}")
+            logger.exception(f"Erro ao esperar tarefa TCP router: {e}")
 
     if broker_manager:
         try:
@@ -196,7 +195,7 @@ async def show_splash_async(duration):
 
 # ── Bloco 7 - Fluxo Principal ──
 async def main_application_flow(config: ConfigManager):
-    global zmq_task, zmq_router_instance, shutdown_event, mt5_processes
+    global router_task, tcp_router_instance, shutdown_event, mt5_processes
     global broker_manager, mt5_monitor, copytrade_manager
     logger.info("Iniciando EPCopyFlow 2.0...")
 
@@ -213,14 +212,14 @@ async def main_application_flow(config: ConfigManager):
     base_mt5_path = config.get('General', 'base_mt5_path', fallback='C:/Temp/MT5')
     root_path = os.path.dirname(os.path.abspath(__file__))
 
-    zmq_router_instance = ZmqRouter(None)
-    broker_manager = BrokerManager(config, base_mt5_path, root_path, zmq_router_instance)
-    zmq_router_instance.broker_manager = broker_manager
+    tcp_router_instance = TcpRouter(None)
+    broker_manager = BrokerManager(config, base_mt5_path, root_path, tcp_router_instance)
+    tcp_router_instance.broker_manager = broker_manager
 
     # CopyTradeManager é criado normalmente
     # Validação de NETTING é feita quando tenta usar CopyTrade
     # Heartbeat é gerenciado pelo EA (Master), não pelo Python
-    copytrade_manager = CopyTradeManager(broker_manager, zmq_router_instance)
+    copytrade_manager = CopyTradeManager(broker_manager, tcp_router_instance)
 
     mt5_monitor = MT5ProcessMonitor(
         broker_manager,
@@ -234,7 +233,7 @@ async def main_application_flow(config: ConfigManager):
     signal.signal(signal.SIGINT, sigint_handler)
 
     main_window = MainWindow(
-        config, broker_manager, zmq_router_instance,
+        config, broker_manager, tcp_router_instance,
         shutdown_event, root_path, mt5_monitor, copytrade_manager
     )
     main_window.show()
@@ -247,7 +246,7 @@ async def main_application_flow(config: ConfigManager):
     # Detectar account modes em background (após MT5 instâncias iniciarem)
     asyncio.create_task(copytrade_manager.detect_all_account_modes())
 
-    zmq_task = asyncio.create_task(zmq_router_instance.run(main_window.zmq_message_handler))
+    router_task = asyncio.create_task(tcp_router_instance.run(main_window.zmq_message_handler))
 
     logger.info("Setup concluído. Aguardando shutdown_event...")
 

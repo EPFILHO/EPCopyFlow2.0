@@ -1,7 +1,7 @@
 # EPCopyFlow 2.0 - Versão 0.0.1 - Claude Code Parte 000
 # core/broker_manager.py
 # Gerenciador de corretoras com suporte a roles (master/slave),
-# multiplicador de lote, e comunicação ZMQ simplificada (2 portas).
+# multiplicador de lote, e comunicação TCP nativa (1 porta por broker).
 
 import json
 import os
@@ -21,7 +21,7 @@ class BrokerManager(QObject):
     # ──────────────────────────────────────────────
     # Bloco 1 - Inicialização
     # ──────────────────────────────────────────────
-    def __init__(self, config, base_mt5_path, root_path, zmq_router):
+    def __init__(self, config, base_mt5_path, root_path, tcp_router):
         super().__init__()
         self.brokers_file = config.get('General', 'brokers_file', fallback='brokers.json')
         self.base_mt5_path = base_mt5_path
@@ -30,7 +30,7 @@ class BrokerManager(QObject):
         self.brokers = self.load_brokers()
         self.connected_brokers = {}
         self.mt5_processes = {}
-        self.zmq_router = zmq_router
+        self.tcp_router = tcp_router
         self._background_tasks: set = set()
         logger.debug("BrokerManager inicializado.")
 
@@ -320,9 +320,9 @@ class BrokerManager(QObject):
         # Já está rodando?
         if key in self.mt5_processes and self.mt5_processes[key].poll() is None:
             logger.warning(f"MT5 já em execução para {key}. Reconectando sockets.")
-            if self.zmq_router:
+            if self.tcp_router:
                 broker_config = self.brokers[key]
-                t = asyncio.create_task(self.zmq_router.connect_broker_sockets(key, broker_config))
+                t = asyncio.create_task(self.tcp_router.connect_broker_sockets(key, broker_config))
                 self._background_tasks.add(t)
                 t.add_done_callback(self._background_tasks.discard)
             self.connected_brokers[key] = True
@@ -354,9 +354,9 @@ class BrokerManager(QObject):
             self.connected_brokers[key] = True
             logger.info(f"MT5 iniciado para {key}.")
 
-            if self.zmq_router:
+            if self.tcp_router:
                 broker_config = self.brokers[key]
-                t = asyncio.create_task(self.zmq_router.connect_broker_sockets(key, broker_config))
+                t = asyncio.create_task(self.tcp_router.connect_broker_sockets(key, broker_config))
                 self._background_tasks.add(t)
                 t.add_done_callback(self._background_tasks.discard)
             self.brokers_updated.emit()
@@ -370,8 +370,8 @@ class BrokerManager(QObject):
             logger.error(f"Corretora {key} não encontrada.")
             return False
 
-        if self.zmq_router:
-            t = asyncio.create_task(self.zmq_router.disconnect_broker_sockets(key))
+        if self.tcp_router:
+            t = asyncio.create_task(self.tcp_router.disconnect_broker_sockets(key))
             self._background_tasks.add(t)
             t.add_done_callback(self._background_tasks.discard)
 

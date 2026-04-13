@@ -189,9 +189,9 @@ class MT5ProcessMonitor:
             self.broker_manager.connected_brokers[key] = True
             logger.info(f"MT5 reiniciado para {key} (PID: {process.pid}).")
 
-            if self.broker_manager.zmq_router:
+            if self.broker_manager.tcp_router:
                 asyncio.run_coroutine_threadsafe(
-                    self.broker_manager.zmq_router.connect_broker_sockets(key, broker_config),
+                    self.broker_manager.tcp_router.connect_broker_sockets(key, broker_config),
                     self.event_loop
                 )
             return True

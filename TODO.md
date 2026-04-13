@@ -111,14 +111,17 @@
 - [ ] Sem sanitização de input — path traversal possível pelo nome do broker
 
 ## Prioridade Média (Estabilidade / Core)
-- [ ] Timeout do ZMQ vaza memória (response events órfãos no zmq_router)
+- [x] **Migração ZMQ → TCP nativo** (#47) — remove libzmq.dll, pyzmq, Zmq.mqh
+  - Python = servidor (`asyncio.start_server`), EA = cliente (`SocketCreate/Connect`)
+  - Framing length-prefixed JSON (4 bytes big-endian + UTF-8 payload)
+  - Uma conexão TCP por broker (bidirecional), substitui os antigos CommandSocket + EventSocket
+- [ ] Timeout do TCP router vaza memória (response events órfãos)
 - [ ] Race condition no disconnect/reconnect de brokers
 - [ ] Signal emission de thread errada pode crashar o Qt (copytrade_manager)
 - [ ] SQLite sem transaction wrapping — estado inconsistente possível
 - [ ] SQLite connection nunca é fechada (file locking)
 - [ ] Histórico de trades cresce indefinidamente (sem rotação/archive)
 - [ ] Sem validação de schema no brokers.json
-- [ ] JSON repair hack no zmq_router é frágil — pode esconder erros reais
 
 ## Prioridade Baixa (Melhorias / Features)
 - [ ] **Cópia de ordens pendentes** — replicar BUY_LIMIT, SELL_LIMIT, BUY_STOP, SELL_STOP do Master para Slaves (#44)
@@ -128,8 +131,8 @@
 - [ ] Copy trades enviados sequencialmente — lag compensation ausente
 - [ ] Sem partial fill handling (assume fill total ou rejeição total)
 - [ ] Sem resync automático após queda de conexão
-- [ ] Localhost hardcoded no zmq_router — sem suporte a multi-máquina
-- [ ] Sem rate limiting nos comandos ZMQ
+- [ ] Localhost hardcoded no tcp_router — sem suporte a multi-máquina
+- [ ] Sem rate limiting nos comandos do router TCP
 
 ## Refatoração / Arquitetura
 - [ ] Substituir QTimer de polling dos indicadores por signal do mt5_process_monitor

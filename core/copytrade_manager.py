@@ -25,10 +25,10 @@ class CopyTradeManager(QObject):
     # ──────────────────────────────────────────────
     # Bloco 1 - Inicialização e Banco de Dados
     # ──────────────────────────────────────────────
-    def __init__(self, broker_manager, zmq_router, parent=None):
+    def __init__(self, broker_manager, tcp_router, parent=None):
         super().__init__(parent)
         self.broker_manager = broker_manager
-        self.zmq_router = zmq_router
+        self.tcp_router = tcp_router
         self.position_map = {}  # position_id (POSITION_IDENTIFIER) -> {slave_key: slave_ticket}
         self._emergency_active = False  # Suprime replicação durante emergency close
         self._emergency_completed_at = 0  # Timestamp do fim do emergency (grace period)
@@ -146,7 +146,7 @@ class CopyTradeManager(QObject):
             request_id = f"get_account_mode_{broker_key}_{int(time.time())}"
             logger.debug(f"🔍 Detectando account mode de {broker_key}...")
 
-            response = await self.zmq_router.send_command_to_broker(
+            response = await self.tcp_router.send_command_to_broker(
                 broker_key, "GET_ACCOUNT_MODE", {}, request_id
             )
 
@@ -250,7 +250,7 @@ class CopyTradeManager(QObject):
 
         try:
             request_id = f"symbol_info_{broker_key}_{symbol}_{int(time.time())}"
-            response = await self.zmq_router.send_command_to_broker(
+            response = await self.tcp_router.send_command_to_broker(
                 broker_key, "GET_SYMBOL_INFO", {"symbol": symbol}, request_id
             )
 
@@ -671,7 +671,7 @@ class CopyTradeManager(QObject):
         logger.info(f"    {log_msg} → {command}")
 
         request_id = f"trade_{slave_key}_{int(time.time())}"
-        response = await self.zmq_router.send_command_to_broker(
+        response = await self.tcp_router.send_command_to_broker(
             slave_key, command, payload, request_id
         )
         logger.info(f"    Resposta: {response}")
@@ -803,7 +803,7 @@ class CopyTradeManager(QObject):
         for broker_key in connected:
             # Solicita posições abertas
             request_id = f"positions_{broker_key}_{int(time.time())}"
-            response = await self.zmq_router.send_command_to_broker(
+            response = await self.tcp_router.send_command_to_broker(
                 broker_key, "POSITIONS", {}, request_id
             )
 
@@ -831,7 +831,7 @@ class CopyTradeManager(QObject):
                 volume = pos.get("volume", 0.0)
                 if ticket > 0:
                     close_id = f"close_{broker_key}_{ticket}_{int(time.time())}"
-                    close_response = await self.zmq_router.send_command_to_broker(
+                    close_response = await self.tcp_router.send_command_to_broker(
                         broker_key, "TRADE_POSITION_CLOSE_ID",
                         {"ticket": ticket, "emergency": True}, close_id
                     )
