@@ -20,8 +20,8 @@
 //+------------------------------------------------------------------+
 
 //--- Parâmetros configuráveis
-input int    InpTimerIntervalMs  = 200;     // Intervalo do timer (ms)
-input bool   InpDebugLog         = true;    // Ativar logs
+input int    InpTimerIntervalMs  = 1000;    // Intervalo do timer (ms)
+input bool   InpDebugLog         = false;   // Ativar logs de debug
 input string InpTcpHost          = "127.0.0.1"; // Host do servidor Python
 input int    InpConnectTimeoutMs = 1000;    // Timeout de conexão TCP (ms)
 
@@ -48,11 +48,7 @@ bool g_initial_trade_allowed_sent = false;
 bool g_last_terminal_connected = false;
 bool g_initial_connection_status_sent = false;
 
-//--- Heartbeat periódico (enviado pelo EA para o Python)
-ulong g_heartbeat_interval_ms = 5000;  // Padrão: 5 segundos (será configurado pelo Python)
-ulong g_last_heartbeat_time = 0;       // Timestamp do último heartbeat enviado
-
-//--- Magic number para identificar trades do CopyTrade (configurado pelo Python)
+//--- Magic number para identificar trades do CopyTrade (lido do config.ini no OnInit)
 long g_magic_number = 0;               // 0 = não configurado (desabilita detecção de aliens)
 
 //--- REGISTER retry (OnInit pode enviar antes do Python conectar)
@@ -646,74 +642,6 @@ void HandleGetSymbolInfoCommand(const string request_id, JSONNode &payload)
    SendJsonMessage(response, "Command");
 }
 
-void HandleSetHeartbeatIntervalCommand(const string request_id, JSONNode &payload)
-{
-   JSONNode response;
-   response["type"] = "RESPONSE";
-   response["request_id"] = request_id;
-
-   // Extrair intervalo do payload
-   JSONNode *interval_node = payload["heartbeat_interval_ms"];
-   if(CheckPointer(interval_node) == POINTER_INVALID)
-   {
-      response["status"] = "ERROR";
-      response["error_message"] = "heartbeat_interval_ms não fornecido";
-      SendJsonMessage(response, "Command");
-      return;
-   }
-
-   long interval = StringToInteger(interval_node.ToString());
-   if(interval < 1000 || interval > 600000)  // 1s a 10 minutos
-   {
-      response["status"] = "ERROR";
-      response["error_message"] = StringFormat("Intervalo inválido: %d (deve ser 1000-600000 ms)", interval);
-      SendJsonMessage(response, "Command");
-      return;
-   }
-
-   g_heartbeat_interval_ms = (ulong)interval;
-   g_last_heartbeat_time = GetTickCount64();  // Reset timing
-
-   response["status"] = "OK";
-   response["heartbeat_interval_ms"] = interval;
-   SendJsonMessage(response, "Command");
-
-   PrintFormat("Intervalo de heartbeat configurado: %d ms", interval);
-}
-
-void HandleSetMagicNumberCommand(const string request_id, JSONNode &payload)
-{
-   JSONNode response;
-   response["type"] = "RESPONSE";
-   response["request_id"] = request_id;
-
-   JSONNode *magic_node = payload["magic_number"];
-   if(CheckPointer(magic_node) == POINTER_INVALID)
-   {
-      response["status"] = "ERROR";
-      response["error_message"] = "magic_number nao fornecido";
-      SendJsonMessage(response, "Command");
-      return;
-   }
-
-   long magic = StringToInteger(magic_node.ToString());
-   if(magic <= 0)
-   {
-      response["status"] = "ERROR";
-      response["error_message"] = StringFormat("magic_number invalido: %lld", magic);
-      SendJsonMessage(response, "Command");
-      return;
-   }
-
-   g_magic_number = magic;
-   trade.SetExpertMagicNumber((ulong)magic);
-
-   response["status"] = "OK";
-   response["magic_number"] = magic;
-   SendJsonMessage(response, "Command");
-
-   PrintFormat("Magic number configurado: %lld (CTrade atualizado)", magic);
-}
 
 void HandleGetPositionsCommand(const string request_id)
 {
@@ -774,20 +702,6 @@ void HandleGetOrdersCommand(const string request_id)
    SendJsonMessage(response, "Command");
 }
 
-void SendHeartbeat()
-{
-   // Heartbeat leve: apenas keep-alive + contagem de posições.
-   // Dados completos de posição são obtidos via GET_POSITIONS (sob demanda).
-   // Isso elimina serialização JSON pesada a cada heartbeat_interval.
-   JSONNode heartbeat;
-   heartbeat["type"] = "STREAM";
-   heartbeat["event"] = "HEARTBEAT";
-   heartbeat["timestamp_mql"] = (long)TimeCurrent();
-   heartbeat["role"] = g_role;
-   heartbeat["positions_count"] = (long)PositionsTotal();
-
-   SendJsonMessage(heartbeat, "Event");
-}
 
 void HandleGetHistoryTradesCommand(const string request_id, JSONNode &payload)
 {
@@ -1400,14 +1314,6 @@ void OnTimer()
          PrintFormat("CONNECTION_STATUS: %s", current_connected ? "connected" : "disconnected");
    }
 
-   // Envio periódico de heartbeat com posições
-   ulong current_time = GetTickCount64();
-   if(current_time - g_last_heartbeat_time >= g_heartbeat_interval_ms)
-   {
-      SendHeartbeat();
-      g_last_heartbeat_time = current_time;
-   }
-
    // Limpar requests assíncronos expirados (timeout 30s)
    CleanupStalePendingRequests();
 }
@@ -1468,14 +1374,6 @@ void ProcessCommand(JSONNode &json_command)
    else if(command == "GET_SYMBOL_INFO")
    {
       HandleGetSymbolInfoCommand(request_id, payload);
-   }
-   else if(command == "SET_HEARTBEAT_INTERVAL")
-   {
-      HandleSetHeartbeatIntervalCommand(request_id, payload);
-   }
-   else if(command == "SET_MAGIC_NUMBER")
-   {
-      HandleSetMagicNumberCommand(request_id, payload);
    }
    else if(command == "POSITIONS" || command == "GET_POSITIONS")
    {
