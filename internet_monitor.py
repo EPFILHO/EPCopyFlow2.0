@@ -3,7 +3,6 @@
 # Monitor de internet e sistema usando QTimer (thread-safe, roda na GUI thread).
 
 import logging
-import socket
 import psutil
 from PySide6.QtCore import QTimer, QObject, Signal
 
@@ -28,9 +27,12 @@ class InternetMonitor(QObject):
 
     def is_online(self):
         try:
-            socket.create_connection(("8.8.8.8", 53), timeout=3)
-            return True
-        except OSError:
+            stats = psutil.net_if_stats()
+            return any(
+                s.isup for name, s in stats.items()
+                if not name.lower().startswith('lo')
+            )
+        except Exception:
             return False
 
     def get_system_info(self):
