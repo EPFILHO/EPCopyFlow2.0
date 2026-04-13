@@ -7,11 +7,18 @@
 #   [4 bytes big-endian unsigned length][UTF-8 JSON payload]
 #
 # Substitui o antigo core/zmq_router.py (issue #47).
+#
+# PySide6.QtAsyncio não implementa create_server/add_reader, então os
+# servidores TCP rodam em um event loop asyncio dedicado numa thread
+# worker. Chamadas cruzam as duas loops via asyncio.run_coroutine_threadsafe
+# (main → worker para envio de comandos, worker → main para entregar
+# mensagens ao message_handler, que emite signals Qt).
 
 import asyncio
 import json
 import logging
 import struct
+import threading
 import time
 
 logger = logging.getLogger(__name__)
@@ -30,35 +37,47 @@ class TcpRouter:
         self._message_handler = None
 
         # Mapa legado usado pelo message_handler para resolver broker_key por id de cliente.
-        # Mantido por compatibilidade; cada broker só tem um cliente, então mapeamos
-        # broker_key -> broker_key (o "zmq id" virou o próprio broker_key).
         self._clients = {}
 
+        # Estado compartilhado entre worker loop e main loop. Mutação exclusiva no worker loop.
         self._responses = {}
-        self._response_events = {}
+        self._response_events = {}  # asyncio.Event bound ao worker loop
+        self._servers = {}          # broker_key -> asyncio.base_events.Server
+        self._writers = {}          # broker_key -> asyncio.StreamWriter
+        self._ports = {}            # broker_key -> int
 
-        # Por-broker:
-        #   self._servers[broker_key]     -> asyncio.base_events.Server
-        #   self._writers[broker_key]     -> asyncio.StreamWriter (conexão ativa do EA)
-        #   self._reader_tasks[broker_key]-> asyncio.Task do loop de leitura
-        #   self._ports[broker_key]       -> int (porta TCP escutada)
-        self._servers = {}
-        self._writers = {}
-        self._reader_tasks = {}
-        self._ports = {}
+        # Sincronização entre threads
+        self._main_loop = None      # asyncio loop do Qt (para entregar mensagens)
+        self._worker_loop = None    # asyncio loop dedicado ao TCP
+        self._worker_thread = None
+        self._worker_loop_ready = threading.Event()
+        self._worker_shutdown = None   # asyncio.Event criado no worker loop
 
-        self._socket_control_queue = asyncio.Queue()
-        self._background_tasks: set = set()
+        # Fila de comandos de controle (CONNECT/DISCONNECT) consumida no worker loop.
+        self._socket_control_queue = None  # asyncio.Queue criada no worker loop
+
         logger.debug("TcpRouter inicializado (1 conexão TCP por broker, Python = server).")
 
     # ──────────────────────────────────────────────
     # Bloco 2 - Comandos de Controle (Connect/Disconnect)
     # ──────────────────────────────────────────────
     async def connect_broker_sockets(self, broker_key: str, broker_config: dict):
-        await self._socket_control_queue.put(("CONNECT", broker_key, broker_config))
+        self._submit_control(("CONNECT", broker_key, broker_config))
 
     async def disconnect_broker_sockets(self, broker_key: str):
-        await self._socket_control_queue.put(("DISCONNECT", broker_key))
+        self._submit_control(("DISCONNECT", broker_key))
+
+    def _submit_control(self, item):
+        """Posta um item na fila de controle do worker loop, thread-safe."""
+        if self._worker_loop is None or self._socket_control_queue is None:
+            logger.warning("TcpRouter não iniciado; ignorando comando de controle.")
+            return
+        try:
+            self._worker_loop.call_soon_threadsafe(
+                self._socket_control_queue.put_nowait, item
+            )
+        except RuntimeError as e:
+            logger.warning(f"Worker loop indisponível ao submeter {item[0]}: {e}")
 
     # ──────────────────────────────────────────────
     # Bloco 3 - Parada do Router
@@ -67,33 +86,63 @@ class TcpRouter:
         logger.info("Parando TcpRouter...")
         self._running = False
 
-        for event in self._response_events.values():
-            event.set()
+        if self._worker_loop is not None and self._worker_loop.is_running():
+            try:
+                fut = asyncio.run_coroutine_threadsafe(
+                    self._worker_stop(), self._worker_loop
+                )
+                await asyncio.wait_for(asyncio.wrap_future(fut), timeout=3.0)
+            except Exception as e:
+                logger.warning(f"Erro ao parar worker loop: {e}")
 
-        all_broker_keys = set(self._servers.keys()) | set(self._writers.keys())
-        for broker_key in all_broker_keys:
-            await self._socket_control_queue.put(("DISCONNECT", broker_key))
-
-        try:
-            await asyncio.wait_for(self._socket_control_queue.join(), timeout=2.0)
-        except (asyncio.TimeoutError, Exception):
-            pass
-
-        # Fallback: desliga o que sobrou.
-        for broker_key in list(self._servers.keys()):
-            await self._teardown_single_broker_sockets(broker_key)
+        if self._worker_thread is not None:
+            self._worker_thread.join(timeout=3.0)
 
         logger.info("TcpRouter parado.")
+
+    async def _worker_stop(self):
+        """Executado no worker loop: desliga todos os servidores e marca shutdown."""
+        for event in list(self._response_events.values()):
+            try:
+                event.set()
+            except Exception:
+                pass
+
+        for broker_key in list(self._servers.keys()):
+            try:
+                await self._teardown_single_broker_sockets(broker_key)
+            except Exception as e:
+                logger.warning(f"Erro ao teardown {broker_key} no stop: {e}")
+
+        if self._worker_shutdown is not None:
+            self._worker_shutdown.set()
 
     # ──────────────────────────────────────────────
     # Bloco 4 - Envio de Comandos
     # ──────────────────────────────────────────────
     async def send_command_to_broker(self, broker_key: str, command: str,
                                      payload: dict = None, request_id: str = None):
-        """Envia um comando ao EA via TCP e aguarda resposta."""
+        """Envia um comando ao EA via TCP e aguarda resposta.
+
+        Chamada no main loop (Qt). Agenda a execução real no worker loop."""
         if not broker_key:
             return {"status": "ERROR", "message": "broker_key não fornecida."}
+        if self._worker_loop is None:
+            return {"status": "ERROR", "message": "Router não iniciado."}
 
+        try:
+            fut = asyncio.run_coroutine_threadsafe(
+                self._send_command_internal(broker_key, command, payload, request_id),
+                self._worker_loop,
+            )
+            return await asyncio.wrap_future(fut)
+        except Exception as e:
+            logger.error(f"Erro ao marshallar {command} para {broker_key}: {e}")
+            return {"status": "ERROR", "message": str(e)}
+
+    async def _send_command_internal(self, broker_key: str, command: str,
+                                     payload: dict, request_id: str):
+        """Executado no worker loop: escreve o frame e aguarda resposta."""
         writer = self._writers.get(broker_key)
         if writer is None or writer.is_closing():
             return {"status": "ERROR", "message": f"Corretora {broker_key} não conectada."}
@@ -198,16 +247,11 @@ class TcpRouter:
             raise ValueError(f"Frame excede tamanho máximo ({len(payload)} > {_MAX_FRAME_SIZE})")
         return struct.pack(">I", len(payload)) + payload
 
-    @staticmethod
-    async def _read_exact(reader: asyncio.StreamReader, n: int) -> bytes:
-        """Lê exatamente n bytes do reader. Lança IncompleteReadError se EOF."""
-        return await reader.readexactly(n)
-
     # ──────────────────────────────────────────────
     # Bloco 6 - Processamento de Mensagens (fast-path síncrono)
     # ──────────────────────────────────────────────
     def _process_message(self, message_data: dict, broker_key: str):
-        """Fast-path síncrono: sinaliza respostas e atualiza estado."""
+        """Fast-path síncrono (worker loop): sinaliza respostas e despacha ao main loop."""
         msg_type = message_data.get("type")
         event = message_data.get("event")
         broker_key_msg = message_data.get("broker_key")
@@ -215,21 +259,27 @@ class TcpRouter:
 
         if msg_type == "RESPONSE" and request_id:
             self._responses[request_id] = message_data
-            if request_id in self._response_events:
-                self._response_events[request_id].set()
+            ev = self._response_events.get(request_id)
+            if ev is not None:
+                ev.set()
 
         if msg_type == "SYSTEM" and event == "REGISTER" and broker_key_msg:
             self._clients[broker_key_msg] = broker_key
         elif msg_type == "SYSTEM" and event == "UNREGISTER" and broker_key_msg:
             self._clients.pop(broker_key_msg, None)
 
-        if self._message_handler:
-            task = asyncio.create_task(self._dispatch_message(broker_key, message_data))
-            self._background_tasks.add(task)
-            task.add_done_callback(self._background_tasks.discard)
+        # Despacha o processamento pesado para o main loop (onde vivem os signals Qt).
+        if self._message_handler and self._main_loop is not None:
+            try:
+                asyncio.run_coroutine_threadsafe(
+                    self._dispatch_to_handler(broker_key, message_data),
+                    self._main_loop,
+                )
+            except RuntimeError as e:
+                logger.warning(f"Main loop indisponível ao dispatchar: {e}")
 
-    async def _dispatch_message(self, broker_key: str, message_data: dict):
-        """Background task: processa mensagem no message_handler sem bloquear o receive loop."""
+    async def _dispatch_to_handler(self, broker_key: str, message_data: dict):
+        """Executado no main loop (Qt). Chama o message_handler."""
         try:
             msg_type = message_data.get("type")
             event = message_data.get("event")
@@ -250,7 +300,7 @@ class TcpRouter:
             logger.exception(f"Erro ao processar mensagem de {broker_key}: {e}")
 
     # ──────────────────────────────────────────────
-    # Bloco 7 - Server/Client connection handling
+    # Bloco 7 - Server/Client connection handling (worker loop)
     # ──────────────────────────────────────────────
     def _make_client_handler(self, broker_key: str):
         """Cria um handler coroutine para asyncio.start_server vinculado ao broker."""
@@ -268,7 +318,6 @@ class TcpRouter:
                     pass
 
             self._writers[broker_key] = writer
-            # Registra mapa legado usado pelo message_handler
             self._clients[broker_key] = broker_key
 
             try:
@@ -302,10 +351,8 @@ class TcpRouter:
             except Exception as e:
                 logger.exception(f"[{broker_key}] Erro no handler de cliente: {e}")
             finally:
-                # Limpa o writer se ainda é o atual
                 if self._writers.get(broker_key) is writer:
                     self._writers.pop(broker_key, None)
-                    # Notifica unregister implícito
                     unregister_msg = {
                         "type": "SYSTEM",
                         "event": "UNREGISTER",
@@ -327,7 +374,6 @@ class TcpRouter:
     async def _setup_single_broker_sockets(self, broker_key: str, config: dict):
         logger.info(f"Configurando servidor TCP para {broker_key}...")
 
-        # Limpa estado residual
         self._clients.pop(broker_key, None)
         await self._teardown_single_broker_sockets(broker_key)
 
@@ -377,20 +423,56 @@ class TcpRouter:
         self._clients.pop(broker_key, None)
 
     # ──────────────────────────────────────────────
-    # Bloco 8 - Loop Principal (processa fila de controle)
+    # Bloco 8 - Worker loop e bootstrap
     # ──────────────────────────────────────────────
-    async def _control_loop(self):
-        """Processa comandos CONNECT/DISCONNECT da fila. Servidores TCP rodam sozinhos."""
-        logger.info("Loop de controle TcpRouter iniciado.")
-        self._running = True
-
-        while self._running:
+    def _worker_thread_main(self):
+        """Thread dedicada: roda um event loop asyncio próprio para TCP."""
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        self._worker_loop = loop
+        try:
+            loop.run_until_complete(self._worker_main())
+        except Exception as e:
+            logger.exception(f"Worker loop encerrou com erro: {e}")
+        finally:
             try:
+                pending = asyncio.all_tasks(loop)
+                for task in pending:
+                    task.cancel()
+                loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+            except Exception:
+                pass
+            try:
+                loop.close()
+            except Exception:
+                pass
+            logger.info("Worker loop TcpRouter finalizado.")
+
+    async def _worker_main(self):
+        """Rodando no worker loop. Cria fila + shutdown event e processa controle."""
+        self._socket_control_queue = asyncio.Queue()
+        self._worker_shutdown = asyncio.Event()
+        self._worker_loop_ready.set()
+        logger.info("Loop de controle TcpRouter iniciado.")
+
+        try:
+            while self._running and not self._worker_shutdown.is_set():
+                # Aguarda um item da fila OU o shutdown event, o que vier primeiro.
+                get_task = asyncio.ensure_future(self._socket_control_queue.get())
+                shutdown_task = asyncio.ensure_future(self._worker_shutdown.wait())
+                done, pending = await asyncio.wait(
+                    {get_task, shutdown_task},
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                for t in pending:
+                    t.cancel()
+
+                if shutdown_task in done:
+                    break
+
                 try:
-                    cmd = await asyncio.wait_for(
-                        self._socket_control_queue.get(), timeout=0.5
-                    )
-                except asyncio.TimeoutError:
+                    cmd = get_task.result()
+                except Exception:
                     continue
 
                 cmd_type, broker_key, *args = cmd
@@ -399,27 +481,45 @@ class TcpRouter:
                         await self._setup_single_broker_sockets(broker_key, args[0])
                     elif cmd_type == "DISCONNECT":
                         await self._teardown_single_broker_sockets(broker_key)
+                except Exception as e:
+                    logger.exception(f"Erro processando {cmd_type} de {broker_key}: {e}")
                 finally:
-                    self._socket_control_queue.task_done()
-
-            except asyncio.CancelledError:
-                break
-            except Exception as e:
-                logger.exception(f"Erro no loop _control_loop: {e}")
-                await asyncio.sleep(0.5)
-
-        logger.info("Loop de controle TcpRouter finalizado.")
+                    try:
+                        self._socket_control_queue.task_done()
+                    except Exception:
+                        pass
+        finally:
+            logger.info("Loop de controle TcpRouter finalizado.")
 
     async def run(self, message_handler):
+        """Chamado no main loop (Qt). Inicia a thread worker e mantém a task viva."""
         logger.info("TcpRouter.run() iniciado.")
         self._message_handler = message_handler
+        self._main_loop = asyncio.get_running_loop()
         self._running = True
+        self._worker_loop_ready.clear()
+
+        self._worker_thread = threading.Thread(
+            target=self._worker_thread_main,
+            name="TcpRouterWorker",
+            daemon=True,
+        )
+        self._worker_thread.start()
+
+        # Aguarda o worker loop sinalizar que está pronto
+        for _ in range(50):
+            if self._worker_loop_ready.is_set():
+                break
+            await asyncio.sleep(0.05)
+
+        if not self._worker_loop_ready.is_set():
+            logger.error("Worker loop do TcpRouter não inicializou a tempo.")
+            return
+
         try:
-            await self._control_loop()
+            while self._running:
+                await asyncio.sleep(0.5)
         except asyncio.CancelledError:
-            self._running = False
-        except Exception as e:
-            logger.exception(f"Erro crítico em TcpRouter.run(): {e}")
             self._running = False
         finally:
             logger.info("TcpRouter.run() finalizado.")
