@@ -19,12 +19,12 @@ logger = logging.getLogger(__name__)
 class BrokersPage(QWidget):
     broker_status_changed = Signal()
 
-    def __init__(self, config, broker_manager, zmq_router, mt5_monitor,
+    def __init__(self, config, broker_manager, tcp_router, mt5_monitor,
                  zmq_message_handler=None, parent=None):
         super().__init__(parent)
         self.config = config
         self.broker_manager = broker_manager
-        self.zmq_router = zmq_router
+        self.tcp_router = tcp_router
         self.mt5_monitor = mt5_monitor
         self.zmq_message_handler = zmq_message_handler
         self._broker_status = {}

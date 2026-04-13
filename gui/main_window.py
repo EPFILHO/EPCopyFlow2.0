@@ -13,7 +13,7 @@ from PySide6.QtCore import Slot, Qt, Signal, QTimer
 
 from core.config_manager import ConfigManager
 from core.broker_manager import BrokerManager
-from core.zmq_router import ZmqRouter
+from core.tcp_router import TcpRouter
 from core.zmq_message_handler import ZmqMessageHandler
 from internet_monitor import InternetMonitor
 from gui import themes
@@ -34,7 +34,7 @@ class MainWindow(QMainWindow):
     def __init__(self,
                  config: ConfigManager,
                  broker_manager: BrokerManager,
-                 zmq_router: ZmqRouter,
+                 tcp_router: TcpRouter,
                  shutdown_event_ref: asyncio.Event,
                  root_path: str,
                  mt5_monitor,
@@ -42,13 +42,13 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.config = config
         self.broker_manager = broker_manager
-        self.zmq_router = zmq_router
+        self.tcp_router = tcp_router
         self.shutdown_event_ref = shutdown_event_ref
         self.root_path = root_path
         self.mt5_monitor = mt5_monitor
         self.copytrade_manager = copytrade_manager
         self.zmq_message_handler = ZmqMessageHandler(
-            config, zmq_router, broker_manager=broker_manager,
+            config, tcp_router, broker_manager=broker_manager,
             copytrade_manager=copytrade_manager
         )
 
@@ -116,7 +116,7 @@ class MainWindow(QMainWindow):
         )
         self.dashboard_page.set_broker_status(self.broker_status)
         self.brokers_page = BrokersPage(
-            self.config, self.broker_manager, self.zmq_router, self.mt5_monitor,
+            self.config, self.broker_manager, self.tcp_router, self.mt5_monitor,
             zmq_message_handler=self.zmq_message_handler
         )
         self.brokers_page.set_broker_status(self.broker_status)

@@ -1,33 +1,37 @@
 //+------------------------------------------------------------------+
 //| EPCopyFlow 2.0 - Versão 0.0.1 - Claude Code Parte 000           |
 //| ZmqTraderBridge.mq5                                              |
-//| MQL5 <-> Python ZeroMQ Bridge para CopyTrade                     |
-//| 2 sockets: CommandSocket (DEALER) + EventSocket (PUB)            |
+//| MQL5 <-> Python TCP Bridge para CopyTrade                        |
+//| 1 socket TCP nativo (bidirecional), Python = servidor, EA = cliente.
+//| Framing: 4 bytes big-endian length + UTF-8 JSON payload.         |
 //| Modo MASTER: detecta trades e publica eventos                    |
 //| Modo SLAVE: executa trades recebidos do Python                   |
 //+------------------------------------------------------------------+
 #property copyright "EPFilho"
 #property link      "epfilho73@gmail.com"
-#property version   "2.00"
+#property version   "2.01"
 #property strict
 
-#include <Zmq/Zmq.mqh>
 #include <Json.mqh>
 #include <Trade\Trade.mqh>
 
 //+------------------------------------------------------------------+
-//| Bloco 1 - Configuração e Conexão ZMQ                            |
+//| Bloco 1 - Configuração e Conexão TCP                             |
 //+------------------------------------------------------------------+
 
 //--- Parâmetros configuráveis
-input int    InpTimerIntervalMs  = 200;   // Intervalo do timer (ms)
-input bool   InpDebugLog         = true;  // Ativar logs
+input int    InpTimerIntervalMs  = 200;     // Intervalo do timer (ms)
+input bool   InpDebugLog         = true;    // Ativar logs
+input string InpTcpHost          = "127.0.0.1"; // Host do servidor Python
+input int    InpConnectTimeoutMs = 1000;    // Timeout de conexão TCP (ms)
 
 //--- Variáveis globais
-Context context;
-Socket  command_socket(context, ZMQ_DEALER);  // Bidirecional: admin + trade
-Socket  event_socket(context, ZMQ_PUB);       // Unidirecional: EA → Python
+int     g_socket = INVALID_HANDLE;  // Socket TCP nativo (EA = cliente)
 bool    g_is_connected = false;
+ulong   g_last_reconnect_attempt = 0;      // GetTickCount64() da última tentativa
+const ulong RECONNECT_INTERVAL_MS = 2000;  // Tentar reconectar a cada 2s
+uchar   g_rx_buffer[];               // Buffer de leitura (acumula bytes parciais)
+int     g_rx_len = 0;                // Bytes válidos em g_rx_buffer
 CTrade  trade;
 
 //--- Config lidas do config.ini
@@ -180,26 +184,219 @@ void RobustJsonSerialize(JSONNode &json_message, string &out)
 }
 
 //+------------------------------------------------------------------+
-//| Enviar mensagem JSON por socket específico                      |
+//| Bloco 1.1 - Camada TCP nativa (framing length-prefixed)          |
 //+------------------------------------------------------------------+
-bool SendJsonMessage(JSONNode &json_message, Socket &target_socket, string socket_name="Command")
+
+// Forward declarations (usadas por TcpExtractAndProcessFrames)
+void ProcessCommand(JSONNode &json_command);
+
+//--- Serializa uint32 big-endian nos primeiros 4 bytes do buffer
+void WriteBigEndianUint32(uchar &buffer[], int offset, uint value)
+{
+   buffer[offset + 0] = (uchar)((value >> 24) & 0xFF);
+   buffer[offset + 1] = (uchar)((value >> 16) & 0xFF);
+   buffer[offset + 2] = (uchar)((value >> 8)  & 0xFF);
+   buffer[offset + 3] = (uchar)(value & 0xFF);
+}
+
+uint ReadBigEndianUint32(const uchar &buffer[], int offset)
+{
+   uint b0 = (uint)buffer[offset + 0];
+   uint b1 = (uint)buffer[offset + 1];
+   uint b2 = (uint)buffer[offset + 2];
+   uint b3 = (uint)buffer[offset + 3];
+   return (b0 << 24) | (b1 << 16) | (b2 << 8) | b3;
+}
+
+//--- Conecta ao servidor Python. Retorna true em sucesso.
+bool TcpConnect()
+{
+   if(g_socket != INVALID_HANDLE)
+   {
+      SocketClose(g_socket);
+      g_socket = INVALID_HANDLE;
+   }
+
+   g_socket = SocketCreate();
+   if(g_socket == INVALID_HANDLE)
+   {
+      PrintFormat("ERROR: SocketCreate falhou. GetLastError()=%d", GetLastError());
+      return false;
+   }
+
+   if(!SocketConnect(g_socket, InpTcpHost, g_commandPort, InpConnectTimeoutMs))
+   {
+      if(InpDebugLog)
+         PrintFormat("TCP: SocketConnect(%s:%d) falhou. GetLastError()=%d",
+                     InpTcpHost, g_commandPort, GetLastError());
+      SocketClose(g_socket);
+      g_socket = INVALID_HANDLE;
+      return false;
+   }
+
+   g_is_connected = true;
+   g_rx_len = 0;
+   ArrayResize(g_rx_buffer, 65536);
+   PrintFormat("TCP conectado ao servidor Python em %s:%d", InpTcpHost, g_commandPort);
+   return true;
+}
+
+//--- Fecha socket TCP
+void TcpDisconnect()
+{
+   if(g_socket != INVALID_HANDLE)
+   {
+      SocketClose(g_socket);
+      g_socket = INVALID_HANDLE;
+   }
+   g_is_connected = false;
+   g_rx_len = 0;
+}
+
+//--- Envia um frame [length BE][payload] pelo socket. Retorna true se todos os bytes foram enviados.
+bool TcpSendFrame(const string payload)
+{
+   if(!g_is_connected || g_socket == INVALID_HANDLE)
+      return false;
+
+   uchar payload_bytes[];
+   int payload_len = StringToCharArray(payload, payload_bytes, 0, -1, CP_UTF8);
+   // StringToCharArray inclui null terminator se usado com -1; remover
+   if(payload_len > 0 && payload_bytes[payload_len - 1] == 0)
+      payload_len--;
+
+   if(payload_len <= 0)
+      return false;
+
+   uchar frame[];
+   ArrayResize(frame, 4 + payload_len);
+   WriteBigEndianUint32(frame, 0, (uint)payload_len);
+   for(int i = 0; i < payload_len; i++)
+      frame[4 + i] = payload_bytes[i];
+
+   int total = 4 + payload_len;
+   int sent_total = 0;
+   while(sent_total < total)
+   {
+      uchar chunk[];
+      int remaining = total - sent_total;
+      ArrayResize(chunk, remaining);
+      for(int i = 0; i < remaining; i++)
+         chunk[i] = frame[sent_total + i];
+
+      int sent = SocketSend(g_socket, chunk, remaining);
+      if(sent <= 0)
+      {
+         PrintFormat("ERROR: SocketSend falhou (sent=%d). GetLastError()=%d", sent, GetLastError());
+         TcpDisconnect();
+         return false;
+      }
+      sent_total += sent;
+   }
+   return true;
+}
+
+//--- Lê quantos bytes estiverem disponíveis para o buffer de RX acumulado.
+void TcpPumpReads()
+{
+   if(!g_is_connected || g_socket == INVALID_HANDLE)
+      return;
+
+   uint available = SocketIsReadable(g_socket);
+   if(available == 0)
+      return;
+
+   // Garante capacidade no buffer
+   int needed = g_rx_len + (int)available;
+   if(ArraySize(g_rx_buffer) < needed)
+      ArrayResize(g_rx_buffer, needed + 4096);
+
+   uchar tmp[];
+   ArrayResize(tmp, (int)available);
+   int read = SocketRead(g_socket, tmp, available, 100);
+   if(read <= 0)
+   {
+      // Possivelmente desconectado
+      if(!SocketIsConnected(g_socket))
+      {
+         Print("TCP: Conexão perdida durante leitura.");
+         TcpDisconnect();
+      }
+      return;
+   }
+   for(int i = 0; i < read; i++)
+      g_rx_buffer[g_rx_len + i] = tmp[i];
+   g_rx_len += read;
+}
+
+//--- Extrai frames completos do buffer RX. Retorna JSONs para o callback.
+void TcpExtractAndProcessFrames()
+{
+   while(g_rx_len >= 4)
+   {
+      uint payload_len = ReadBigEndianUint32(g_rx_buffer, 0);
+      if(payload_len == 0 || payload_len > 16777216)  // 16 MiB cap
+      {
+         PrintFormat("ERROR: Frame length inválido (%u). Fechando conexão.", payload_len);
+         TcpDisconnect();
+         return;
+      }
+
+      int frame_size = 4 + (int)payload_len;
+      if(g_rx_len < frame_size)
+         return;  // frame incompleto, aguarda mais bytes
+
+      // Extrai JSON
+      uchar payload_bytes[];
+      ArrayResize(payload_bytes, (int)payload_len + 1);
+      for(int i = 0; i < (int)payload_len; i++)
+         payload_bytes[i] = g_rx_buffer[4 + i];
+      payload_bytes[payload_len] = 0;
+
+      string message_str = CharArrayToString(payload_bytes, 0, (int)payload_len, CP_UTF8);
+
+      // Remove frame do buffer: shift bytes restantes
+      int remaining = g_rx_len - frame_size;
+      for(int i = 0; i < remaining; i++)
+         g_rx_buffer[i] = g_rx_buffer[frame_size + i];
+      g_rx_len = remaining;
+
+      // Processa o comando
+      if(InpDebugLog)
+         PrintFormat("RX: %s", message_str);
+
+      JSONNode json_parser;
+      if(json_parser.Deserialize(message_str))
+      {
+         ProcessCommand(json_parser);
+      }
+      else
+      {
+         Print("ERROR: Falha ao deserializar JSON: ", message_str);
+      }
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Enviar mensagem JSON pelo socket TCP (único, bidirecional)       |
+//+------------------------------------------------------------------+
+bool SendJsonMessage(JSONNode &json_message, string tag="TX")
 {
    json_message["broker_key"] = g_brokerKey;
    if(!g_is_connected)
    {
-      Print("ERROR: Tentativa de envio sem conexão em ", socket_name);
+      if(InpDebugLog)
+         Print("WARN: Tentativa de envio sem conexão em ", tag);
       return false;
    }
    string message_str;
    RobustJsonSerialize(json_message, message_str);
    if(InpDebugLog)
-      Print("TX (", socket_name, "): ", message_str);
+      Print("TX (", tag, "): ", message_str);
 
-   ZmqMsg msg(message_str);
-   bool sent = target_socket.send(msg, ZMQ_DONTWAIT);
-   if(!sent)
+   if(!TcpSendFrame(message_str))
    {
-      PrintFormat("WARN: Falha ao enviar em %s (DONTWAIT). GetLastError(): %d", socket_name, GetLastError());
+      PrintFormat("WARN: TcpSendFrame falhou em %s", tag);
       return false;
    }
    return true;
@@ -287,7 +484,7 @@ bool SendRegisterMessage()
    message["mt5_build"] = (long)TerminalInfoInteger(TERMINAL_BUILD);
    message["timestamp_mql"] = (long)TimeCurrent();
    PrintFormat("Enviando REGISTER para %s (Role=%s)", g_brokerKey, g_role);
-   return SendJsonMessage(message, command_socket, "Command");
+   return SendJsonMessage(message, "Command");
 }
 
 bool SendUnregisterMessage()
@@ -298,7 +495,7 @@ bool SendUnregisterMessage()
    message["event"] = "UNREGISTER";
    message["timestamp_mql"] = (long)TimeCurrent();
    PrintFormat("Enviando UNREGISTER para %s", g_brokerKey);
-   return SendJsonMessage(message, command_socket, "Command");
+   return SendJsonMessage(message, "Command");
 }
 
 //+------------------------------------------------------------------+
@@ -311,7 +508,7 @@ bool SendErrorResponse(const string request_id, const string error_message)
    response["request_id"] = request_id;
    response["status"] = "ERROR";
    response["error_message"] = error_message;
-   return SendJsonMessage(response, command_socket, "Command");
+   return SendJsonMessage(response, "Command");
 }
 
 //+------------------------------------------------------------------+
@@ -335,7 +532,7 @@ void HandlePingCommand(const string request_id, JSONNode *payload_node_ptr)
    response["status"] = "OK";
    response["original_timestamp"] = original_timestamp;
    response["pong_timestamp_mql"] = (long)TimeCurrent();
-   SendJsonMessage(response, command_socket, "Command");
+   SendJsonMessage(response, "Command");
 }
 
 void HandleGetStatusInfoCommand(const string request_id, JSONNode *payload_node_ptr)
@@ -347,7 +544,7 @@ void HandleGetStatusInfoCommand(const string request_id, JSONNode *payload_node_
    response["trade_allowed"] = (bool)TerminalInfoInteger(TERMINAL_TRADE_ALLOWED);
    response["balance"] = AccountInfoDouble(ACCOUNT_BALANCE);
    response["pong_timestamp_mql"] = (long)TimeCurrent();
-   SendJsonMessage(response, command_socket, "Command");
+   SendJsonMessage(response, "Command");
 }
 
 void HandleGetAccountBalanceCommand(const string request_id)
@@ -359,7 +556,7 @@ void HandleGetAccountBalanceCommand(const string request_id)
    response["balance"] = AccountInfoDouble(ACCOUNT_BALANCE);
    response["equity"] = AccountInfoDouble(ACCOUNT_EQUITY);
    response["currency"] = AccountInfoString(ACCOUNT_CURRENCY);
-   SendJsonMessage(response, command_socket, "Command");
+   SendJsonMessage(response, "Command");
 }
 
 void HandleGetAccountFlagsCommand(const string request_id)
@@ -370,7 +567,7 @@ void HandleGetAccountFlagsCommand(const string request_id)
    response["status"] = "OK";
    response["trade_allowed"] = (bool)TerminalInfoInteger(TERMINAL_TRADE_ALLOWED);
    response["expert_enabled"] = (bool)AccountInfoInteger(ACCOUNT_TRADE_EXPERT);
-   SendJsonMessage(response, command_socket, "Command");
+   SendJsonMessage(response, "Command");
 }
 
 void HandleGetAccountMarginCommand(const string request_id)
@@ -382,7 +579,7 @@ void HandleGetAccountMarginCommand(const string request_id)
    response["margin"] = AccountInfoDouble(ACCOUNT_MARGIN);
    response["free_margin"] = AccountInfoDouble(ACCOUNT_FREEMARGIN);
    response["margin_level"] = AccountInfoDouble(ACCOUNT_MARGIN_LEVEL);
-   SendJsonMessage(response, command_socket, "Command");
+   SendJsonMessage(response, "Command");
 }
 
 void HandleGetAccountModeCommand(const string request_id)
@@ -408,7 +605,7 @@ void HandleGetAccountModeCommand(const string request_id)
    response["account_mode"] = mode_str;
    response["margin_mode_code"] = (long)margin_mode;
 
-   SendJsonMessage(response, command_socket, "Command");
+   SendJsonMessage(response, "Command");
 }
 
 void HandleGetSymbolInfoCommand(const string request_id, JSONNode &payload)
@@ -423,7 +620,7 @@ void HandleGetSymbolInfoCommand(const string request_id, JSONNode &payload)
    {
       response["status"] = "ERROR";
       response["error_message"] = "symbol parameter required";
-      SendJsonMessage(response, command_socket, "Command");
+      SendJsonMessage(response, "Command");
       return;
    }
 
@@ -434,7 +631,7 @@ void HandleGetSymbolInfoCommand(const string request_id, JSONNode &payload)
    {
       response["status"] = "ERROR";
       response["error_message"] = StringFormat("Symbol not found: %s", symbol);
-      SendJsonMessage(response, command_socket, "Command");
+      SendJsonMessage(response, "Command");
       return;
    }
 
@@ -446,7 +643,7 @@ void HandleGetSymbolInfoCommand(const string request_id, JSONNode &payload)
    response["digits"] = (long)SymbolInfoInteger(symbol, SYMBOL_DIGITS);
    response["trade_mode"] = (long)SymbolInfoInteger(symbol, SYMBOL_TRADE_MODE);
 
-   SendJsonMessage(response, command_socket, "Command");
+   SendJsonMessage(response, "Command");
 }
 
 void HandleSetHeartbeatIntervalCommand(const string request_id, JSONNode &payload)
@@ -461,7 +658,7 @@ void HandleSetHeartbeatIntervalCommand(const string request_id, JSONNode &payloa
    {
       response["status"] = "ERROR";
       response["error_message"] = "heartbeat_interval_ms não fornecido";
-      SendJsonMessage(response, command_socket, "Command");
+      SendJsonMessage(response, "Command");
       return;
    }
 
@@ -470,7 +667,7 @@ void HandleSetHeartbeatIntervalCommand(const string request_id, JSONNode &payloa
    {
       response["status"] = "ERROR";
       response["error_message"] = StringFormat("Intervalo inválido: %d (deve ser 1000-600000 ms)", interval);
-      SendJsonMessage(response, command_socket, "Command");
+      SendJsonMessage(response, "Command");
       return;
    }
 
@@ -479,7 +676,7 @@ void HandleSetHeartbeatIntervalCommand(const string request_id, JSONNode &payloa
 
    response["status"] = "OK";
    response["heartbeat_interval_ms"] = interval;
-   SendJsonMessage(response, command_socket, "Command");
+   SendJsonMessage(response, "Command");
 
    PrintFormat("Intervalo de heartbeat configurado: %d ms", interval);
 }
@@ -495,7 +692,7 @@ void HandleSetMagicNumberCommand(const string request_id, JSONNode &payload)
    {
       response["status"] = "ERROR";
       response["error_message"] = "magic_number nao fornecido";
-      SendJsonMessage(response, command_socket, "Command");
+      SendJsonMessage(response, "Command");
       return;
    }
 
@@ -504,7 +701,7 @@ void HandleSetMagicNumberCommand(const string request_id, JSONNode &payload)
    {
       response["status"] = "ERROR";
       response["error_message"] = StringFormat("magic_number invalido: %lld", magic);
-      SendJsonMessage(response, command_socket, "Command");
+      SendJsonMessage(response, "Command");
       return;
    }
 
@@ -513,7 +710,7 @@ void HandleSetMagicNumberCommand(const string request_id, JSONNode &payload)
 
    response["status"] = "OK";
    response["magic_number"] = magic;
-   SendJsonMessage(response, command_socket, "Command");
+   SendJsonMessage(response, "Command");
 
    PrintFormat("Magic number configurado: %lld (CTrade atualizado)", magic);
 }
@@ -546,7 +743,7 @@ void HandleGetPositionsCommand(const string request_id)
          response[prefix + "comment"] = PositionGetString(POSITION_COMMENT);
       }
    }
-   SendJsonMessage(response, command_socket, "Command");
+   SendJsonMessage(response, "Command");
 }
 
 void HandleGetOrdersCommand(const string request_id)
@@ -574,7 +771,7 @@ void HandleGetOrdersCommand(const string request_id)
       }
    }
    response["orders"] = orders_array;
-   SendJsonMessage(response, command_socket, "Command");
+   SendJsonMessage(response, "Command");
 }
 
 void SendHeartbeat()
@@ -589,7 +786,7 @@ void SendHeartbeat()
    heartbeat["role"] = g_role;
    heartbeat["positions_count"] = (long)PositionsTotal();
 
-   SendJsonMessage(heartbeat, event_socket, "Event");
+   SendJsonMessage(heartbeat, "Event");
 }
 
 void HandleGetHistoryTradesCommand(const string request_id, JSONNode &payload)
@@ -708,7 +905,7 @@ void HandleGetHistoryTradesCommand(const string request_id, JSONNode &payload)
    }
 
    response["positions"] = positions_array;
-   SendJsonMessage(response, command_socket, "Command");
+   SendJsonMessage(response, "Command");
 }
 
 //+------------------------------------------------------------------+
@@ -849,7 +1046,7 @@ void HandleTradePositionModifyCommand(const string request_id, JSONNode &payload
    response["retcode"] = (long)trade.ResultRetcode();
    response["result"] = trade.ResultComment();
    response["ticket"] = ticket;
-   SendJsonMessage(response, command_socket, "Command");
+   SendJsonMessage(response, "Command");
 }
 
 void HandleTradePositionPartialCommand(const string request_id, JSONNode &payload)
@@ -1012,7 +1209,7 @@ void HandleTradePositionCloseSymbolCommand(const string request_id, JSONNode &pa
    response["status"] = "OK";
    response["retcode"] = (long)TRADE_RETCODE_PLACED;
    response["result"] = StringFormat("%d close requests submitted for %s", submitted, symbol);
-   SendJsonMessage(response, command_socket, "Command");
+   SendJsonMessage(response, "Command");
 }
 
 //+------------------------------------------------------------------+
@@ -1048,34 +1245,30 @@ int OnInit()
    if(!ValidatePorts())
       return(INIT_PARAMETERS_INCORRECT);
 
-   // CommandSocket (DEALER - bidirecional)
-   command_socket.setIdentity(g_brokerKey);
-   if(!command_socket.bind(StringFormat("tcp://*:%d", g_commandPort)))
-   {
-      PrintFormat("Erro ao bind CommandSocket porta %d. GetLastError(): %d", g_commandPort, GetLastError());
-      return(INIT_FAILED);
-   }
-
-   // EventSocket (PUB - EA → Python)
-   if(!event_socket.bind(StringFormat("tcp://*:%d", g_eventPort)))
-   {
-      PrintFormat("Erro ao bind EventSocket porta %d. GetLastError(): %d", g_eventPort, GetLastError());
-      return(INIT_FAILED);
-   }
-
-   g_is_connected = true;
+   // Conectar via TCP nativo (Python é o servidor).
+   // Se a conexão falhar aqui, o OnTimer fará retry periódico.
    InitPendingRequests();
-   if(SendRegisterMessage())
+   if(TcpConnect())
    {
-      g_register_sent = true;
-      g_register_retries = 0;
+      if(SendRegisterMessage())
+      {
+         g_register_sent = true;
+         g_register_retries = 0;
+      }
+      else
+      {
+         Print("REGISTER falhou no OnInit. Retry via OnTimer.");
+         g_register_sent = false;
+         g_register_retries = 0;
+      }
    }
    else
    {
-      Print("REGISTER falhou no OnInit (Python pode não estar conectado ainda). Retry via OnTimer.");
+      Print("TCP connect falhou no OnInit (Python pode não estar escutando ainda). Retry via OnTimer.");
       g_register_sent = false;
       g_register_retries = 0;
    }
+   g_last_reconnect_attempt = GetTickCount64();
 
    if(!EventSetMillisecondTimer(InpTimerIntervalMs))
    {
@@ -1099,11 +1292,7 @@ void OnDeinit(const int reason)
    if(g_is_connected)
       SendUnregisterMessage();
    EventKillTimer();
-   g_is_connected = false;
-
-   command_socket.disconnect(StringFormat("tcp://*:%d", g_commandPort));
-   event_socket.disconnect(StringFormat("tcp://*:%d", g_eventPort));
-
+   TcpDisconnect();
    Print("EPCopyFlow EA: Desinicialização completa.");
 }
 
@@ -1112,9 +1301,34 @@ void OnDeinit(const int reason)
 //+------------------------------------------------------------------+
 void OnTimer()
 {
-   if(!g_is_connected) return;
+   // Reconexão: se não há socket, tenta conectar periodicamente ao Python.
+   if(!g_is_connected)
+   {
+      ulong now = GetTickCount64();
+      if(now - g_last_reconnect_attempt >= RECONNECT_INTERVAL_MS)
+      {
+         g_last_reconnect_attempt = now;
+         if(TcpConnect())
+         {
+            // Força reenvio de REGISTER e estados iniciais na nova sessão
+            g_register_sent = false;
+            g_register_retries = 0;
+            g_initial_trade_allowed_sent = false;
+            g_initial_connection_status_sent = false;
+         }
+      }
+      return;
+   }
 
-   // Retry REGISTER se falhou no OnInit (Python pode não ter conectado ainda)
+   // Sanidade: verifica se o socket ainda está conectado
+   if(g_socket == INVALID_HANDLE || !SocketIsConnected(g_socket))
+   {
+      Print("TCP: SocketIsConnected() retornou false. Desconectando para reconexão.");
+      TcpDisconnect();
+      return;
+   }
+
+   // Retry REGISTER se falhou (Python pode não ter aceitado ainda)
    if(!g_register_sent && g_register_retries < 30)
    {
       g_register_retries++;
@@ -1125,7 +1339,7 @@ void OnTimer()
       }
    }
 
-   // Processa comandos recebidos via CommandSocket
+   // Processa comandos recebidos via TCP
    CheckIncomingCommands();
 
    // Envio inicial de trade_allowed
@@ -1137,7 +1351,7 @@ void OnTimer()
       msg["event"] = "TRADE_ALLOWED_UPDATE";
       msg["trade_allowed"] = current;
       msg["timestamp_mql"] = (long)TimeCurrent();
-      SendJsonMessage(msg, event_socket, "Event");
+      SendJsonMessage(msg, "Event");
       g_initial_trade_allowed_sent = true;
       g_last_trade_allowed = current;
    }
@@ -1151,7 +1365,7 @@ void OnTimer()
       msg["event"] = "TRADE_ALLOWED_UPDATE";
       msg["trade_allowed"] = current_trade_allowed;
       msg["timestamp_mql"] = (long)TimeCurrent();
-      SendJsonMessage(msg, event_socket, "Event");
+      SendJsonMessage(msg, "Event");
       g_last_trade_allowed = current_trade_allowed;
       if(InpDebugLog)
          PrintFormat("TRADE_ALLOWED_UPDATE: %s", current_trade_allowed ? "true" : "false");
@@ -1166,7 +1380,7 @@ void OnTimer()
       msg["event"] = "CONNECTION_STATUS";
       msg["connected"] = connected;
       msg["timestamp_mql"] = (long)TimeCurrent();
-      SendJsonMessage(msg, event_socket, "Event");
+      SendJsonMessage(msg, "Event");
       g_initial_connection_status_sent = true;
       g_last_terminal_connected = connected;
    }
@@ -1180,7 +1394,7 @@ void OnTimer()
       msg["event"] = "CONNECTION_STATUS";
       msg["connected"] = current_connected;
       msg["timestamp_mql"] = (long)TimeCurrent();
-      SendJsonMessage(msg, event_socket, "Event");
+      SendJsonMessage(msg, "Event");
       g_last_terminal_connected = current_connected;
       if(InpDebugLog)
          PrintFormat("CONNECTION_STATUS: %s", current_connected ? "connected" : "disconnected");
@@ -1199,26 +1413,13 @@ void OnTimer()
 }
 
 //+------------------------------------------------------------------+
-//| Processa comandos recebidos via CommandSocket                    |
+//| Processa comandos recebidos via TCP                              |
 //+------------------------------------------------------------------+
 void CheckIncomingCommands()
 {
-   ZmqMsg zmq_msg;
-   while(command_socket.recv(zmq_msg, ZMQ_DONTWAIT))
-   {
-      string message_str = zmq_msg.getData();
-      if(InpDebugLog)
-         PrintFormat("RX (Command): %s", message_str);
-      JSONNode json_parser;
-      if(json_parser.Deserialize(message_str))
-      {
-         ProcessCommand(json_parser);
-      }
-      else
-      {
-         Print("ERROR: Falha ao deserializar JSON: ", message_str);
-      }
-   }
+   // Drena todos os bytes disponíveis no socket e extrai frames completos
+   TcpPumpReads();
+   TcpExtractAndProcessFrames();
 }
 
 //+------------------------------------------------------------------+
@@ -1379,7 +1580,7 @@ void OnTradeTransaction(const MqlTradeTransaction &trans, const MqlTradeRequest 
          else
             async_response["ticket"] = (long)result.deal;
 
-         SendJsonMessage(async_response, command_socket, "Command");
+         SendJsonMessage(async_response, "Command");
 
          if(InpDebugLog)
             PrintFormat("Async RESPONSE enviado: zmq_req=%s, retcode=%d, deal=%lld",
@@ -1476,7 +1677,7 @@ void OnTradeTransaction(const MqlTradeTransaction &trans, const MqlTradeRequest 
    }
    stream_msg["position_id"] = position_id;
 
-   if(!SendJsonMessage(stream_msg, event_socket, "Event"))
+   if(!SendJsonMessage(stream_msg, "Event"))
    {
       Print("ERROR: Falha ao enviar TRADE_EVENT via EventSocket");
    }
@@ -1504,7 +1705,7 @@ void OnTradeTransaction(const MqlTradeTransaction &trans, const MqlTradeRequest 
       alien_msg["volume"] = request.volume;
       alien_msg["deal_type"] = type_str;
 
-      if(!SendJsonMessage(alien_msg, event_socket, "Event"))
+      if(!SendJsonMessage(alien_msg, "Event"))
          Print("ERROR: Falha ao enviar ALIEN_TRADE via EventSocket");
    }
 }

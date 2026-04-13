@@ -34,10 +34,10 @@ class ZmqMessageHandler(QObject):
     # ──────────────────────────────────────────────
     # Bloco 1 - Inicialização
     # ──────────────────────────────────────────────
-    def __init__(self, config, zmq_router, broker_manager=None, copytrade_manager=None, parent=None):
+    def __init__(self, config, tcp_router, broker_manager=None, copytrade_manager=None, parent=None):
         super().__init__(parent)
         self.config = config
-        self.zmq_router = zmq_router
+        self.tcp_router = tcp_router
         self.broker_manager = broker_manager
         self.copytrade_manager = copytrade_manager
         self.heartbeat_active = {}
@@ -56,7 +56,7 @@ class ZmqMessageHandler(QObject):
         # Identifica broker
         client_id_hex = client_id_bytes.hex()
         identified_broker_key = None
-        for key, zid in self.zmq_router._clients.items():
+        for key, zid in self.tcp_router._clients.items():
             if zid == client_id_bytes:
                 identified_broker_key = key
                 break
@@ -88,10 +88,10 @@ class ZmqMessageHandler(QObject):
                     self.mt5_monitor.on_broker_registered(broker_key)
 
                 # Configurar EA: heartbeat interval + magic number
-                if self.zmq_router:
+                if self.tcp_router:
                     for coro in (
-                        self.zmq_router.configure_heartbeat_interval(broker_key),
-                        self.zmq_router.configure_magic_number(broker_key),
+                        self.tcp_router.configure_heartbeat_interval(broker_key),
+                        self.tcp_router.configure_magic_number(broker_key),
                     ):
                         t = asyncio.create_task(coro)
                         self._background_tasks.add(t)
@@ -311,7 +311,7 @@ class ZmqMessageHandler(QObject):
 
     def send_ping(self, broker_key: str):
         timestamp = time.time()
-        t = asyncio.create_task(self.zmq_router.send_command_to_broker(
+        t = asyncio.create_task(self.tcp_router.send_command_to_broker(
             broker_key, "PING",
             {"timestamp": timestamp},
             f"ping_{broker_key}_{timestamp}"
@@ -320,7 +320,7 @@ class ZmqMessageHandler(QObject):
 
     def send_get_status_info(self, broker_key: str):
         timestamp = time.time()
-        t = asyncio.create_task(self.zmq_router.send_command_to_broker(
+        t = asyncio.create_task(self.tcp_router.send_command_to_broker(
             broker_key, "GET_STATUS_INFO",
             {"timestamp": timestamp},
             f"get_status_info_{broker_key}_{int(timestamp)}"
