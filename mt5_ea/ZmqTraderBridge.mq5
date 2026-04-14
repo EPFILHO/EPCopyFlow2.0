@@ -300,7 +300,10 @@ void TcpPumpReads()
 
    uchar tmp[];
    ArrayResize(tmp, (int)available);
-   int read = SocketRead(g_socket, tmp, available, 100);
+   // Timeout 1ms: SocketIsReadable já confirmou que os bytes estão no buffer
+   // do kernel. Bloco de 100ms (anterior) bloqueava a thread principal do MT5
+   // e causava freeze visível ao tentar restaurar a janela do terminal.
+   int read = SocketRead(g_socket, tmp, available, 1);
    if(read <= 0)
    {
       // Possivelmente desconectado
