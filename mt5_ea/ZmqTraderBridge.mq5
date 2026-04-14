@@ -1425,9 +1425,55 @@ void ProcessCommand(JSONNode &json_command)
 //+------------------------------------------------------------------+
 void OnTradeTransaction(const MqlTradeTransaction &trans, const MqlTradeRequest &request, const MqlTradeResult &result)
 {
+   // ── Caminho 1: DEAL_ADD — detecção de alien trades (SLAVE) ──
+   // TRADE_TRANSACTION_REQUEST só dispara no terminal que enviou a ordem.
+   // Para detectar operações alienígenas feitas em OUTRO MT5 conectado na mesma conta
+   // (ou mobile/webtrader/outro EA), precisamos observar TRADE_TRANSACTION_DEAL_ADD,
+   // que chega em todos os terminais quando um deal entra no histórico da conta.
+   // DEAL_ADD também dispara no próprio terminal que originou o trade, então
+   // esta é a ÚNICA fonte de detecção de alien (evita duplicação).
+   if(trans.type == TRADE_TRANSACTION_DEAL_ADD)
+   {
+      if(g_role == "SLAVE" && g_magic_number > 0 && trans.deal > 0
+         && HistoryDealSelect(trans.deal))
+      {
+         long deal_magic = HistoryDealGetInteger(trans.deal, DEAL_MAGIC);
+         long deal_type  = HistoryDealGetInteger(trans.deal, DEAL_TYPE);
+
+         // Só interessa BUY/SELL (ignora BALANCE, CREDIT, CORRECTION, etc.)
+         bool is_trade_deal = (deal_type == DEAL_TYPE_BUY || deal_type == DEAL_TYPE_SELL);
+
+         if(is_trade_deal && deal_magic != g_magic_number)
+         {
+            string symbol   = HistoryDealGetString(trans.deal, DEAL_SYMBOL);
+            double volume   = HistoryDealGetDouble(trans.deal, DEAL_VOLUME);
+            string type_str = (deal_type == DEAL_TYPE_BUY) ? "BUY" : "SELL";
+
+            PrintFormat("ALIEN TRADE detectado! magic=%lld (esperado=%lld), symbol=%s, %s %.2f lotes, deal=%lld",
+                        deal_magic, g_magic_number, symbol, type_str, volume, (long)trans.deal);
+
+            JSONNode alien_msg;
+            alien_msg["type"] = "STREAM";
+            alien_msg["event"] = "ALIEN_TRADE";
+            alien_msg["timestamp_mql"] = (long)TimeCurrent();
+            alien_msg["role"] = g_role;
+            alien_msg["deal"] = (long)trans.deal;
+            alien_msg["deal_magic"] = deal_magic;
+            alien_msg["expected_magic"] = g_magic_number;
+            alien_msg["symbol"] = symbol;
+            alien_msg["volume"] = volume;
+            alien_msg["deal_type"] = type_str;
+
+            if(!SendJsonMessage(alien_msg, "Event"))
+               Print("ERROR: Falha ao enviar ALIEN_TRADE via EventSocket");
+         }
+      }
+      return;
+   }
+
+   // ── Caminho 2: REQUEST — resposta async + TRADE_EVENT para replicação master→slave ──
    // Só processa TRADE_TRANSACTION_REQUEST — o único tipo que preenche request/result.
-   // Outros tipos (DEAL_ADD, ORDER_ADD, etc.) chegam com result.retcode==0 e request zerado.
-   // Filtro explícito evita debug logging e HistoryDealSelect desnecessários.
+   // Outros tipos (ORDER_ADD, HISTORY_ADD, etc.) chegam com result.retcode==0 e request zerado.
    if(trans.type != TRADE_TRANSACTION_REQUEST)
       return;
 
@@ -1532,14 +1578,12 @@ void OnTradeTransaction(const MqlTradeTransaction &trans, const MqlTradeRequest 
    // Fonte primária: DEAL_POSITION_ID do histórico — é o único campo 100% consistente
    // em todos os cenários (abertura, parcial, fechamento total, mesmo após posição encerrada).
    long position_id = 0;
-   long deal_magic = 0;  // Lido junto com position_id (evita segundo HistoryDealSelect)
    if(request.action == TRADE_ACTION_DEAL)
    {
       // 1ª tentativa: DEAL_POSITION_ID via histórico — método mais confiável
       if(result.deal > 0 && HistoryDealSelect(result.deal))
       {
          position_id = HistoryDealGetInteger(result.deal, DEAL_POSITION_ID);
-         deal_magic = HistoryDealGetInteger(result.deal, DEAL_MAGIC);
       }
 
       // 2ª tentativa: POSITION_IDENTIFIER via posição ativa (abertura ou fechamento parcial)
@@ -1580,30 +1624,7 @@ void OnTradeTransaction(const MqlTradeTransaction &trans, const MqlTradeRequest 
       Print("ERROR: Falha ao enviar TRADE_EVENT via EventSocket");
    }
 
-   // ── Detecção de operação alienígena (apenas SLAVE, apenas trades com sucesso) ──
-   // Reutiliza deal_magic já lido no HistoryDealSelect acima (sem chamada duplicada)
-   if(g_magic_number > 0 && g_role == "SLAVE" && result.retcode == TRADE_RETCODE_DONE
-      && result.deal > 0 && request.action == TRADE_ACTION_DEAL
-      && deal_magic != g_magic_number)
-   {
-      string type_str = (request.type == ORDER_TYPE_BUY) ? "BUY" : "SELL";
-
-      PrintFormat("ALIEN TRADE detectado! magic=%lld (esperado=%lld), symbol=%s, %s %.2f lotes",
-                  deal_magic, g_magic_number, request.symbol, type_str, request.volume);
-
-      JSONNode alien_msg;
-      alien_msg["type"] = "STREAM";
-      alien_msg["event"] = "ALIEN_TRADE";
-      alien_msg["timestamp_mql"] = (long)TimeCurrent();
-      alien_msg["role"] = g_role;
-      alien_msg["deal"] = (long)result.deal;
-      alien_msg["deal_magic"] = deal_magic;
-      alien_msg["expected_magic"] = g_magic_number;
-      alien_msg["symbol"] = request.symbol;
-      alien_msg["volume"] = request.volume;
-      alien_msg["deal_type"] = type_str;
-
-      if(!SendJsonMessage(alien_msg, "Event"))
-         Print("ERROR: Falha ao enviar ALIEN_TRADE via EventSocket");
-   }
+   // Nota: a detecção de ALIEN_TRADE foi movida para o caminho DEAL_ADD no topo desta
+   // função. DEAL_ADD é a única fonte que dispara em TODOS os terminais da mesma conta
+   // (inclusive quando o trade é feito em outro MT5, mobile, webtrader, outro EA, etc.).
 }
