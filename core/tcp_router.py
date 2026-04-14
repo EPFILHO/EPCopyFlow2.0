@@ -64,6 +64,10 @@ class TcpRouter:
         self._worker_threads = []
         self._worker_threads_lock = threading.Lock()
 
+        # Refs fortes aos tasks de dispatch criados via call_soon_threadsafe.
+        # Evita GC prematuro (conforme docs do asyncio) e permite limpeza no stop.
+        self._pending_dispatch_tasks = set()
+
         logger.debug("TcpRouter inicializado (socket bloqueante + threading, Python = server).")
 
     def _spawn_worker(self, target, args, name):
@@ -282,16 +286,40 @@ class TcpRouter:
                 self._clients[broker_key_msg] = broker_key
 
         # Despachar ao main loop (onde vivem os signals Qt).
-        # Evita tentativa de dispatch durante shutdown: se não estamos mais rodando,
-        # o main loop pode já ter sido fechado e run_coroutine_threadsafe falha.
+        #
+        # IMPORTANTE: NÃO criar o coroutine aqui na worker thread e passar
+        # para run_coroutine_threadsafe. Durante o shutdown existe uma janela
+        # onde call_soon_threadsafe aceita o callback (loop ainda "running"),
+        # mas o loop fecha antes do callback executar ensure_future(coro) —
+        # o coroutine é silenciosamente descartado, nunca é iterado, e o
+        # Python emite "RuntimeWarning: coroutine was never awaited" no GC
+        # final do interpretador. coro.close() no except RuntimeError NÃO
+        # resolve porque call_soon_threadsafe não levanta nesse cenário.
+        #
+        # Fix: passar um callable síncrono leve. O coroutine só é criado
+        # dentro do loop, já envolvido por um Task (iterado pelo menos uma
+        # vez) — então nunca há coroutine "no ar" entre threads.
         if self._message_handler and self._main_loop and self._running:
-            coro = self._dispatch_to_handler(broker_key, message_data)
+            main_loop = self._main_loop
+
+            def _schedule_dispatch():
+                if not self._running:
+                    return
+                try:
+                    task = main_loop.create_task(
+                        self._dispatch_to_handler(broker_key, message_data)
+                    )
+                except RuntimeError:
+                    # Loop já fechado — nada a fazer.
+                    return
+                self._pending_dispatch_tasks.add(task)
+                task.add_done_callback(self._pending_dispatch_tasks.discard)
+
             try:
-                asyncio.run_coroutine_threadsafe(coro, self._main_loop)
+                main_loop.call_soon_threadsafe(_schedule_dispatch)
             except RuntimeError as e:
-                # Fecha explicitamente o coroutine para evitar o warning
-                # "coroutine was never awaited" quando cai aqui durante shutdown.
-                coro.close()
+                # Loop já fechado antes do agendamento — callback nem chega
+                # a ser enfileirado. Nenhum coroutine foi criado. Sem warning.
                 logger.debug(f"Main loop indisponível ao dispatchar (shutdown): {e}")
 
     async def _dispatch_to_handler(self, broker_key: str, message_data: dict):
@@ -439,6 +467,20 @@ class TcpRouter:
             w.join(timeout=2.0)
             if w.is_alive():
                 logger.warning(f"Worker thread {w.name} não encerrou em 2s.")
+
+        # Cancela tasks de dispatch ainda pendentes (se houver). Estamos no
+        # main loop aqui, então create_task já foi iterado pelo scheduler —
+        # não há risco de "never awaited". Cancelar é só cortesia para
+        # acelerar o encerramento limpo.
+        pending = [t for t in self._pending_dispatch_tasks if not t.done()]
+        for t in pending:
+            t.cancel()
+        if pending:
+            try:
+                await asyncio.gather(*pending, return_exceptions=True)
+            except Exception:
+                pass
+        self._pending_dispatch_tasks.clear()
 
         logger.info("TcpRouter parado.")
 
