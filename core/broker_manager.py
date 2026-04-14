@@ -272,7 +272,11 @@ class BrokerManager(QObject):
             logger.error(f"Erro ao copiar Expert Advisor: {e}")
 
     def create_mt5_config(self, key):
-        """Cria config.ini na pasta do MT5 com BrokerKey, Role e 2 portas ZMQ."""
+        """Cria config.ini na pasta do MT5 com BrokerKey, Role e portas TCP.
+
+        Nota: magic_number NÃO é mais gravado aqui. O Python é a fonte única
+        e envia SET_MAGIC_NUMBER via socket logo após o EA registrar.
+        """
         broker_data = self.brokers.get(key, {})
         instance_path = os.path.join(self.instances_dir, key)
         config_file_path = os.path.join(instance_path, "MQL5", "Files", "config.ini")
@@ -281,12 +285,6 @@ class BrokerManager(QObject):
         command_port = broker_data.get("command_port", 15555)
         event_port = broker_data.get("event_port", 15556)
 
-        # Ler magic_number do config.ini principal
-        import configparser
-        main_config = configparser.ConfigParser()
-        main_config.read("config.ini")
-        magic_number = int(main_config.get("CopyTrade", "magic_number", fallback="0"))
-
         lines = [
             "[General]",
             f"BrokerKey={key}",
@@ -294,8 +292,6 @@ class BrokerManager(QObject):
             "[Ports]",
             f"CommandPort={command_port}",
             f"EventPort={event_port}",
-            "[CopyTrade]",
-            f"MagicNumber={magic_number}",
         ]
         content = "\n".join(lines)
         try:

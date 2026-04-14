@@ -352,41 +352,16 @@ class TcpRouter:
         finally:
             self._response_futures.pop(request_id, None)
 
-    async def configure_heartbeat_interval(self, broker_key: str):
-        """Lê do config.ini e envia SET_HEARTBEAT_INTERVAL."""
-        try:
-            import configparser
-            config = configparser.ConfigParser()
-            config.read("config.ini")
-            interval_s = int(config.get("CopyTrade", "heartbeat_interval", fallback="5"))
-            interval_ms = max(1000, min(600000, interval_s * 1000))
-
-            response = await self.send_command_to_broker(
-                broker_key,
-                "SET_HEARTBEAT_INTERVAL",
-                {"heartbeat_interval_ms": interval_ms},
-                f"set_heartbeat_{broker_key}_{int(time.time())}",
-            )
-            if response.get("status") == "OK":
-                logger.info(f"Heartbeat configurado em {broker_key}: {interval_ms}ms")
-            else:
-                logger.warning(
-                    f"Falha ao configurar heartbeat em {broker_key}: "
-                    f"{response.get('error_message', '?')}"
-                )
-        except Exception as e:
-            logger.error(f"Erro ao configurar heartbeat em {broker_key}: {e}", exc_info=True)
-
     async def configure_magic_number(self, broker_key: str):
-        """Lê do config.ini e envia SET_MAGIC_NUMBER."""
+        """Envia SET_MAGIC_NUMBER ao EA lendo o valor do config.ini principal.
+        Chamado uma única vez logo após receber REGISTER do EA. O Python é a fonte
+        única da verdade do magic number — o EA não lê mais do config.ini por instância.
+        """
         try:
             import configparser
             config = configparser.ConfigParser()
             config.read("config.ini")
             magic = int(config.get("CopyTrade", "magic_number", fallback="0"))
-            if magic <= 0:
-                logger.debug(f"Magic number não configurado, pulando {broker_key}")
-                return
 
             response = await self.send_command_to_broker(
                 broker_key,

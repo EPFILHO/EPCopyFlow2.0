@@ -87,15 +87,14 @@ class ZmqMessageHandler(QObject):
                 if hasattr(self, 'mt5_monitor') and self.mt5_monitor:
                     self.mt5_monitor.on_broker_registered(broker_key)
 
-                # Configurar EA: heartbeat interval + magic number
+                # Python é a fonte única do magic number — envia UMA vez ao conectar.
+                # Até o SET_MAGIC_NUMBER chegar no EA, alien detection fica desabilitada.
                 if self.tcp_router:
-                    for coro in (
-                        self.tcp_router.configure_heartbeat_interval(broker_key),
-                        self.tcp_router.configure_magic_number(broker_key),
-                    ):
-                        t = asyncio.create_task(coro)
-                        self._background_tasks.add(t)
-                        t.add_done_callback(self._background_tasks.discard)
+                    t = asyncio.create_task(
+                        self.tcp_router.configure_magic_number(broker_key)
+                    )
+                    self._background_tasks.add(t)
+                    t.add_done_callback(self._background_tasks.discard)
 
         elif msg_type == "INTERNAL" and event == "CLIENT_UNREGISTERED":
             broker_key = message.get("broker_key")
