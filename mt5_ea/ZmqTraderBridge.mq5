@@ -48,8 +48,11 @@ bool g_initial_trade_allowed_sent = false;
 bool g_last_terminal_connected = false;
 bool g_initial_connection_status_sent = false;
 
-//--- Magic number para identificar trades do CopyTrade (lido do config.ini no OnInit)
-long g_magic_number = 0;               // 0 = não configurado (desabilita detecção de aliens)
+//--- Magic number para identificar trades do CopyTrade.
+//--- Fonte única: Python envia SET_MAGIC_NUMBER logo após receber REGISTER do EA.
+//--- Até esse comando chegar, g_magic_number = 0 e a detecção de alien fica DESABILITADA
+//--- (o sistema só detecta aliens após estar "pronto/conectado").
+long g_magic_number = 0;
 
 //--- REGISTER retry (OnInit pode enviar antes do Python conectar)
 bool g_register_sent = false;          // true quando REGISTER foi enviado com sucesso
@@ -120,25 +123,13 @@ bool ReadConfigFile(string &brokerKey, string &role, int &commandPort, int &even
          if(chave == "CommandPort") commandPort = (int)StringToInteger(valor);
          else if(chave == "EventPort") eventPort = (int)StringToInteger(valor);
       }
-      else if(currentSection == "[CopyTrade]")
-      {
-         if(chave == "MagicNumber")
-         {
-            long magic = StringToInteger(valor);
-            if(magic > 0)
-            {
-               g_magic_number = magic;
-               trade.SetExpertMagicNumber((ulong)magic);
-            }
-         }
-      }
    }
    FileClose(file_handle);
 
    if(InpDebugLog)
    {
-      PrintFormat("Config: BrokerKey=%s, Role=%s, CommandPort=%d, EventPort=%d, MagicNumber=%lld",
-                  brokerKey, role, commandPort, eventPort, g_magic_number);
+      PrintFormat("Config: BrokerKey=%s, Role=%s, CommandPort=%d, EventPort=%d",
+                  brokerKey, role, commandPort, eventPort);
    }
    return true;
 }
@@ -540,6 +531,41 @@ void HandleGetStatusInfoCommand(const string request_id, JSONNode *payload_node_
    response["trade_allowed"] = (bool)TerminalInfoInteger(TERMINAL_TRADE_ALLOWED);
    response["balance"] = AccountInfoDouble(ACCOUNT_BALANCE);
    response["pong_timestamp_mql"] = (long)TimeCurrent();
+   SendJsonMessage(response, "Command");
+}
+
+void HandleSetMagicNumberCommand(const string request_id, JSONNode &payload)
+{
+   JSONNode response;
+   response["type"] = "RESPONSE";
+   response["request_id"] = request_id;
+
+   JSONNode *magic_node = payload["magic_number"];
+   if(CheckPointer(magic_node) == POINTER_INVALID)
+   {
+      response["status"] = "ERROR";
+      response["error_message"] = "magic_number parameter required";
+      SendJsonMessage(response, "Command");
+      return;
+   }
+
+   long new_magic = StringToInteger(magic_node.ToString());
+   if(new_magic < 0)
+   {
+      response["status"] = "ERROR";
+      response["error_message"] = "magic_number must be >= 0";
+      SendJsonMessage(response, "Command");
+      return;
+   }
+
+   g_magic_number = new_magic;
+   trade.SetExpertMagicNumber((ulong)new_magic);
+
+   PrintFormat("Magic number configurado via Python: %lld (alien detection %s)",
+               g_magic_number, g_magic_number > 0 ? "ATIVO" : "DESABILITADO");
+
+   response["status"] = "OK";
+   response["magic_number"] = g_magic_number;
    SendJsonMessage(response, "Command");
 }
 
@@ -1347,7 +1373,11 @@ void ProcessCommand(JSONNode &json_command)
    JSONNode payload = (CheckPointer(payload_node_ptr) != POINTER_INVALID) ? *payload_node_ptr : JSONNode();
 
    // ── Comandos Admin (MASTER + SLAVE) ──
-   if(command == "PING")
+   if(command == "SET_MAGIC_NUMBER")
+   {
+      HandleSetMagicNumberCommand(request_id, payload);
+   }
+   else if(command == "PING")
    {
       HandlePingCommand(request_id, payload_node_ptr);
    }

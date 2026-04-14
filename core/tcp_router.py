@@ -352,6 +352,33 @@ class TcpRouter:
         finally:
             self._response_futures.pop(request_id, None)
 
+    async def configure_magic_number(self, broker_key: str):
+        """Envia SET_MAGIC_NUMBER ao EA lendo o valor do config.ini principal.
+        Chamado uma única vez logo após receber REGISTER do EA. O Python é a fonte
+        única da verdade do magic number — o EA não lê mais do config.ini por instância.
+        """
+        try:
+            import configparser
+            config = configparser.ConfigParser()
+            config.read("config.ini")
+            magic = int(config.get("CopyTrade", "magic_number", fallback="0"))
+
+            response = await self.send_command_to_broker(
+                broker_key,
+                "SET_MAGIC_NUMBER",
+                {"magic_number": magic},
+                f"set_magic_{broker_key}_{int(time.time())}",
+            )
+            if response.get("status") == "OK":
+                logger.info(f"Magic number configurado em {broker_key}: {magic}")
+            else:
+                logger.warning(
+                    f"Falha ao configurar magic em {broker_key}: "
+                    f"{response.get('error_message', '?')}"
+                )
+        except Exception as e:
+            logger.error(f"Erro ao configurar magic em {broker_key}: {e}", exc_info=True)
+
     # ──────────────────────────────────────────────
     # Bloco 7 - Inicialização e Parada
     # ──────────────────────────────────────────────
