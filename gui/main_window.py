@@ -23,6 +23,7 @@ from gui.pages.brokers_page import BrokersPage
 from gui.pages.history_page import HistoryPage
 from gui.pages.logs_page import LogsPage
 from gui.pages.settings_page import SettingsPage
+from gui.widgets.notification_center import NotificationCenter, NotificationLevel
 
 logger = logging.getLogger(__name__)
 
@@ -151,6 +152,12 @@ class MainWindow(QMainWindow):
 
         layout.addStretch()
 
+        # Centro de notificações (oculto quando não há notificações)
+        self.notification_center = NotificationCenter(self)
+        layout.addWidget(self.notification_center)
+
+        layout.addStretch()
+
         # System status labels
         self.internet_label = QLabel("Internet: --")
         self.internet_label.setProperty("class", "header-status")
@@ -233,6 +240,10 @@ class MainWindow(QMainWindow):
         self.logs_page.setStyleSheet(themes.logs_page_style())
         self.settings_page.apply_theme()
 
+        # Re-estilizar centro de notificações
+        if hasattr(self, "notification_center"):
+            self.notification_center.apply_theme()
+
     # ── Signals ──
     def _connect_signals(self):
         self.zmq_message_handler.log_message_received.connect(self.logs_page.append_log)
@@ -281,19 +292,19 @@ class MainWindow(QMainWindow):
 
     @Slot(dict)
     def _on_alien_trade_detected(self, data: dict):
-        """Exibe popup de alerta quando trade alienígena é detectado no slave."""
+        """Publica alerta não-modal no centro de notificações da barra superior.
+
+        Importante: NÃO usar QMessageBox.warning() aqui — ele cria um event
+        loop aninhado (exec()) que conflita com QtAsyncio e deixa o main
+        loop em estado inconsistente durante o tempo que o modal fica aberto.
+        """
         broker = data.get("broker_key", "?")
         symbol = data.get("symbol", "?")
         volume = data.get("volume", 0)
         deal_type = data.get("deal_type", "?")
-        QMessageBox.warning(
-            self,
-            "Operacao Alienígena Detectada",
-            f"Trade NAO originado pelo CopyTrade detectado!\n\n"
-            f"Corretora: {broker}\n"
-            f"Operacao: {deal_type} {symbol} ({volume} lotes)\n\n"
-            f"Isso pode corromper o rastreamento de posicoes.\n"
-            f"Verifique a conta e tome as medidas necessarias."
+        detail = f"{broker}: {deal_type} {symbol} {volume} lote(s)"
+        self.notification_center.push(
+            NotificationLevel.ERROR, "Alien Trade detectado", detail
         )
 
     def _update_all_indicators(self):
@@ -334,6 +345,8 @@ class MainWindow(QMainWindow):
         logger.info("Fechando MainWindow...")
         self.indicators_timer.stop()
         self.internet_monitor.stop()
+        if hasattr(self, "notification_center"):
+            self.notification_center.shutdown()
 
         # Desconectar todas as corretoras e fechar MT5
         try:
