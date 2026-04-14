@@ -269,15 +269,18 @@ class TcpRouter:
             if broker_key_msg:
                 self._clients[broker_key_msg] = broker_key
 
-        # Despachar ao main loop (onde vivem os signals Qt)
-        if self._message_handler and self._main_loop:
+        # Despachar ao main loop (onde vivem os signals Qt).
+        # Evita tentativa de dispatch durante shutdown: se não estamos mais rodando,
+        # o main loop pode já ter sido fechado e run_coroutine_threadsafe falha.
+        if self._message_handler and self._main_loop and self._running:
+            coro = self._dispatch_to_handler(broker_key, message_data)
             try:
-                asyncio.run_coroutine_threadsafe(
-                    self._dispatch_to_handler(broker_key, message_data),
-                    self._main_loop,
-                )
+                asyncio.run_coroutine_threadsafe(coro, self._main_loop)
             except RuntimeError as e:
-                logger.warning(f"Main loop indisponível ao dispatchar: {e}")
+                # Fecha explicitamente o coroutine para evitar o warning
+                # "coroutine was never awaited" quando cai aqui durante shutdown.
+                coro.close()
+                logger.debug(f"Main loop indisponível ao dispatchar (shutdown): {e}")
 
     async def _dispatch_to_handler(self, broker_key: str, message_data: dict):
         """Executado no main loop (Qt). Chama o message_handler."""
