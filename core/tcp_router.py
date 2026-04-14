@@ -58,7 +58,23 @@ class TcpRouter:
         self._control_queue = queue.Queue()
         self._control_thread = None
 
+        # Rastreamento de threads worker (accept + read) para shutdown gracioso.
+        # Ao parar, damos join em todas antes de liberar o main loop, garantindo
+        # que nenhuma chamada a _process_message fica "em voo" após stop() retornar.
+        self._worker_threads = []
+        self._worker_threads_lock = threading.Lock()
+
         logger.debug("TcpRouter inicializado (socket bloqueante + threading, Python = server).")
+
+    def _spawn_worker(self, target, args, name):
+        """Cria e inicia uma thread worker, rastreando-a para o shutdown."""
+        t = threading.Thread(target=target, args=args, daemon=True, name=name)
+        with self._worker_threads_lock:
+            # Limpa entradas já finalizadas para não inchar a lista ao longo do tempo
+            self._worker_threads = [w for w in self._worker_threads if w.is_alive()]
+            self._worker_threads.append(t)
+        t.start()
+        return t
 
     # ──────────────────────────────────────────────
     # Bloco 2 - Comandos de Controle (Connect/Disconnect)
@@ -115,13 +131,11 @@ class TcpRouter:
         self._server_sockets[broker_key] = srv
         logger.info(f"TCP server escutando em 127.0.0.1:{port} para {broker_key}")
 
-        t = threading.Thread(
+        self._spawn_worker(
             target=self._accept_loop,
             args=(broker_key, srv),
-            daemon=True,
             name=f"TcpAccept-{broker_key}",
         )
-        t.start()
 
     def _stop_server(self, broker_key: str):
         conn = self._conn_sockets.pop(broker_key, None)
@@ -169,13 +183,11 @@ class TcpRouter:
             self._conn_locks[broker_key] = threading.Lock()
             self._clients[broker_key] = broker_key
 
-            t = threading.Thread(
+            self._spawn_worker(
                 target=self._read_loop,
                 args=(broker_key, conn),
-                daemon=True,
                 name=f"TcpRead-{broker_key}",
             )
-            t.start()
 
     def _read_loop(self, broker_key: str, conn: socket.socket):
         try:
@@ -416,6 +428,17 @@ class TcpRouter:
 
         if self._control_thread is not None:
             self._control_thread.join(timeout=3.0)
+
+        # Aguarda todas as threads de accept/read terminarem ANTES de retornar.
+        # Isso garante que nenhuma chamada a _process_message fica em voo após
+        # este ponto — o main loop pode fechar sem coroutines órfãs.
+        with self._worker_threads_lock:
+            workers = [w for w in self._worker_threads if w.is_alive()]
+            self._worker_threads.clear()
+        for w in workers:
+            w.join(timeout=2.0)
+            if w.is_alive():
+                logger.warning(f"Worker thread {w.name} não encerrou em 2s.")
 
         logger.info("TcpRouter parado.")
 
