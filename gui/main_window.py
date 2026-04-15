@@ -14,7 +14,7 @@ from PySide6.QtCore import Slot, Qt, Signal, QTimer
 from core.config_manager import ConfigManager
 from core.broker_manager import BrokerManager
 from core.tcp_router import TcpRouter
-from core.zmq_message_handler import ZmqMessageHandler
+from core.tcp_message_handler import TcpMessageHandler
 from internet_monitor import InternetMonitor
 from gui import themes
 
@@ -48,7 +48,7 @@ class MainWindow(QMainWindow):
         self.root_path = root_path
         self.mt5_monitor = mt5_monitor
         self.copytrade_manager = copytrade_manager
-        self.zmq_message_handler = ZmqMessageHandler(
+        self.tcp_message_handler = TcpMessageHandler(
             config, tcp_router, broker_manager=broker_manager,
             copytrade_manager=copytrade_manager
         )
@@ -113,12 +113,12 @@ class MainWindow(QMainWindow):
         # Create pages
         self.dashboard_page = DashboardPage(
             self.broker_manager, self.copytrade_manager,
-            zmq_message_handler=self.zmq_message_handler
+            tcp_message_handler=self.tcp_message_handler
         )
         self.dashboard_page.set_broker_status(self.broker_status)
         self.brokers_page = BrokersPage(
             self.config, self.broker_manager, self.tcp_router, self.mt5_monitor,
-            zmq_message_handler=self.zmq_message_handler
+            tcp_message_handler=self.tcp_message_handler
         )
         self.brokers_page.set_broker_status(self.broker_status)
         self.history_page = HistoryPage(self.copytrade_manager)
@@ -246,14 +246,14 @@ class MainWindow(QMainWindow):
 
     # ── Signals ──
     def _connect_signals(self):
-        self.zmq_message_handler.log_message_received.connect(self.logs_page.append_log)
-        self.zmq_message_handler.log_message_received.connect(self._handle_zmq_messages)
-        self.zmq_message_handler.positions_received.connect(self.dashboard_page.update_positions)
-        self.zmq_message_handler.account_balance_received.connect(self.dashboard_page.update_balance)
+        self.tcp_message_handler.log_message_received.connect(self.logs_page.append_log)
+        self.tcp_message_handler.log_message_received.connect(self._handle_tcp_messages)
+        self.tcp_message_handler.positions_received.connect(self.dashboard_page.update_positions)
+        self.tcp_message_handler.account_balance_received.connect(self.dashboard_page.update_balance)
         # Atualizar indicadores quando status muda
-        self.zmq_message_handler.trade_allowed_update_received.connect(
+        self.tcp_message_handler.trade_allowed_update_received.connect(
             lambda _: self._update_all_indicators())
-        self.zmq_message_handler.connection_status_received.connect(
+        self.tcp_message_handler.connection_status_received.connect(
             lambda _: self._update_all_indicators())
         # Sincronizar dashboard quando broker conecta/desconecta via botão
         self.brokers_page.broker_status_changed.connect(self._on_broker_status_changed)
@@ -262,10 +262,10 @@ class MainWindow(QMainWindow):
             self.copytrade_manager.copy_trade_executed.connect(self.history_page.refresh)
             self.copytrade_manager.copy_trade_failed.connect(self.history_page.refresh)
         # Alien trade detection
-        self.zmq_message_handler.alien_trade_detected.connect(self._on_alien_trade_detected)
+        self.tcp_message_handler.alien_trade_detected.connect(self._on_alien_trade_detected)
 
     @Slot(str)
-    def _handle_zmq_messages(self, message: str):
+    def _handle_tcp_messages(self, message: str):
         status_changed = False
         for key in list(self.broker_status.keys()):
             if "REGISTER" in message and key in message and "UNREGISTER" not in message:
@@ -286,7 +286,7 @@ class MainWindow(QMainWindow):
         for key in list(self.broker_status.keys()):
             if not self.broker_manager.is_connected(key):
                 self.broker_status[key] = False
-                self.zmq_message_handler.clear_broker_status(key)
+                self.tcp_message_handler.clear_broker_status(key)
         self.dashboard_page.refresh_brokers()
         self.brokers_page.refresh_brokers()
 

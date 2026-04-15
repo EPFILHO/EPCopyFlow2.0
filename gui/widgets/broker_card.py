@@ -74,7 +74,7 @@ class BrokerCard(QFrame):
         row2.addWidget(self.status_label)
         layout.addLayout(row2)
 
-        # Row 3: Status indicators (MT5, BRK, ZMQ, EA, ALG)
+        # Row 3: Status indicators (MT5, EA, BRK, ALG)
         indicators_row = QHBoxLayout()
         indicators_row.setSpacing(12)
         self._indicators = {}

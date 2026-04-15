@@ -16,11 +16,11 @@ logger = logging.getLogger(__name__)
 
 class DashboardPage(QWidget):
     def __init__(self, broker_manager, copytrade_manager=None,
-                 zmq_message_handler=None, parent=None):
+                 tcp_message_handler=None, parent=None):
         super().__init__(parent)
         self.broker_manager = broker_manager
         self.copytrade_manager = copytrade_manager
-        self.zmq_message_handler = zmq_message_handler
+        self.tcp_message_handler = tcp_message_handler
         self._broker_status = {}  # EA registered: {key: True/False}
         self.broker_cards = {}
         self.setStyleSheet(themes.dashboard_style())
@@ -166,9 +166,9 @@ class DashboardPage(QWidget):
         """Update all 4 status indicators (MT5, EA, BRK, ALG) on every broker card."""
         trade_allowed = {}
         connection_status = {}
-        if self.zmq_message_handler:
-            trade_allowed = self.zmq_message_handler.get_trade_allowed_states()
-            connection_status = self.zmq_message_handler.get_connection_status_states()
+        if self.tcp_message_handler:
+            trade_allowed = self.tcp_message_handler.get_trade_allowed_states()
+            connection_status = self.tcp_message_handler.get_connection_status_states()
 
         for key, card in self.broker_cards.items():
             # MT5: processo rodando?
@@ -180,7 +180,7 @@ class DashboardPage(QWidget):
                 card.update_status_indicators(mt5=None, ea=None, brk=None, alg=None)
                 continue
 
-            # EA registrado? (prova real de que ZMQ está funcionando)
+            # EA registrado? (prova real de que TCP está funcionando)
             ea_registered = self._broker_status.get(key, False)
 
             if not ea_registered:

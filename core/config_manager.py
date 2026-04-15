@@ -33,7 +33,7 @@ class ConfigManager:
                 'log_level': 'INFO', # Movido para General por conveniência ou manter em Logging
                  # Adicione outros padrões gerais se necessário
             }
-            self.config['ZMQ'] = {
+            self.config['TCP'] = {
                 'host': '127.0.0.1',
                 'port': '5555',
                 'heartbeat_interval_s': '5', # Intervalo de heartbeat do EA
