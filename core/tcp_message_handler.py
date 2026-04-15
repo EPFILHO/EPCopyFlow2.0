@@ -1,6 +1,6 @@
 # EPCopyFlow 2.0 - Versão 0.0.1 - Claude Code Parte 000
-# core/zmq_message_handler.py
-# Manipulador de mensagens ZMQ simplificado para copytrade.
+# core/tcp_message_handler.py
+# Manipulador de mensagens TCP simplificado para copytrade.
 # Removidos: signals de indicadores, OHLC, ticks, streams (não usados no copytrade).
 
 import logging
@@ -15,7 +15,7 @@ trade_allowed_states = {}
 connection_status_states = {}  # True = broker conectado ao servidor, False = desconectado
 
 
-class ZmqMessageHandler(QObject):
+class TcpMessageHandler(QObject):
     # Sinais mantidos (essenciais para copytrade)
     log_message_received = Signal(str)
     ping_button_state_changed = Signal(bool)
@@ -50,7 +50,7 @@ class ZmqMessageHandler(QObject):
     # Bloco 2 - Handler Principal
     # ──────────────────────────────────────────────
     @Slot(bytes, object)
-    async def handle_zmq_message(self, client_id_bytes: bytes, message: dict):
+    async def handle_tcp_message(self, client_id_bytes: bytes, message: dict):
         global trade_allowed_states, connection_status_states
 
         # Identifica broker
@@ -63,7 +63,7 @@ class ZmqMessageHandler(QObject):
         if not identified_broker_key:
             identified_broker_key = message.get("broker_key")
 
-        log_prefix = f"ZMQ RX [{identified_broker_key or client_id_hex}]:"
+        log_prefix = f"TCP RX [{identified_broker_key or client_id_hex}]:"
 
         # Log (exceto TICK e HEARTBEAT que são muito frequentes)
         event = message.get("event")

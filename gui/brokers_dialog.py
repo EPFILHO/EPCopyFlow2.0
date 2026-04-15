@@ -273,7 +273,7 @@ class BrokersDialog(QDialog):
         try:
             command_port, event_port = self.broker_manager.generate_ports()
         except Exception as e:
-            QMessageBox.critical(self, "Erro de portas", f"Erro ao gerar portas ZMQ: {e}")
+            QMessageBox.critical(self, "Erro de portas", f"Erro ao gerar portas TCP: {e}")
             return
 
         key = self.broker_manager.add_broker(

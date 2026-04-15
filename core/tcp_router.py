@@ -6,7 +6,7 @@
 # Protocolo de framing:
 #   [4 bytes big-endian unsigned length][UTF-8 JSON payload]
 #
-# Substitui o antigo core/zmq_router.py (issue #47).
+# Substitui o antigo core/zmq_router.py (migrado para TCP nativo no issue #47).
 #
 # Transporte: socket bloqueante + threading puro (sem asyncio nas threads worker).
 # Isso evita problemas com IocpProactor do Windows em threads não-principais.
@@ -333,12 +333,12 @@ class TcpRouter:
                     "type": "INTERNAL",
                     "event": "CLIENT_UNREGISTERED",
                     "broker_key": message_data.get("broker_key"),
-                    "zmq_id_hex": broker_key,
+                    "tcp_id": broker_key,
                 }
-                await self._message_handler.handle_zmq_message(
+                await self._message_handler.handle_tcp_message(
                     broker_key.encode('utf-8'), notification)
             else:
-                await self._message_handler.handle_zmq_message(
+                await self._message_handler.handle_tcp_message(
                     broker_key.encode('utf-8'), message_data)
         except Exception as e:
             logger.exception(f"Erro ao despachar mensagem de {broker_key}: {e}")

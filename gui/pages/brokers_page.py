@@ -20,13 +20,13 @@ class BrokersPage(QWidget):
     broker_status_changed = Signal()
 
     def __init__(self, config, broker_manager, tcp_router, mt5_monitor,
-                 zmq_message_handler=None, parent=None):
+                 tcp_message_handler=None, parent=None):
         super().__init__(parent)
         self.config = config
         self.broker_manager = broker_manager
         self.tcp_router = tcp_router
         self.mt5_monitor = mt5_monitor
-        self.zmq_message_handler = zmq_message_handler
+        self.tcp_message_handler = tcp_message_handler
         self._broker_status = {}
         self.broker_cards = {}
         self.setStyleSheet(themes.brokers_page_style())
@@ -154,9 +154,9 @@ class BrokersPage(QWidget):
         """Update all 4 status indicators (MT5, EA, BRK, ALG) on every broker card."""
         trade_allowed = {}
         connection_status = {}
-        if self.zmq_message_handler:
-            trade_allowed = self.zmq_message_handler.get_trade_allowed_states()
-            connection_status = self.zmq_message_handler.get_connection_status_states()
+        if self.tcp_message_handler:
+            trade_allowed = self.tcp_message_handler.get_trade_allowed_states()
+            connection_status = self.tcp_message_handler.get_connection_status_states()
 
         for key, card in self.broker_cards.items():
             process = self.broker_manager.mt5_processes.get(key)
