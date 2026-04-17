@@ -54,6 +54,20 @@ bool g_initial_connection_status_sent = false;
 //--- (o sistema só detecta aliens após estar "pronto/conectado").
 long g_magic_number = 0;
 
+//--- Cache de posições para OnTrade() snapshot diff
+#define MAX_CACHED_POSITIONS 64
+struct CachedPosition {
+   long   position_id;
+   string symbol;
+   double volume;
+   double sl;
+   double tp;
+   long   pos_type;   // POSITION_TYPE_BUY=0, POSITION_TYPE_SELL=1
+   long   magic;
+};
+CachedPosition g_pos_cache[MAX_CACHED_POSITIONS];
+int g_pos_cache_size = 0;
+
 //--- REGISTER retry (OnInit pode enviar antes do Python conectar)
 bool g_register_sent = false;          // true quando REGISTER foi enviado com sucesso
 int  g_register_retries = 0;           // Contador de tentativas
@@ -1222,7 +1236,11 @@ int OnInit()
 
    g_last_trade_allowed = (bool)TerminalInfoInteger(TERMINAL_TRADE_ALLOWED);
    g_last_terminal_connected = (bool)TerminalInfoInteger(TERMINAL_CONNECTED);
-   PrintFormat("EPCopyFlow EA: Inicializado. Role=%s, BrokerKey=%s", g_role, g_brokerKey);
+
+   RefreshPositionCache();
+
+   PrintFormat("EPCopyFlow EA: Inicializado. Role=%s, BrokerKey=%s, cached_positions=%d",
+               g_role, g_brokerKey, g_pos_cache_size);
    return(INIT_SUCCEEDED);
 }
 
@@ -1452,6 +1470,159 @@ void ProcessCommand(JSONNode &json_command)
 }
 
 //+------------------------------------------------------------------+
+//| Bloco 4b - OnTrade() snapshot diff (MASTER only)                 |
+//| Detecta fechamentos por SL/TP/SO e modificações de SL/TP.        |
+//| Compara cache de posições vs estado atual e emite eventos.        |
+//+------------------------------------------------------------------+
+int BuildPositionSnapshot(CachedPosition &snap[])
+{
+   int count = 0;
+   for(int i = 0; i < PositionsTotal() && count < MAX_CACHED_POSITIONS; i++)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(!PositionSelectByTicket(ticket))
+         continue;
+
+      long magic = PositionGetInteger(POSITION_MAGIC);
+      if(g_magic_number > 0 && magic != g_magic_number)
+         continue;
+
+      snap[count].position_id = PositionGetInteger(POSITION_IDENTIFIER);
+      snap[count].symbol      = PositionGetString(POSITION_SYMBOL);
+      snap[count].volume      = PositionGetDouble(POSITION_VOLUME);
+      snap[count].sl          = PositionGetDouble(POSITION_SL);
+      snap[count].tp          = PositionGetDouble(POSITION_TP);
+      snap[count].pos_type    = PositionGetInteger(POSITION_TYPE);
+      snap[count].magic       = magic;
+      count++;
+   }
+   return count;
+}
+
+void RefreshPositionCache()
+{
+   g_pos_cache_size = BuildPositionSnapshot(g_pos_cache);
+}
+
+void EmitSyntheticTradeEvent(const CachedPosition &cached, double closed_volume, double remaining_volume)
+{
+   JSONNode stream_msg;
+   stream_msg["type"]       = "STREAM";
+   stream_msg["event"]      = "TRADE_EVENT";
+   stream_msg["timestamp_mql"] = (long)TimeCurrent();
+   stream_msg["role"]       = g_role;
+   stream_msg["source"]     = "ONTRADE";
+
+   stream_msg["request_action"]       = 1;  // TRADE_ACTION_DEAL
+   stream_msg["request_order"]        = (long)0;
+   stream_msg["request_symbol"]       = cached.symbol;
+   stream_msg["request_volume"]       = closed_volume;
+   stream_msg["request_price"]        = 0.0;
+   stream_msg["request_sl"]           = 0.0;
+   stream_msg["request_tp"]           = 0.0;
+   stream_msg["request_deviation"]    = (long)0;
+   stream_msg["request_type"]         = (cached.pos_type == POSITION_TYPE_BUY) ? 1 : 0;
+   stream_msg["request_type_filling"] = 0;
+   stream_msg["request_comment"]      = "";
+   stream_msg["request_position"]     = cached.position_id;
+
+   stream_msg["result_retcode"] = (long)TRADE_RETCODE_DONE;
+   stream_msg["result_deal"]    = (long)0;
+   stream_msg["result_order"]   = (long)0;
+   stream_msg["result_volume"]  = closed_volume;
+   stream_msg["result_price"]   = 0.0;
+   stream_msg["result_comment"] = "detected by OnTrade";
+
+   stream_msg["position_volume_remaining"] = remaining_volume;
+   stream_msg["position_id"]               = cached.position_id;
+
+   if(!SendJsonMessage(stream_msg, "Event"))
+      Print("ERROR: Falha ao enviar TRADE_EVENT sintético via EventSocket");
+
+   PrintFormat("OnTrade: %s detectado (pos_id=%lld, symbol=%s, vol=%.2f, remaining=%.2f)",
+               (remaining_volume > 0) ? "PARTIAL_CLOSE" : "CLOSE",
+               cached.position_id, cached.symbol, closed_volume, remaining_volume);
+}
+
+void EmitSltpModified(const CachedPosition &old_pos, const CachedPosition &new_pos)
+{
+   JSONNode msg;
+   msg["type"]          = "STREAM";
+   msg["event"]         = "SLTP_MODIFIED";
+   msg["timestamp_mql"] = (long)TimeCurrent();
+   msg["role"]          = g_role;
+   msg["position_id"]   = new_pos.position_id;
+   msg["symbol"]        = new_pos.symbol;
+   msg["sl"]            = new_pos.sl;
+   msg["tp"]            = new_pos.tp;
+   msg["old_sl"]        = old_pos.sl;
+   msg["old_tp"]        = old_pos.tp;
+   msg["volume"]        = new_pos.volume;
+
+   if(!SendJsonMessage(msg, "Event"))
+      Print("ERROR: Falha ao enviar SLTP_MODIFIED via EventSocket");
+
+   PrintFormat("OnTrade: SL/TP modificado (pos_id=%lld, symbol=%s, sl=%.5f→%.5f, tp=%.5f→%.5f)",
+               new_pos.position_id, new_pos.symbol,
+               old_pos.sl, new_pos.sl, old_pos.tp, new_pos.tp);
+}
+
+void OnTrade()
+{
+   if(g_role != "MASTER" || !g_is_connected || g_magic_number == 0)
+      return;
+
+   CachedPosition new_snap[MAX_CACHED_POSITIONS];
+   int new_count = BuildPositionSnapshot(new_snap);
+
+   for(int i = 0; i < g_pos_cache_size; i++)
+   {
+      bool found = false;
+      for(int j = 0; j < new_count; j++)
+      {
+         if(g_pos_cache[i].position_id != new_snap[j].position_id)
+            continue;
+
+         found = true;
+
+         // Volume diminuiu → partial close externo
+         if(new_snap[j].volume < g_pos_cache[i].volume - 0.000001)
+         {
+            double closed_vol = g_pos_cache[i].volume - new_snap[j].volume;
+            EmitSyntheticTradeEvent(g_pos_cache[i], closed_vol, new_snap[j].volume);
+         }
+
+         // SL ou TP mudou
+         if(MathAbs(new_snap[j].sl - g_pos_cache[i].sl) > 0.000001
+            || MathAbs(new_snap[j].tp - g_pos_cache[i].tp) > 0.000001)
+         {
+            EmitSltpModified(g_pos_cache[i], new_snap[j]);
+         }
+         break;
+      }
+
+      if(!found)
+      {
+         // Posição desapareceu → fechamento total (SL/TP hit, SO, mobile close, etc.)
+         EmitSyntheticTradeEvent(g_pos_cache[i], g_pos_cache[i].volume, 0.0);
+      }
+   }
+
+   // Atualizar cache
+   g_pos_cache_size = new_count;
+   for(int i = 0; i < new_count; i++)
+   {
+      g_pos_cache[i].position_id = new_snap[i].position_id;
+      g_pos_cache[i].symbol      = new_snap[i].symbol;
+      g_pos_cache[i].volume      = new_snap[i].volume;
+      g_pos_cache[i].sl          = new_snap[i].sl;
+      g_pos_cache[i].tp          = new_snap[i].tp;
+      g_pos_cache[i].pos_type    = new_snap[i].pos_type;
+      g_pos_cache[i].magic       = new_snap[i].magic;
+   }
+}
+
+//+------------------------------------------------------------------+
 //| Bloco 5 - OnTradeTransaction                                    |
 //| Publica TRADE_EVENT via EventSocket para o Python.               |
 //| Ambos MASTER e SLAVE publicam, mas o Python só replica do MASTER.|
@@ -1656,6 +1827,10 @@ void OnTradeTransaction(const MqlTradeTransaction &trans, const MqlTradeRequest 
    {
       Print("ERROR: Falha ao enviar TRADE_EVENT via EventSocket");
    }
+
+   // Atualizar cache após emitir TRADE_EVENT (dedup: OnTrade() não verá este diff)
+   if(request.action == TRADE_ACTION_DEAL)
+      RefreshPositionCache();
 
    // Nota: a detecção de ALIEN_TRADE foi movida para o caminho DEAL_ADD no topo desta
    // função. DEAL_ADD é a única fonte que dispara em TODOS os terminais da mesma conta

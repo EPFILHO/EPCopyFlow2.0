@@ -183,6 +183,32 @@ class TcpMessageHandler(QObject):
                 self.heartbeat_active[broker_key] = True
                 logger.debug(f"💓 Primeiro heartbeat de {broker_key} ({role})")
 
+        elif msg_type == "STREAM" and event == "SLTP_MODIFIED":
+            sltp_data = {
+                "broker_key": identified_broker_key,
+                "timestamp_mql": message.get("timestamp_mql", 0),
+                "position_id": message.get("position_id", 0),
+                "symbol": message.get("symbol", ""),
+                "sl": message.get("sl", 0.0),
+                "tp": message.get("tp", 0.0),
+                "old_sl": message.get("old_sl", 0.0),
+                "old_tp": message.get("old_tp", 0.0),
+                "volume": message.get("volume", 0.0),
+            }
+            logger.info(
+                f"SLTP_MODIFIED de {identified_broker_key} - pos_id={sltp_data['position_id']}, "
+                f"sl={sltp_data['old_sl']:.5f}->{sltp_data['sl']:.5f}, "
+                f"tp={sltp_data['old_tp']:.5f}->{sltp_data['tp']:.5f}"
+            )
+
+            if self.copytrade_manager and self.broker_manager:
+                if self.broker_manager.get_broker_role(identified_broker_key) == "master":
+                    t = asyncio.create_task(
+                        self.copytrade_manager.handle_master_sltp_update(sltp_data)
+                    )
+                    self._background_tasks.add(t)
+                    t.add_done_callback(self._background_tasks.discard)
+
         elif msg_type == "STREAM" and event == "ALIEN_TRADE":
             alien_data = {
                 "broker_key": identified_broker_key,

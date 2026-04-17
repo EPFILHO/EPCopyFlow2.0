@@ -101,13 +101,19 @@ class CopyTradeManager(QObject):
 
         self.db.commit()
 
-        # Migração: adicionar coluna direction se não existir
-        try:
-            self.db.execute("ALTER TABLE open_positions ADD COLUMN direction TEXT DEFAULT 'BUY'")
-            self.db.commit()
-            logger.info("Migração: coluna 'direction' adicionada a open_positions.")
-        except sqlite3.OperationalError:
-            pass  # Coluna já existe
+        # Migrações: adicionar colunas novas se não existirem
+        migrations = [
+            ("direction", "ALTER TABLE open_positions ADD COLUMN direction TEXT DEFAULT 'BUY'"),
+            ("sl", "ALTER TABLE open_positions ADD COLUMN sl REAL DEFAULT 0.0"),
+            ("tp", "ALTER TABLE open_positions ADD COLUMN tp REAL DEFAULT 0.0"),
+        ]
+        for col_name, sql in migrations:
+            try:
+                self.db.execute(sql)
+                self.db.commit()
+                logger.info(f"Migração: coluna '{col_name}' adicionada a open_positions.")
+            except sqlite3.OperationalError:
+                pass  # Coluna já existe
 
         logger.info("Banco de dados SQLite inicializado (3 tabelas).")
 
@@ -454,6 +460,67 @@ class CopyTradeManager(QObject):
         # Limpar lock se posição foi fechada (não há mais eventos esperados)
         if trade_action == "CLOSE":
             self._cleanup_position_lock(position_id)
+
+    async def handle_master_sltp_update(self, sltp_data: dict):
+        """Replica modificação de SL/TP do Master para todos os Slaves."""
+        position_id = sltp_data.get("position_id", 0)
+        symbol = sltp_data.get("symbol", "")
+        new_sl = sltp_data.get("sl", 0.0)
+        new_tp = sltp_data.get("tp", 0.0)
+
+        if not position_id:
+            logger.warning("SLTP_MODIFIED sem position_id, ignorando")
+            return
+
+        logger.info(f"SLTP_MODIFIED: pos_id={position_id}, symbol={symbol}, sl={new_sl}, tp={new_tp}")
+
+        self.db.execute(
+            "UPDATE open_positions SET sl = ?, tp = ? WHERE master_ticket = ? AND status = 'OPEN'",
+            (new_sl, new_tp, position_id)
+        )
+        self.db.commit()
+
+        slaves = self.broker_manager.get_connected_slave_brokers()
+        tasks = []
+        for slave_key in slaves:
+            if self.is_slave_paused(slave_key):
+                continue
+
+            pos_info = self._get_slave_position_info(position_id, slave_key)
+            if pos_info is None or pos_info["volume"] <= 0:
+                continue
+
+            slave_ticket = self._get_slave_ticket(position_id, slave_key)
+            if not slave_ticket:
+                logger.warning(f"  SLTP: slave {slave_key} sem ticket para pos_id={position_id}")
+                continue
+
+            tasks.append(self._replicate_sltp_to_slave(
+                slave_key, slave_ticket, new_sl, new_tp, position_id, symbol
+            ))
+
+        if tasks:
+            await asyncio.gather(*tasks)
+
+    async def _replicate_sltp_to_slave(self, slave_key: str, slave_ticket: int,
+                                       sl: float, tp: float, position_id: int, symbol: str):
+        """Envia TRADE_POSITION_MODIFY para um slave."""
+        logger.info(f"  SLTP -> {slave_key}: ticket={slave_ticket}, sl={sl}, tp={tp}")
+
+        request_id = f"sltp_{slave_key}_{position_id}_{int(time.time())}"
+        response = await self.tcp_router.send_command_to_broker(
+            slave_key, "TRADE_POSITION_MODIFY",
+            {"ticket": slave_ticket, "sl": sl, "tp": tp},
+            request_id
+        )
+
+        if response.get("status") == "OK":
+            logger.info(f"  SLTP OK: {slave_key} pos_id={position_id}")
+            self.copy_trade_log.emit(f"SLTP [{slave_key}]: {symbol} sl={sl} tp={tp}")
+        else:
+            error = response.get("error_message", "unknown")
+            logger.error(f"  SLTP FALHOU: {slave_key} - {error}")
+            self.copy_trade_log.emit(f"SLTP ERRO [{slave_key}]: {symbol} - {error}")
 
     def _classify_trade_action(self, action: int, order_type: int, position_ticket: int,
                                position_volume_remaining=None) -> str:
