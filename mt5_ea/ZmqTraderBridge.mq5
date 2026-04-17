@@ -1484,7 +1484,10 @@ int BuildPositionSnapshot(CachedPosition &snap[])
          continue;
 
       long magic = PositionGetInteger(POSITION_MAGIC);
-      if(g_magic_number > 0 && magic != g_magic_number)
+
+      // MASTER: rastrear TODAS as posições (usuário opera manualmente, magic=0)
+      // SLAVE: só nossas posições (magic match) — mas OnTrade() já retorna cedo para SLAVE
+      if(g_role == "SLAVE" && g_magic_number > 0 && magic != g_magic_number)
          continue;
 
       snap[count].position_id = PositionGetInteger(POSITION_IDENTIFIER);
