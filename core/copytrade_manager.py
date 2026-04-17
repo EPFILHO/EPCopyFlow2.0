@@ -961,7 +961,8 @@ class CopyTradeManager(QObject):
                         self._insert_history(
                             master_broker or broker_key, deal_ticket, symbol,
                             "EMERGENCY_CLOSE", volume,
-                            broker_key, ticket, volume, "SUCCESS"
+                            broker_key, ticket, volume, "SUCCESS",
+                            close_reason="EMERGENCY"
                         )
                         self.copy_trade_log.emit(
                             f"EMERGÊNCIA: Fechado {symbol} ticket={ticket} em {broker_key}")
@@ -971,7 +972,8 @@ class CopyTradeManager(QObject):
                         self._insert_history(
                             master_broker or broker_key, ticket, symbol,
                             "EMERGENCY_CLOSE", volume,
-                            broker_key, ticket, volume, "FAILED", error
+                            broker_key, ticket, volume, "FAILED", error,
+                            close_reason="EMERGENCY"
                         )
 
         # Marcar TODAS as posições como PANIC no DB (diferencia de CLOSED normal)
