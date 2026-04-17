@@ -318,7 +318,7 @@ class TcpMessageHandler(QObject):
             }
             self.trade_response_received.emit(trade_response)
             if status != "OK":
-                logger.error(f"Trade falhou para {broker_key}: {message.get('error_message', '?')}")
+                logger.warning(f"Trade falhou para {broker_key}: {message.get('error_message', '?')}")
 
         else:
             if status == "OK":
