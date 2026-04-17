@@ -782,6 +782,7 @@ class CopyTradeManager(QObject):
             if trade_action == "CLOSE" and "não encontrada" in error.lower():
                 resolved = await self._verify_position_closed(slave_key, symbol, position_id)
                 if resolved:
+                    self._update_history(record_id, "SUCCESS", 0, "Posição já fechada pelo broker (SL/TP/SO)")
                     return
 
             self._update_history(record_id, "FAILED", 0, error)
