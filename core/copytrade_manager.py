@@ -34,6 +34,7 @@ class CopyTradeManager(QObject):
         self._emergency_completed_at = 0  # Timestamp do fim do emergency (grace period)
         self.symbol_specs_cache = {}  # (broker_key, symbol) -> {volume_min, volume_max, volume_step}
         self._position_locks = {}  # position_id -> asyncio.Lock (serializa eventos do mesmo position_id)
+        self._master_event_dedup = {}  # (position_id, timestamp_mql) -> process_time
         self.db = sqlite3.connect(DB_FILE)
         self._init_db()
 
@@ -429,6 +430,16 @@ class CopyTradeManager(QObject):
         if not position_id:
             logger.error(f"  ❌ TRADE_EVENT sem position_id! EA pode estar desatualizado. deal={deal_ticket}")
             return
+
+        # Dedup: OnTrade() e OnTradeTransaction() podem emitir para o mesmo trade
+        timestamp_mql = trade_event.get("timestamp_mql", 0)
+        dedup_key = (position_id, timestamp_mql)
+        now = time.time()
+        if dedup_key in self._master_event_dedup:
+            logger.debug(f"  Evento duplicado ignorado: pos_id={position_id}, ts_mql={timestamp_mql}, action={trade_action}")
+            return
+        self._master_event_dedup[dedup_key] = now
+        self._master_event_dedup = {k: v for k, v in self._master_event_dedup.items() if now - v < 10}
 
         # ── Serializar por position_id ──
         # Garante que BUY completa antes de CLOSE para o mesmo position_id.
