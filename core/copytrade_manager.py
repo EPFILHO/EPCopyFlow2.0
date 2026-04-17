@@ -103,16 +103,17 @@ class CopyTradeManager(QObject):
 
         # Migrações: adicionar colunas novas se não existirem
         migrations = [
-            ("direction", "ALTER TABLE open_positions ADD COLUMN direction TEXT DEFAULT 'BUY'"),
-            ("sl", "ALTER TABLE open_positions ADD COLUMN sl REAL DEFAULT 0.0"),
-            ("tp", "ALTER TABLE open_positions ADD COLUMN tp REAL DEFAULT 0.0"),
-            ("close_reason", "ALTER TABLE open_positions ADD COLUMN close_reason TEXT"),
+            ("open_positions",    "direction",      "ALTER TABLE open_positions ADD COLUMN direction TEXT DEFAULT 'BUY'"),
+            ("open_positions",    "sl",             "ALTER TABLE open_positions ADD COLUMN sl REAL DEFAULT 0.0"),
+            ("open_positions",    "tp",             "ALTER TABLE open_positions ADD COLUMN tp REAL DEFAULT 0.0"),
+            ("open_positions",    "close_reason",   "ALTER TABLE open_positions ADD COLUMN close_reason TEXT"),
+            ("copytrade_history", "close_reason",   "ALTER TABLE copytrade_history ADD COLUMN close_reason TEXT DEFAULT ''"),
         ]
-        for col_name, sql in migrations:
+        for table, col_name, sql in migrations:
             try:
                 self.db.execute(sql)
                 self.db.commit()
-                logger.info(f"Migração: coluna '{col_name}' adicionada a open_positions.")
+                logger.info(f"Migração: coluna '{col_name}' adicionada a {table}.")
             except sqlite3.OperationalError:
                 pass  # Coluna já existe
 
@@ -747,13 +748,14 @@ class CopyTradeManager(QObject):
         # ── Processar resultado ──
         if response.get("status") == "OK":
             slave_result_ticket = response.get("order", 0) or response.get("deal", 0)
-            self._update_history(record_id, "SUCCESS", slave_result_ticket)
 
             if trade_action == "CLOSE":
+                self._update_history(record_id, "SUCCESS", slave_result_ticket, close_reason="COPYTRADE")
                 self._on_close_success(position_id, slave_key)
 
             elif trade_action == "PARTIAL_CLOSE" or (trade_action in ("BUY", "SELL") and is_reduce):
                 # Redução de posição (PARTIAL_CLOSE ou NETTING REDUCE)
+                self._update_history(record_id, "SUCCESS", slave_result_ticket)
                 closed_vol = response.get("volume", slave_lot)
                 if closed_vol >= existing_slave_vol:
                     logger.info(f"    📊 Redução → CLOSE total (slave_vol={existing_slave_vol}, closed={closed_vol})")
@@ -764,12 +766,14 @@ class CopyTradeManager(QObject):
 
             elif trade_action in ("BUY", "SELL") and is_add:
                 # ADD à posição existente (NETTING)
+                self._update_history(record_id, "SUCCESS", slave_result_ticket)
                 added_vol = response.get("volume", slave_lot)
                 logger.info(f"    📊 ADD ok: +{added_vol} lotes (slave_vol: {existing_slave_vol} → {existing_slave_vol + added_vol})")
                 self._on_add_success(position_id, slave_key, added_vol, volume)
 
             else:
                 # Abertura nova
+                self._update_history(record_id, "SUCCESS", slave_result_ticket)
                 self._on_open_success(position_id, slave_key, slave_result_ticket, slave_lot, symbol, volume, direction=trade_action)
 
             self.copy_trade_executed.emit({
@@ -782,7 +786,7 @@ class CopyTradeManager(QObject):
             if trade_action == "CLOSE" and "não encontrada" in error.lower():
                 resolved = await self._verify_position_closed(slave_key, symbol, position_id)
                 if resolved:
-                    self._update_history(record_id, "SUCCESS", 0, "Posição já fechada pelo broker (SL/TP/SO)")
+                    self._update_history(record_id, "SUCCESS", 0, "Posição já fechada pelo broker (SL/TP/SO)", close_reason="BROKER_SLTP")
                     return
 
             self._update_history(record_id, "FAILED", 0, error)
@@ -957,7 +961,8 @@ class CopyTradeManager(QObject):
                         self._insert_history(
                             master_broker or broker_key, deal_ticket, symbol,
                             "EMERGENCY_CLOSE", volume,
-                            broker_key, ticket, volume, "SUCCESS"
+                            broker_key, ticket, volume, "SUCCESS",
+                            close_reason="EMERGENCY"
                         )
                         self.copy_trade_log.emit(
                             f"EMERGÊNCIA: Fechado {symbol} ticket={ticket} em {broker_key}")
@@ -967,7 +972,8 @@ class CopyTradeManager(QObject):
                         self._insert_history(
                             master_broker or broker_key, ticket, symbol,
                             "EMERGENCY_CLOSE", volume,
-                            broker_key, ticket, volume, "FAILED", error
+                            broker_key, ticket, volume, "FAILED", error,
+                            close_reason="EMERGENCY"
                         )
 
         # Marcar TODAS as posições como PANIC no DB (diferencia de CLOSED normal)
@@ -1000,28 +1006,28 @@ class CopyTradeManager(QObject):
     # ──────────────────────────────────────────────
     def _insert_history(self, master_broker, master_ticket, symbol, action,
                         master_lot, slave_broker, slave_ticket, slave_lot, status,
-                        error_message=""):
+                        error_message="", close_reason=""):
         cursor = self.db.execute(
             """INSERT INTO copytrade_history
                (timestamp, master_broker, master_ticket, symbol, action,
-                master_lot, slave_broker, slave_ticket, slave_lot, status, error_message)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                master_lot, slave_broker, slave_ticket, slave_lot, status, error_message, close_reason)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (time.time(), master_broker, master_ticket, symbol, action,
-             master_lot, slave_broker, slave_ticket, slave_lot, status, error_message)
+             master_lot, slave_broker, slave_ticket, slave_lot, status, error_message, close_reason)
         )
         self.db.commit()
         return cursor.lastrowid
 
-    def _update_history(self, record_id, status, slave_ticket=None, error_message=""):
+    def _update_history(self, record_id, status, slave_ticket=None, error_message="", close_reason=""):
         if slave_ticket is not None:
             self.db.execute(
-                "UPDATE copytrade_history SET status=?, slave_ticket=?, error_message=? WHERE id=?",
-                (status, slave_ticket, error_message, record_id)
+                "UPDATE copytrade_history SET status=?, slave_ticket=?, error_message=?, close_reason=? WHERE id=?",
+                (status, slave_ticket, error_message, close_reason, record_id)
             )
         else:
             self.db.execute(
-                "UPDATE copytrade_history SET status=?, error_message=? WHERE id=?",
-                (status, error_message, record_id)
+                "UPDATE copytrade_history SET status=?, error_message=?, close_reason=? WHERE id=?",
+                (status, error_message, close_reason, record_id)
             )
         self.db.commit()
 
@@ -1041,7 +1047,7 @@ class CopyTradeManager(QObject):
             ).fetchall()
         columns = ["id", "timestamp", "master_broker", "master_ticket", "symbol",
                     "action", "master_lot", "slave_broker", "slave_ticket",
-                    "slave_lot", "status", "error_message"]
+                    "slave_lot", "status", "error_message", "close_reason"]
         return [dict(zip(columns, row)) for row in rows]
 
     def get_today_stats(self):

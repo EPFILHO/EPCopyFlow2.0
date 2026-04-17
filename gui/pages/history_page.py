@@ -48,10 +48,10 @@ class HistoryPage(QWidget):
 
         # Table
         self.table = QTableWidget()
-        self.table.setColumnCount(10)
+        self.table.setColumnCount(11)
         self.table.setHorizontalHeaderLabels([
             "Data/Hora", "Master", "Ticket M", "Simbolo", "Acao",
-            "Lote M", "Slave", "Ticket S", "Lote S", "Status"
+            "Lote M", "Slave", "Ticket S", "Lote S", "Status", "Motivo"
         ])
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.table.setAlternatingRowColors(True)
@@ -86,6 +86,13 @@ class HistoryPage(QWidget):
         for i, row in enumerate(filtered):
             ts_val = row.get("timestamp", 0)
             ts = datetime.fromtimestamp(ts_val).strftime("%Y-%m-%d %H:%M:%S") if ts_val else ""
+            close_reason = row.get("close_reason", "") or ""
+            motivo_labels = {
+                "COPYTRADE": "CopyTrade",
+                "BROKER_SLTP": "Broker SL/TP/SO",
+                "EMERGENCY": "Emergência",
+            }
+            motivo = motivo_labels.get(close_reason, close_reason)
             values = [
                 ts,                                  # Data/Hora
                 str(row.get("master_broker", "")),   # Master
@@ -97,6 +104,7 @@ class HistoryPage(QWidget):
                 str(row.get("slave_ticket", "")),    # Ticket S
                 str(row.get("slave_lot", "")),       # Lote S
                 str(row.get("status", "")),          # Status
+                motivo,                              # Motivo
             ]
             for j, val in enumerate(values):
                 item = QTableWidgetItem(val)
