@@ -106,6 +106,7 @@ class CopyTradeManager(QObject):
             ("direction", "ALTER TABLE open_positions ADD COLUMN direction TEXT DEFAULT 'BUY'"),
             ("sl", "ALTER TABLE open_positions ADD COLUMN sl REAL DEFAULT 0.0"),
             ("tp", "ALTER TABLE open_positions ADD COLUMN tp REAL DEFAULT 0.0"),
+            ("close_reason", "ALTER TABLE open_positions ADD COLUMN close_reason TEXT"),
         ]
         for col_name, sql in migrations:
             try:
@@ -776,13 +777,60 @@ class CopyTradeManager(QObject):
                 "action": trade_action, "lot": slave_lot
             })
         else:
-            error = response.get("message", "Erro desconhecido")
+            error = response.get("error_message", "") or response.get("message", "Erro desconhecido")
+
+            if trade_action == "CLOSE" and "não encontrada" in error.lower():
+                resolved = await self._verify_position_closed(slave_key, symbol, position_id)
+                if resolved:
+                    return
+
             self._update_history(record_id, "FAILED", 0, error)
             self.copy_trade_failed.emit({
                 "slave": slave_key, "symbol": symbol,
                 "action": trade_action, "error": error
             })
             logger.error(f"Falha ao replicar para {slave_key}: {error}")
+
+    # ── Verificação pós-falha ──
+
+    async def _verify_position_closed(self, slave_key: str, symbol: str, position_id: int) -> bool:
+        """
+        Quando CLOSE falha com 'Posição não encontrada', verifica via GET_POSITIONS
+        se a posição realmente não existe mais (SL/TP/SO do broker fechou antes).
+        Retorna True se resolvido (posição confirmada fechada), False se é erro real.
+        """
+        logger.info(f"    Verificando se {symbol} ainda existe em {slave_key} via GET_POSITIONS...")
+        req_id = f"verify_{slave_key}_{position_id}_{int(time.time())}"
+        pos_response = await self.tcp_router.send_command_to_broker(
+            slave_key, "GET_POSITIONS", {}, req_id
+        )
+
+        if pos_response.get("status") != "OK":
+            logger.warning(f"    GET_POSITIONS falhou para {slave_key}, mantendo erro original")
+            return False
+
+        positions_count = pos_response.get("positions_count", 0)
+        symbol_found = False
+        for i in range(positions_count):
+            prefix = f"pos_{i}_"
+            pos_symbol = pos_response.get(f"{prefix}symbol", "")
+            if pos_symbol == symbol:
+                symbol_found = True
+                break
+
+        if not symbol_found:
+            logger.info(f"    Confirmado: {symbol} não existe mais em {slave_key} (fechado por SL/TP/SO do broker)")
+            self._on_close_success(position_id, slave_key, close_reason="BROKER_SLTP")
+            self.copy_trade_log.emit(
+                f"CLOSE [{slave_key}]: {symbol} já fechado pelo broker (SL/TP/SO)"
+            )
+            return True
+        else:
+            logger.error(
+                f"    ERRO: {symbol} ainda existe em {slave_key} mas ticket não bateu! "
+                f"Possível ticket mismatch para pos_id={position_id}"
+            )
+            return False
 
     # ── Callbacks de sucesso — mantém DB e position_map sincronizados ──
 
@@ -814,19 +862,19 @@ class CopyTradeManager(QObject):
         self.db.commit()
         logger.debug(f"  ✅ Posição aberta: pos_id={position_id}, slave={slave_key}, slave_ticket={slave_ticket}, slave_lot={slave_lot}, dir={direction}")
 
-    def _on_close_success(self, position_id: int, slave_key: str):
+    def _on_close_success(self, position_id: int, slave_key: str, close_reason: str = "COPYTRADE"):
         """Fechamento total confirmado — marcar CLOSED, limpar position_map."""
         now = time.time()
         self.db.execute(
-            "UPDATE open_positions SET status = 'CLOSED', closed_at = ? WHERE master_ticket = ? AND slave_broker = ?",
-            (now, position_id, slave_key)
+            "UPDATE open_positions SET status = 'CLOSED', closed_at = ?, close_reason = ? WHERE master_ticket = ? AND slave_broker = ?",
+            (now, close_reason, position_id, slave_key)
         )
         self.db.commit()
         if position_id in self.position_map:
             self.position_map[position_id].pop(slave_key, None)
             if not self.position_map[position_id]:
                 del self.position_map[position_id]
-        logger.debug(f"  ✅ Posição FECHADA: pos_id={position_id}, slave={slave_key}")
+        logger.debug(f"  ✅ Posição FECHADA: pos_id={position_id}, slave={slave_key}, reason={close_reason}")
 
     def _on_add_success(self, position_id: int, slave_key: str, added_volume: float, master_volume: float):
         """ADD à posição confirmado — incrementar volumes no DB."""
@@ -924,7 +972,7 @@ class CopyTradeManager(QObject):
         # Marcar TODAS as posições como PANIC no DB (diferencia de CLOSED normal)
         now = time.time()
         self.db.execute(
-            "UPDATE open_positions SET status = 'PANIC', closed_at = ? WHERE status IN ('OPEN', 'SYNCING', 'CLOSING')",
+            "UPDATE open_positions SET status = 'PANIC', closed_at = ?, close_reason = 'EMERGENCY' WHERE status IN ('OPEN', 'SYNCING', 'CLOSING')",
             (now,)
         )
         self.db.commit()
