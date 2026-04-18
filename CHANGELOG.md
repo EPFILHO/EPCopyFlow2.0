@@ -20,6 +20,18 @@ Tipos de mudança:
 ### Changed
 - **EA renomeado**: `mt5_ea/ZmqTraderBridge.mq5` → `mt5_ea/EPCopyFlow2_EA.mq5` (nome antigo era legado da era ZMQ). Recompilar no MetaEditor para gerar `EPCopyFlow2_EA.ex5`
 
+## [0.1.1] — 2026-04-18
+
+### Fixed
+- **Risco do slave maior que o master em partial close** (#102): quando master reduzia para um resto que não dividia exatamente pelo `volume_step` do slave (ex: master SELL 0.10 → 0.01 com multiplier 0.5), o slave ficava com volume proporcionalmente maior que o master. Agora o cálculo usa **floor** para o step e, se o resultado ficar abaixo de `volume_min`, o slave fecha 100%. Garantia: risco relativo do slave ≤ risco relativo do master
+- **Reversão de posição não replicada** (#102): quando master invertia direção (ex: SELL 0.01 → BUY 0.11, reversão de 0.10), slave apenas fechava a posição existente sem abrir a oposta. Agora executa reversão em 2 passos (CLOSE + OPEN direção oposta), com volume do novo open = `floor(master_excess × multiplier)` respeitando volume_min/step. Se floor cair abaixo de volume_min, slave fica apenas fechado
+- **Histórico `PARTIAL_REVERSAL_FAILED`**: novo status para casos raros em que o passo 2 da reversão (open oposto) falha após o passo 1 (close) ter sucesso — permite diagnóstico
+
+### Changed
+- **`calculate_slave_lot`** agora aceita `specs` e retorna `0.0` quando o volume calculado fica abaixo de `volume_min` (antes: forçava para `volume_min`, gerando risco excessivo)
+- **`calculate_close_volume`** substitui `calculate_partial_close_lot`: retorna `(close_volume, is_full_close)` para que o chamador saiba se precisa emitir CLOSE total ou PARTIAL_CLOSE
+- Bump de versão: `0.1.0` → `0.1.1`
+
 ## [0.1.0] — 2026-04-18
 
 ### Added
@@ -67,6 +79,7 @@ Tipos de mudança:
 - Monitor de processo MT5 (detecta crash e reinicia)
 - Monitor de internet (detecta queda de conexão)
 
-[Unreleased]: https://github.com/EPFILHO/EPCopyFlow2.0/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/EPFILHO/EPCopyFlow2.0/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/EPFILHO/EPCopyFlow2.0/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/EPFILHO/EPCopyFlow2.0/compare/v0.0.1...v0.1.0
 [0.0.1]: https://github.com/EPFILHO/EPCopyFlow2.0/releases/tag/v0.0.1
