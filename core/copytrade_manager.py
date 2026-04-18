@@ -594,7 +594,7 @@ class CopyTradeManager(QObject):
             (position_id, slave_key)
         ).fetchone()
         if row:
-            return {"volume": row[0], "direction": row[1] or "BUY"}
+            return {"volume": round(row[0], 8), "direction": row[1] or "BUY"}
         return None
 
     def _get_slave_ticket(self, position_id: int, slave_key: str):

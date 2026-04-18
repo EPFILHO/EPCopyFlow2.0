@@ -17,6 +17,7 @@ from core.broker_manager import BrokerManager
 from core.tcp_router import TcpRouter
 from core.copytrade_manager import CopyTradeManager
 from core.mt5_process_monitor import MT5ProcessMonitor
+from core.version import __version__
 from gui.main_window import MainWindow
 from gui import themes
 import os
@@ -169,7 +170,7 @@ async def show_splash_async(duration):
     subtitle_label.setAlignment(Qt.AlignCenter)
     layout.addWidget(subtitle_label, 0, Qt.AlignCenter)
 
-    version_label = QLabel("v0.0.1")
+    version_label = QLabel(f"v{__version__}")
     version_label.setFont(QFont("Arial", 10))
     version_label.setStyleSheet(s["version"])
     version_label.setAlignment(Qt.AlignCenter)
