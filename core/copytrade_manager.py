@@ -431,9 +431,11 @@ class CopyTradeManager(QObject):
             logger.error(f"  ❌ TRADE_EVENT sem position_id! EA pode estar desatualizado. deal={deal_ticket}")
             return
 
-        # Dedup: OnTrade() e OnTradeTransaction() podem emitir para o mesmo trade
+        # Dedup: OnTrade() e OnTradeTransaction() podem emitir para o mesmo trade.
+        # order_type no key evita falso positivo se o trader reverter no mesmo segundo
+        # (ex: BUY 10 seguido de SELL 10 — order_type 0 vs 1).
         timestamp_mql = trade_event.get("timestamp_mql", 0)
-        dedup_key = (position_id, timestamp_mql)
+        dedup_key = (position_id, timestamp_mql, order_type)
         now = time.time()
         if dedup_key in self._master_event_dedup:
             logger.debug(f"  Evento duplicado ignorado: pos_id={position_id}, ts_mql={timestamp_mql}, action={trade_action}")
