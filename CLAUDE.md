@@ -32,7 +32,7 @@ Decisão de design: **apenas modo NETTING** (uma posição por símbolo). HEDGE 
             │
 ┌───────────▼─────────────┐
 │  MT5 EA (MQL5)          │  ← uma instância por corretora
-│  ZmqTraderBridge.mq5    │     (master ou slave)
+│  EPCopyFlow2_EA.mq5     │     (master ou slave)
 │  • Socket cliente TCP   │
 │  • OnTrade/OnTradeTrans │
 └─────────────────────────┘
@@ -65,7 +65,7 @@ gui/
   widgets/               # broker_card, notification_center, etc
 
 mt5_ea/
-  ZmqTraderBridge.mq5    # EA único usado por master e slave
+  EPCopyFlow2_EA.mq5     # EA único usado por master e slave
 
 main.py                  # ponto de entrada (QtAsyncio)
 config.ini               # timeouts, intervalos, magic number, paths
@@ -123,7 +123,7 @@ correspondente no `CHANGELOG.md` (seção `[Unreleased]`).
 - SQLite direto via `self.db.execute(...)` (sem ORM)
 
 ### EA (MQL5)
-- Arquivo único: `mt5_ea/ZmqTraderBridge.mq5`
+- Arquivo único: `mt5_ea/EPCopyFlow2_EA.mq5`
 - Mesmo EA roda em master e slave (role definida pelo Python via `SET_ROLE`)
 - **Recompilar no MetaEditor** após alterar — não há build automático
 

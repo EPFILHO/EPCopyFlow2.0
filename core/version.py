@@ -6,4 +6,4 @@
 #   MINOR: features novas (backward-compatible)
 #   PATCH: bugfixes (backward-compatible)
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"

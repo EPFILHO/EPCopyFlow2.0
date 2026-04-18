@@ -5,6 +5,7 @@
 
 import sqlite3
 import time
+import math
 import logging
 import asyncio
 import hashlib
@@ -240,12 +241,47 @@ class CopyTradeManager(QObject):
         logger.info(f"▶️ CopyTrade REATIVADO para {slave_key}")
 
     # ──────────────────────────────────────────────
-    # Bloco 2 - Cálculo de Lotes
+    # Bloco 2 - Cálculo de Lotes (risk-conservative)
     # ──────────────────────────────────────────────
-    def calculate_slave_lot(self, master_lot: float, multiplier: float) -> float:
-        """Calcula lote do slave. Arredonda para 2 casas decimais, mínimo 0.01."""
-        lot = round(master_lot * multiplier, 2)
-        return max(lot, 0.01)
+    # Princípio: o risco relativo do slave nunca deve exceder o do master.
+    # Sempre arredondamos para BAIXO ao step do símbolo. Se o resultado fica
+    # abaixo do volume_min, o slave não entra / fecha tudo.
+    #
+    # Volumes vindos de aritmética float (multiplier * volume, ratio * volume)
+    # podem ter ruído tipo 0.015000000000000002. O floor_to_step usa epsilon
+    # pequeno para evitar que um valor "grudado" na borda caia um step a menos.
+
+    @staticmethod
+    def _floor_to_step(volume: float, step: float) -> float:
+        """Arredonda volume para BAIXO ao múltiplo de step mais próximo."""
+        if step <= 0:
+            step = 0.01
+        steps = math.floor(volume / step + 1e-9)
+        return round(steps * step, 8)
+
+    def calculate_slave_lot(self, master_lot: float, multiplier: float,
+                            specs: dict = None) -> float:
+        """
+        Calcula lote do slave arredondando para BAIXO ao volume_step do símbolo.
+        Retorna 0.0 se o resultado ficar abaixo de volume_min — chamador deve
+        tratar como "slave não entra".
+        """
+        raw = master_lot * multiplier
+        if not specs:
+            # Fallback: step 0.01, min 0.01 (padrão FX)
+            lot = self._floor_to_step(raw, 0.01)
+            return lot if lot >= 0.01 else 0.0
+
+        step = specs.get("volume_step", 0.01) or 0.01
+        vol_min = specs.get("volume_min", 0.01)
+        vol_max = specs.get("volume_max", 100.0)
+
+        lot = self._floor_to_step(raw, step)
+        if lot < vol_min:
+            return 0.0
+        if lot > vol_max:
+            lot = self._floor_to_step(vol_max, step)
+        return lot
 
     async def _fetch_symbol_specs(self, broker_key: str, symbol: str) -> dict:
         """
@@ -279,57 +315,61 @@ class CopyTradeManager(QObject):
             logger.error(f"  Erro ao buscar symbol specs de {symbol}@{broker_key}: {e}")
             return None
 
-    def normalize_volume(self, volume: float, specs: dict, force_min: bool = False) -> float:
+    def normalize_volume(self, volume: float, specs: dict) -> float:
         """
-        Normaliza volume de acordo com as especificações do símbolo.
-        - Arredonda para o VOLUME_STEP mais próximo
-        - Garante >= VOLUME_MIN e <= VOLUME_MAX
-        - force_min=True (para PARTIAL_CLOSE): arredonda para CIMA ao step mais próximo,
-          e se < VOLUME_MIN usa VOLUME_MIN. Parciais DEVEM acontecer.
-        - force_min=False (para BUY/SELL): arredonda para BAIXO, retorna 0 se < VOLUME_MIN.
+        Normaliza volume para abertura/ADD: floor ao step, respeitando min/max.
+        Retorna 0.0 se ficar abaixo de volume_min — chamador trata como "não abre".
         """
-        step = specs.get("volume_step", 0.01)
+        if not specs:
+            specs = {}
+        step = specs.get("volume_step", 0.01) or 0.01
         vol_min = specs.get("volume_min", 0.01)
         vol_max = specs.get("volume_max", 100.0)
 
-        if step <= 0:
-            step = 0.01
-
-        if force_min:
-            # PARTIAL_CLOSE: arredondar para o mais próximo (round), mínimo = vol_min
-            steps_count = round(volume / step)  # round normal (0.5 → 1)
-            normalized = round(steps_count * step, 8)
-            if normalized < vol_min:
-                normalized = vol_min
-                logger.info(f"    📐 Parcial forçado ao mínimo: {volume} → {normalized}")
-        else:
-            # BUY/SELL: arredondar para baixo (floor)
-            steps_count = int(volume / step)
-            normalized = round(steps_count * step, 8)
-            if normalized < vol_min:
-                logger.warning(f"    ⚠️ Volume {volume} → normalizado {normalized} < mínimo {vol_min}. Operação cancelada.")
-                return 0.0
-
-        # Verificar máximo
+        normalized = self._floor_to_step(volume, step)
+        if normalized < vol_min:
+            logger.warning(f"    ⚠️ Volume {volume} → floor {normalized} < mínimo {vol_min}. Operação cancelada.")
+            return 0.0
         if normalized > vol_max:
-            normalized = round(int(vol_max / step) * step, 8)
+            normalized = self._floor_to_step(vol_max, step)
             logger.warning(f"    ⚠️ Volume {volume} excede máximo. Limitado a {normalized}")
-
         return normalized
 
-    def calculate_partial_close_lot(self, master_current_before: float, master_partial: float,
-                                     slave_current: float) -> float:
+    def calculate_close_volume(self, master_remaining: float, master_before: float,
+                                slave_current: float, specs: dict) -> tuple[float, bool]:
         """
-        Fechamento parcial proporcional baseado no volume ATUAL (não original).
-        master_current_before: volume do master ANTES deste fechamento parcial
-        master_partial: volume que o master está fechando agora
-        slave_current: volume atual do slave
+        Calcula quanto do slave deve ser fechado em uma redução parcial do master,
+        garantindo que o risco relativo do slave fique <= ao do master.
+
+        Retorna (close_volume, is_full_close).
+        - Calcula o volume IDEAL que deve SOBRAR no slave (floor ao step).
+        - Se esse ideal ficar abaixo de volume_min, fecha TUDO.
+        - Senão, fecha a diferença (slave_current - slave_remaining_ideal).
+
+        Exemplo: master 0.10 fechando 0.09 (sobra 0.01 = 10%), slave tem 0.05,
+        step=0.01, min=0.01. slave_ideal = floor(0.05 * 0.10/0.10) = 0.005 < 0.01
+        → fecha tudo (0.05).
         """
-        if master_current_before <= 0:
-            return max(round(slave_current, 2), 0.01)
-        ratio = master_partial / master_current_before
-        lot = round(slave_current * ratio, 2)
-        return max(lot, 0.01)
+        step = specs.get("volume_step", 0.01) if specs else 0.01
+        vol_min = specs.get("volume_min", 0.01) if specs else 0.01
+
+        if master_before <= 0 or slave_current <= 0:
+            return slave_current, True
+
+        ratio = max(master_remaining, 0.0) / master_before
+        slave_remaining_ideal = self._floor_to_step(slave_current * ratio, step)
+
+        if slave_remaining_ideal < vol_min:
+            return slave_current, True
+
+        close_volume = round(slave_current - slave_remaining_ideal, 8)
+        close_volume = self._floor_to_step(close_volume, step)
+        if close_volume < vol_min:
+            # Redução tão pequena que não cabe no step — fecha tudo para não
+            # deixar slave mais arriscado (alternativa seria ignorar, mas aí
+            # o risco relativo cresce)
+            return slave_current, True
+        return close_volume, False
 
     # ──────────────────────────────────────────────
     # Bloco 3 - Processamento de Trade Events do Master
@@ -578,23 +618,20 @@ class CopyTradeManager(QObject):
             self.db.commit()
             logger.debug(f"  📝 Fechamento parcial master: position_id={position_id}, vol_fechado={volume}")
 
-    def _normalize_and_cap(self, volume: float, slave_vol: float, symbol_specs: dict, force_min: bool = True) -> float:
-        """Normaliza volume por specs do símbolo E limita ao que o slave tem (sell-through cap)."""
-        if symbol_specs:
-            volume = self.normalize_volume(volume, symbol_specs, force_min=force_min)
-        if volume > slave_vol:
-            logger.warning(f"    ⚠️ SELL-THROUGH CAP: {volume} > slave_vol={slave_vol}. Limitando a {slave_vol}")
-            volume = slave_vol
-        return volume
-
     def _get_slave_position_info(self, position_id: int, slave_key: str) -> dict:
-        """Retorna info da posição do slave: {volume, direction}. None se não encontrado."""
+        """Retorna info da posição do slave: {volume, direction, master_volume}. None se não encontrado."""
         row = self.db.execute(
-            "SELECT slave_volume_current, direction FROM open_positions WHERE master_ticket = ? AND slave_broker = ? AND status IN ('OPEN', 'CLOSING')",
+            """SELECT slave_volume_current, direction, master_volume_current
+               FROM open_positions
+               WHERE master_ticket = ? AND slave_broker = ? AND status IN ('OPEN', 'CLOSING')""",
             (position_id, slave_key)
         ).fetchone()
         if row:
-            return {"volume": round(row[0], 8), "direction": row[1] or "BUY"}
+            return {
+                "volume": round(row[0], 8),
+                "direction": row[1] or "BUY",
+                "master_volume": round(row[2], 8) if row[2] is not None else 0.0,
+            }
         return None
 
     def _get_slave_ticket(self, position_id: int, slave_key: str):
@@ -617,138 +654,203 @@ class CopyTradeManager(QObject):
         """
         Envia comando de trade para um slave específico (NETTING mode).
 
-        PADRÃO OURO NETTING: Só usa 3 comandos do EA:
+        Princípios:
+          - Risco do slave NUNCA excede o do master (arredondamento conservador).
+          - Redução proporcional: slave mantém no máximo (master_remaining/master_before)
+            × slave_current, com floor ao volume_step. Se o restante ideal < volume_min,
+            fecha tudo.
+          - Reversal: se master inverte direção em volume > master_prev_vol, slave
+            fecha existente e abre nova na direção oposta com floor do excess.
+
+        Comandos do EA usados (NETTING):
           - TRADE_ORDER_TYPE_BUY  → abre/adiciona long ou reduz short
           - TRADE_ORDER_TYPE_SELL → abre/adiciona short ou reduz long
           - TRADE_POSITION_CLOSE_ID → fecha posição inteira por ticket
-
-        NÃO usa TRADE_POSITION_PARTIAL (bugado no CTrade MQL5).
-        PARTIAL_CLOSE é convertido em SELL/BUY com volume proporcional.
         """
         logger.info(f"  ➜ _replicate_to_slave: slave={slave_key}, action={trade_action}, symbol={symbol}, pos_id={position_id}")
 
-        # Buscar specs do símbolo para validação de volume (cacheado)
         symbol_specs = await self._fetch_symbol_specs(slave_key, symbol)
         multiplier = self.broker_manager.get_lot_multiplier(slave_key)
 
-        # Estado da posição (usado nos callbacks de sucesso)
-        is_add = False
-        is_reduce = False
-
-        # Verificar se slave já tem posição aberta para este position_id
         pos_info = self._get_slave_position_info(position_id, slave_key)
         has_open_position = pos_info is not None and pos_info["volume"] > 0
-        existing_slave_vol = pos_info["volume"] if pos_info else None
+        existing_slave_vol = pos_info["volume"] if pos_info else 0.0
         existing_direction = pos_info["direction"] if pos_info else None
+        master_prev_vol = pos_info["master_volume"] if pos_info else 0.0
 
         # ── CLOSE TOTAL ──
         if trade_action == "CLOSE":
-            slave_ticket = self._get_slave_ticket(position_id, slave_key)
-            if not slave_ticket or not has_open_position:
-                reason = "slave sem posição aberta" if not has_open_position else "sem mapeamento ticket"
-                logger.warning(f"    ⚠️ CLOSE ignorado: {reason} (pos_id={position_id}, slave={slave_key})")
-                self._insert_history(master_broker, deal_ticket, symbol, trade_action,
-                                     volume, slave_key, 0, 0, "SKIPPED", reason)
-                return
+            await self._replicate_close(slave_key, master_broker, deal_ticket, position_id,
+                                         symbol, volume, has_open_position, existing_slave_vol)
+            return
 
-            command = "TRADE_POSITION_CLOSE_ID"
-            payload = {"ticket": slave_ticket}
-            slave_lot = existing_slave_vol
-            logger.info(f"    CLOSE total: slave_ticket={slave_ticket}, slave_vol={existing_slave_vol}")
-
-        # ── PARTIAL_CLOSE (convertido para SELL/BUY em NETTING) ──
-        elif trade_action == "PARTIAL_CLOSE":
+        # ── PARTIAL_CLOSE (classificado pelo EA via position_volume_remaining) ──
+        if trade_action == "PARTIAL_CLOSE":
             if not has_open_position:
-                logger.warning(f"    ⚠️ PARTIAL_CLOSE ignorado: slave sem posição aberta (pos_id={position_id}, slave={slave_key})")
+                logger.warning(f"    ⚠️ PARTIAL_CLOSE ignorado: slave sem posição aberta (pos_id={position_id})")
                 self._insert_history(master_broker, deal_ticket, symbol, trade_action,
                                      volume, slave_key, 0, 0, "SKIPPED", "slave sem posição aberta")
                 return
 
-            # Calcular volume proporcional
-            # master_volume_current já decrementado em _track_master_position → compensar
-            row = self.db.execute(
-                "SELECT master_volume_current, slave_volume_current FROM open_positions WHERE master_ticket = ? AND slave_broker = ? AND status = 'OPEN'",
-                (position_id, slave_key)
-            ).fetchone()
+            # master_volume_current já foi decrementado em _track_master_position.
+            # O `volume` do evento é quanto o master fechou agora.
+            master_remaining = master_prev_vol  # já decrementado
+            master_before = master_remaining + volume
 
-            if row and row[1] > 0:
-                master_current_before = row[0] + volume
-                slave_lot = self.calculate_partial_close_lot(master_current_before, volume, row[1])
-            else:
-                slave_lot = self.calculate_slave_lot(volume, multiplier)
+            close_vol, is_full_close = self.calculate_close_volume(
+                master_remaining, master_before, existing_slave_vol, symbol_specs
+            )
+            logger.info(f"    PARTIAL_CLOSE: master {master_before}→{master_remaining}, "
+                        f"slave {existing_slave_vol} → fecha {close_vol} "
+                        f"({'total' if is_full_close else 'parcial'})")
 
-            # Normalizar + cap sell-through
-            slave_lot = self._normalize_and_cap(slave_lot, existing_slave_vol, symbol_specs, force_min=True)
-            if slave_lot <= 0:
-                logger.warning(f"    ⚠️ PARTIAL_CLOSE ignorado: volume normalizado <= 0 (pos_id={position_id})")
-                self._insert_history(master_broker, deal_ticket, symbol, trade_action,
-                                     volume, slave_key, 0, 0, "SKIPPED", "volume=0 após normalização")
-                return
+            # Direção do comando: oposta da posição do slave
+            close_direction = "BUY" if existing_direction == "SELL" else "SELL"
+            await self._send_reduce_command(
+                slave_key, master_broker, deal_ticket, position_id, symbol,
+                volume, close_vol, close_direction, existing_slave_vol, is_full_close, "PARTIAL_CLOSE"
+            )
+            return
 
-            # NETTING: usar SELL/BUY em vez de TRADE_POSITION_PARTIAL
-            # order_type do master: 0=BUY, 1=SELL — copiar direção
-            command = "TRADE_ORDER_TYPE_SELL" if order_type == 1 else "TRADE_ORDER_TYPE_BUY"
-            payload = {
-                "symbol": symbol, "volume": float(slave_lot),
-                "price": price, "sl": 0.0, "tp": 0.0,
-                "deviation": 10, "comment": f"CT:{position_id}"
-            }
-            logger.info(f"    PARTIAL_CLOSE→{command}: vol={slave_lot} (slave_vol={existing_slave_vol})")
-
-        # ── BUY/SELL (abertura, ADD ou REDUCE em NETTING) ──
-        elif trade_action in ("BUY", "SELL"):
-            slave_lot = self.calculate_slave_lot(volume, multiplier)
-
-            if has_open_position:
-                is_same_direction = (trade_action == existing_direction)
-                if is_same_direction:
-                    # ADD: BUY sobre BUY, ou SELL sobre SELL → aumentar posição
-                    is_add = True
-                    logger.info(f"    📊 NETTING ADD: slave tem {existing_slave_vol} {existing_direction}, adicionando {trade_action} {volume}")
-                    if symbol_specs:
-                        slave_lot = self.normalize_volume(slave_lot, symbol_specs, force_min=False)
-                    if slave_lot <= 0:
-                        logger.warning(f"    ❌ ADD ignorado: volume inválido para {symbol}")
-                        self._insert_history(master_broker, deal_ticket, symbol, trade_action,
-                                             volume, slave_key, 0, 0, "SKIPPED", "volume < mínimo do símbolo")
-                        return
-                else:
-                    # REDUCE: SELL sobre BUY, ou BUY sobre SELL → reduzir posição
-                    is_reduce = True
-                    logger.info(f"    📊 NETTING REDUCE: slave tem {existing_slave_vol} {existing_direction}, reduzindo com {trade_action} {volume}")
-                    slave_lot = self._normalize_and_cap(slave_lot, existing_slave_vol, symbol_specs, force_min=True)
-                    if slave_lot <= 0:
-                        logger.warning(f"    ⚠️ NETTING REDUCE ignorado: volume=0 após normalização")
-                        self._insert_history(master_broker, deal_ticket, symbol, trade_action,
-                                             volume, slave_key, 0, 0, "SKIPPED", "volume=0 após normalização")
-                        return
-            else:
-                # Abertura nova
-                if symbol_specs:
-                    slave_lot = self.normalize_volume(slave_lot, symbol_specs, force_min=False)
-                if slave_lot <= 0:
-                    logger.warning(f"    ❌ Volume inválido para {symbol}. Operação cancelada.")
-                    self._insert_history(master_broker, deal_ticket, symbol, trade_action,
-                                         volume, slave_key, 0, 0, "SKIPPED", "volume < mínimo do símbolo")
-                    return
-
-            command = "TRADE_ORDER_TYPE_BUY" if trade_action == "BUY" else "TRADE_ORDER_TYPE_SELL"
-            payload = {
-                "symbol": symbol, "volume": float(slave_lot),
-                "price": price, "sl": sl, "tp": tp,
-                "deviation": 10, "comment": f"CT:{position_id}"
-            }
-
-        else:
+        # ── BUY/SELL (abertura, ADD, REDUCE ou REVERSAL em NETTING) ──
+        if trade_action not in ("BUY", "SELL"):
             logger.warning(f"Ação não suportada: {trade_action}")
             return
 
-        # ── Registrar PENDING e enviar ──
-        record_id = self._insert_history(
-            master_broker, deal_ticket, symbol, trade_action,
-            volume, slave_key, 0, slave_lot, "PENDING"
+        if not has_open_position:
+            # Abertura nova (floor ao step via calculate_slave_lot)
+            slave_lot = self.calculate_slave_lot(volume, multiplier, symbol_specs)
+            if slave_lot <= 0:
+                logger.warning(f"    ❌ Slave não entra: {volume} × {multiplier} abaixo do volume_min")
+                self._insert_history(master_broker, deal_ticket, symbol, trade_action,
+                                     volume, slave_key, 0, 0, "SKIPPED", "volume < mínimo do símbolo")
+                return
+            await self._send_open_command(
+                slave_key, master_broker, deal_ticket, position_id, symbol,
+                volume, slave_lot, trade_action, price, sl, tp
+            )
+            return
+
+        # Slave já tem posição — decidir ADD, REDUCE ou REVERSAL
+        if trade_action == existing_direction:
+            # ADD: mesma direção → aumentar
+            slave_lot = self.calculate_slave_lot(volume, multiplier, symbol_specs)
+            if slave_lot <= 0:
+                logger.warning(f"    ⚠️ ADD ignorado: volume {volume} × {multiplier} abaixo do volume_min")
+                self._insert_history(master_broker, deal_ticket, symbol, trade_action,
+                                     volume, slave_key, 0, 0, "SKIPPED", "volume < mínimo do símbolo")
+                return
+            logger.info(f"    📊 ADD: slave {existing_slave_vol} {existing_direction} += {slave_lot} (master +{volume})")
+            await self._send_add_command(
+                slave_key, master_broker, deal_ticket, position_id, symbol,
+                volume, slave_lot, trade_action, existing_slave_vol, price, sl, tp
+            )
+            return
+
+        # Direção oposta: é REVERSAL se volume > master_prev_vol, senão REDUCE puro
+        is_reversal = volume > master_prev_vol + 1e-9 and master_prev_vol > 0
+
+        if is_reversal:
+            master_excess = round(volume - master_prev_vol, 8)
+            logger.info(f"    🔄 REVERSAL detectado: master {master_prev_vol} {existing_direction}"
+                        f" → {volume} {trade_action} (excess={master_excess})")
+            await self._execute_reversal(
+                slave_key, master_broker, deal_ticket, position_id, symbol,
+                volume, trade_action, master_excess, multiplier,
+                existing_slave_vol, symbol_specs, sl, tp
+            )
+            return
+
+        # REDUCE puro (master está parcialmente fechando via ordem oposta sem inverter)
+        master_remaining = master_prev_vol - volume
+        if master_remaining < 0:
+            master_remaining = 0.0
+        close_vol, is_full_close = self.calculate_close_volume(
+            master_prev_vol - volume, master_prev_vol, existing_slave_vol, symbol_specs
         )
-        log_msg = f"COPY [{slave_key}]: {trade_action} {symbol} {slave_lot} lotes"
+        logger.info(f"    📊 REDUCE: master {master_prev_vol}→{master_remaining}, "
+                    f"slave {existing_slave_vol} → fecha {close_vol} "
+                    f"({'total' if is_full_close else 'parcial'})")
+        await self._send_reduce_command(
+            slave_key, master_broker, deal_ticket, position_id, symbol,
+            volume, close_vol, trade_action, existing_slave_vol, is_full_close, "REDUCE"
+        )
+
+    # ── Helpers de execução (sub-operações de _replicate_to_slave) ──
+
+    async def _replicate_close(self, slave_key, master_broker, deal_ticket, position_id,
+                                symbol, volume, has_open_position, existing_slave_vol):
+        slave_ticket = self._get_slave_ticket(position_id, slave_key)
+        if not slave_ticket or not has_open_position:
+            reason = "slave sem posição aberta" if not has_open_position else "sem mapeamento ticket"
+            logger.warning(f"    ⚠️ CLOSE ignorado: {reason} (pos_id={position_id})")
+            self._insert_history(master_broker, deal_ticket, symbol, "CLOSE",
+                                 volume, slave_key, 0, 0, "SKIPPED", reason)
+            return
+
+        record_id = self._insert_history(master_broker, deal_ticket, symbol, "CLOSE",
+                                          volume, slave_key, 0, existing_slave_vol, "PENDING")
+        log_msg = f"COPY [{slave_key}]: CLOSE {symbol} {existing_slave_vol} lotes"
+        self.copy_trade_log.emit(log_msg)
+        logger.info(f"    {log_msg} → TRADE_POSITION_CLOSE_ID (ticket={slave_ticket})")
+
+        request_id = f"trade_{slave_key}_{int(time.time())}"
+        response = await self.tcp_router.send_command_to_broker(
+            slave_key, "TRADE_POSITION_CLOSE_ID", {"ticket": slave_ticket}, request_id
+        )
+        logger.info(f"    Resposta: {response}")
+
+        if response.get("status") == "OK":
+            slave_result_ticket = response.get("order", 0) or response.get("deal", 0)
+            self._update_history(record_id, "SUCCESS", slave_result_ticket, close_reason="COPYTRADE")
+            self._on_close_success(position_id, slave_key)
+            self.copy_trade_executed.emit({"slave": slave_key, "symbol": symbol,
+                                            "action": "CLOSE", "lot": existing_slave_vol})
+            return
+
+        error = response.get("error_message", "") or response.get("message", "Erro desconhecido")
+        if "não encontrada" in error.lower():
+            resolved = await self._verify_position_closed(slave_key, symbol, position_id)
+            if resolved:
+                self._update_history(record_id, "SUCCESS", 0,
+                                     "Posição já fechada pelo broker (SL/TP/SO)",
+                                     close_reason="BROKER_SLTP")
+                return
+
+        self._update_history(record_id, "FAILED", 0, error)
+        self.copy_trade_failed.emit({"slave": slave_key, "symbol": symbol,
+                                      "action": "CLOSE", "error": error})
+        logger.error(f"Falha ao replicar CLOSE para {slave_key}: {error}")
+
+    async def _send_reduce_command(self, slave_key, master_broker, deal_ticket, position_id,
+                                    symbol, master_volume, close_vol, close_direction,
+                                    existing_slave_vol, is_full_close, action_label):
+        """Envia redução (PARTIAL_CLOSE ou REDUCE). Se is_full_close, usa CLOSE_ID;
+        senão envia ordem oposta com volume parcial."""
+        if close_vol <= 0:
+            logger.warning(f"    ⚠️ {action_label} sem efeito: close_vol=0")
+            self._insert_history(master_broker, deal_ticket, symbol, action_label,
+                                 master_volume, slave_key, 0, 0, "SKIPPED", "volume=0")
+            return
+
+        if is_full_close:
+            slave_ticket = self._get_slave_ticket(position_id, slave_key)
+            if not slave_ticket:
+                logger.warning(f"    ⚠️ {action_label}: sem slave_ticket, pulando")
+                self._insert_history(master_broker, deal_ticket, symbol, action_label,
+                                     master_volume, slave_key, 0, 0, "SKIPPED", "sem ticket")
+                return
+            command = "TRADE_POSITION_CLOSE_ID"
+            payload = {"ticket": slave_ticket}
+        else:
+            command = f"TRADE_ORDER_TYPE_{close_direction}"
+            payload = {"symbol": symbol, "volume": float(close_vol),
+                       "price": 0.0, "sl": 0.0, "tp": 0.0,
+                       "deviation": 10, "comment": f"CT:{position_id}"}
+
+        record_id = self._insert_history(master_broker, deal_ticket, symbol, action_label,
+                                          master_volume, slave_key, 0, close_vol, "PENDING")
+        log_msg = f"COPY [{slave_key}]: {action_label} {symbol} {close_vol} lotes"
         self.copy_trade_log.emit(log_msg)
         logger.info(f"    {log_msg} → {command}")
 
@@ -758,56 +860,179 @@ class CopyTradeManager(QObject):
         )
         logger.info(f"    Resposta: {response}")
 
-        # ── Processar resultado ──
         if response.get("status") == "OK":
             slave_result_ticket = response.get("order", 0) or response.get("deal", 0)
-
-            if trade_action == "CLOSE":
-                self._update_history(record_id, "SUCCESS", slave_result_ticket, close_reason="COPYTRADE")
+            self._update_history(record_id, "SUCCESS", slave_result_ticket)
+            if is_full_close:
                 self._on_close_success(position_id, slave_key)
-
-            elif trade_action == "PARTIAL_CLOSE" or (trade_action in ("BUY", "SELL") and is_reduce):
-                # Redução de posição (PARTIAL_CLOSE ou NETTING REDUCE)
-                self._update_history(record_id, "SUCCESS", slave_result_ticket)
-                closed_vol = response.get("volume", slave_lot)
-                if closed_vol >= existing_slave_vol:
-                    logger.info(f"    📊 Redução → CLOSE total (slave_vol={existing_slave_vol}, closed={closed_vol})")
-                    self._on_close_success(position_id, slave_key)
-                else:
-                    logger.info(f"    📊 Redução → PARTIAL (slave_vol={existing_slave_vol}, closed={closed_vol})")
-                    self._on_partial_close_success(position_id, slave_key, closed_vol)
-
-            elif trade_action in ("BUY", "SELL") and is_add:
-                # ADD à posição existente (NETTING)
-                self._update_history(record_id, "SUCCESS", slave_result_ticket)
-                added_vol = response.get("volume", slave_lot)
-                logger.info(f"    📊 ADD ok: +{added_vol} lotes (slave_vol: {existing_slave_vol} → {existing_slave_vol + added_vol})")
-                self._on_add_success(position_id, slave_key, added_vol, volume)
-
             else:
-                # Abertura nova
-                self._update_history(record_id, "SUCCESS", slave_result_ticket)
-                self._on_open_success(position_id, slave_key, slave_result_ticket, slave_lot, symbol, volume, direction=trade_action)
+                closed_vol = response.get("volume", close_vol)
+                self._on_partial_close_success(position_id, slave_key, closed_vol)
+            self.copy_trade_executed.emit({"slave": slave_key, "symbol": symbol,
+                                            "action": action_label, "lot": close_vol})
+            return
 
-            self.copy_trade_executed.emit({
-                "slave": slave_key, "symbol": symbol,
-                "action": trade_action, "lot": slave_lot
-            })
-        else:
-            error = response.get("error_message", "") or response.get("message", "Erro desconhecido")
+        error = response.get("error_message", "") or response.get("message", "Erro desconhecido")
+        self._update_history(record_id, "FAILED", 0, error)
+        self.copy_trade_failed.emit({"slave": slave_key, "symbol": symbol,
+                                      "action": action_label, "error": error})
+        logger.error(f"Falha ao replicar {action_label} para {slave_key}: {error}")
 
-            if trade_action == "CLOSE" and "não encontrada" in error.lower():
-                resolved = await self._verify_position_closed(slave_key, symbol, position_id)
-                if resolved:
-                    self._update_history(record_id, "SUCCESS", 0, "Posição já fechada pelo broker (SL/TP/SO)", close_reason="BROKER_SLTP")
-                    return
+    async def _send_open_command(self, slave_key, master_broker, deal_ticket, position_id,
+                                  symbol, master_volume, slave_lot, direction,
+                                  price, sl, tp):
+        command = f"TRADE_ORDER_TYPE_{direction}"
+        payload = {"symbol": symbol, "volume": float(slave_lot),
+                   "price": price, "sl": sl, "tp": tp,
+                   "deviation": 10, "comment": f"CT:{position_id}"}
+        record_id = self._insert_history(master_broker, deal_ticket, symbol, direction,
+                                          master_volume, slave_key, 0, slave_lot, "PENDING")
+        log_msg = f"COPY [{slave_key}]: {direction} {symbol} {slave_lot} lotes"
+        self.copy_trade_log.emit(log_msg)
+        logger.info(f"    {log_msg} → {command}")
 
-            self._update_history(record_id, "FAILED", 0, error)
-            self.copy_trade_failed.emit({
-                "slave": slave_key, "symbol": symbol,
-                "action": trade_action, "error": error
-            })
-            logger.error(f"Falha ao replicar para {slave_key}: {error}")
+        request_id = f"trade_{slave_key}_{int(time.time())}"
+        response = await self.tcp_router.send_command_to_broker(
+            slave_key, command, payload, request_id
+        )
+        logger.info(f"    Resposta: {response}")
+
+        if response.get("status") == "OK":
+            slave_result_ticket = response.get("order", 0) or response.get("deal", 0)
+            self._update_history(record_id, "SUCCESS", slave_result_ticket)
+            self._on_open_success(position_id, slave_key, slave_result_ticket,
+                                   slave_lot, symbol, master_volume, direction=direction)
+            self.copy_trade_executed.emit({"slave": slave_key, "symbol": symbol,
+                                            "action": direction, "lot": slave_lot})
+            return
+
+        error = response.get("error_message", "") or response.get("message", "Erro desconhecido")
+        self._update_history(record_id, "FAILED", 0, error)
+        self.copy_trade_failed.emit({"slave": slave_key, "symbol": symbol,
+                                      "action": direction, "error": error})
+        logger.error(f"Falha ao abrir para {slave_key}: {error}")
+
+    async def _send_add_command(self, slave_key, master_broker, deal_ticket, position_id,
+                                 symbol, master_volume, slave_lot, direction,
+                                 existing_slave_vol, price, sl, tp):
+        command = f"TRADE_ORDER_TYPE_{direction}"
+        payload = {"symbol": symbol, "volume": float(slave_lot),
+                   "price": price, "sl": sl, "tp": tp,
+                   "deviation": 10, "comment": f"CT:{position_id}"}
+        record_id = self._insert_history(master_broker, deal_ticket, symbol, direction,
+                                          master_volume, slave_key, 0, slave_lot, "PENDING")
+        log_msg = f"COPY [{slave_key}]: ADD {direction} {symbol} {slave_lot} lotes"
+        self.copy_trade_log.emit(log_msg)
+        logger.info(f"    {log_msg} → {command}")
+
+        request_id = f"trade_{slave_key}_{int(time.time())}"
+        response = await self.tcp_router.send_command_to_broker(
+            slave_key, command, payload, request_id
+        )
+        logger.info(f"    Resposta: {response}")
+
+        if response.get("status") == "OK":
+            slave_result_ticket = response.get("order", 0) or response.get("deal", 0)
+            self._update_history(record_id, "SUCCESS", slave_result_ticket)
+            added_vol = response.get("volume", slave_lot)
+            self._on_add_success(position_id, slave_key, added_vol, master_volume)
+            logger.info(f"    📊 ADD ok: +{added_vol} (slave: {existing_slave_vol} → {existing_slave_vol + added_vol})")
+            self.copy_trade_executed.emit({"slave": slave_key, "symbol": symbol,
+                                            "action": direction, "lot": slave_lot})
+            return
+
+        error = response.get("error_message", "") or response.get("message", "Erro desconhecido")
+        self._update_history(record_id, "FAILED", 0, error)
+        self.copy_trade_failed.emit({"slave": slave_key, "symbol": symbol,
+                                      "action": direction, "error": error})
+        logger.error(f"Falha ao ADD para {slave_key}: {error}")
+
+    async def _execute_reversal(self, slave_key, master_broker, deal_ticket, position_id,
+                                 symbol, master_volume, new_direction, master_excess,
+                                 multiplier, existing_slave_vol, symbol_specs, sl, tp):
+        """
+        Reversal em 2 etapas:
+          1. Fecha posição existente do slave (TRADE_POSITION_CLOSE_ID)
+          2. Se `master_excess × multiplier` >= volume_min (floor ao step):
+             abre nova posição na direção oposta com o excess.
+
+        Se step 1 falhar: marca FAILED e não abre a 2.
+        Se step 1 ok mas step 2 falhar: marca PARTIAL_REVERSAL_FAILED
+        (slave fica zerado enquanto master tem posição na direção nova).
+        """
+        # Etapa 1: fechar posição existente do slave
+        slave_ticket = self._get_slave_ticket(position_id, slave_key)
+        if not slave_ticket:
+            logger.error(f"    ❌ REVERSAL: sem slave_ticket para pos_id={position_id}")
+            self._insert_history(master_broker, deal_ticket, symbol, "REVERSAL",
+                                 master_volume, slave_key, 0, 0, "FAILED",
+                                 "sem ticket para fechar na etapa 1 do reversal")
+            return
+
+        close_record = self._insert_history(master_broker, deal_ticket, symbol, "REVERSAL_CLOSE",
+                                             master_volume, slave_key, 0, existing_slave_vol, "PENDING")
+        close_request_id = f"trade_{slave_key}_{int(time.time())}"
+        close_response = await self.tcp_router.send_command_to_broker(
+            slave_key, "TRADE_POSITION_CLOSE_ID", {"ticket": slave_ticket}, close_request_id
+        )
+        logger.info(f"    REVERSAL etapa 1 (close) resposta: {close_response}")
+
+        if close_response.get("status") != "OK":
+            error = close_response.get("error_message", "") or close_response.get("message", "?")
+            self._update_history(close_record, "FAILED", 0, f"REVERSAL close: {error}")
+            self.copy_trade_failed.emit({"slave": slave_key, "symbol": symbol,
+                                          "action": "REVERSAL", "error": error})
+            logger.error(f"    ❌ REVERSAL abortado (close falhou): {error}")
+            return
+
+        close_deal = close_response.get("order", 0) or close_response.get("deal", 0)
+        self._update_history(close_record, "SUCCESS", close_deal, close_reason="REVERSAL")
+        self._on_close_success(position_id, slave_key, close_reason="REVERSAL")
+
+        # Etapa 2: abrir nova posição na direção oposta com o excess
+        reverse_lot = self.calculate_slave_lot(master_excess, multiplier, symbol_specs)
+        if reverse_lot <= 0:
+            logger.info(f"    🔄 REVERSAL: excess {master_excess} × {multiplier} abaixo do min. "
+                        f"Slave fica zerado (close-only).")
+            self._insert_history(master_broker, deal_ticket, symbol, "REVERSAL_OPEN",
+                                 master_excess, slave_key, 0, 0, "SKIPPED",
+                                 "excess < volume_min (slave respeita multiplier)")
+            return
+
+        open_record = self._insert_history(master_broker, deal_ticket, symbol, f"REVERSAL_{new_direction}",
+                                            master_excess, slave_key, 0, reverse_lot, "PENDING")
+        open_request_id = f"trade_{slave_key}_{int(time.time())}_rev"
+        command = f"TRADE_ORDER_TYPE_{new_direction}"
+        payload = {"symbol": symbol, "volume": float(reverse_lot),
+                   "price": 0.0, "sl": sl, "tp": tp,
+                   "deviation": 10, "comment": f"CT:{position_id}"}
+        logger.info(f"    REVERSAL etapa 2: {command} {reverse_lot} → {command}")
+
+        open_response = await self.tcp_router.send_command_to_broker(
+            slave_key, command, payload, open_request_id
+        )
+        logger.info(f"    REVERSAL etapa 2 (open) resposta: {open_response}")
+
+        if open_response.get("status") == "OK":
+            new_slave_ticket = open_response.get("order", 0) or open_response.get("deal", 0)
+            new_slave_vol = open_response.get("volume", reverse_lot)
+            self._update_history(open_record, "SUCCESS", new_slave_ticket)
+            self._on_open_success(position_id, slave_key, new_slave_ticket,
+                                   new_slave_vol, symbol, master_excess, direction=new_direction)
+            logger.info(f"    🔄 REVERSAL ok: slave agora {new_slave_vol} {new_direction} "
+                        f"(novo ticket {new_slave_ticket})")
+            self.copy_trade_executed.emit({"slave": slave_key, "symbol": symbol,
+                                            "action": f"REVERSAL_{new_direction}", "lot": reverse_lot})
+            return
+
+        # Step 2 falhou — slave já está zerado (step 1 ok)
+        error = open_response.get("error_message", "") or open_response.get("message", "?")
+        self._update_history(open_record, "PARTIAL_REVERSAL_FAILED", 0,
+                             f"REVERSAL open falhou após close ok: {error}")
+        self.copy_trade_failed.emit({"slave": slave_key, "symbol": symbol,
+                                      "action": "REVERSAL", "error": f"open falhou: {error}"})
+        logger.error(f"    ❌ PARTIAL_REVERSAL_FAILED: slave {slave_key} zerado, master tem posição nova. "
+                     f"Intervenção manual pode ser necessária.")
 
     # ── Verificação pós-falha ──
 
