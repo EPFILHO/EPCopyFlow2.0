@@ -263,7 +263,7 @@ class BrokerManager(QObject):
             logger.error(f"Erro ao copiar DLLs: {e}")
 
     def copy_expert(self, instance_path):
-        source = os.path.join(self.root_path, "mt5_ea", "ZmqTraderBridge.ex5")
+        source = os.path.join(self.root_path, "mt5_ea", "EPCopyFlow2_EA.ex5")
         dest_dir = os.path.join(instance_path, "MQL5", "Experts")
         os.makedirs(dest_dir, exist_ok=True)
         try:

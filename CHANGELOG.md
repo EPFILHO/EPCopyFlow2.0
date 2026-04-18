@@ -17,6 +17,9 @@ Tipos de mudança:
 
 ## [Unreleased]
 
+### Changed
+- **EA renomeado**: `mt5_ea/ZmqTraderBridge.mq5` → `mt5_ea/EPCopyFlow2_EA.mq5` (nome antigo era legado da era ZMQ). Recompilar no MetaEditor para gerar `EPCopyFlow2_EA.ex5`
+
 ## [0.1.0] — 2026-04-18
 
 ### Added
