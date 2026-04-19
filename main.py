@@ -95,7 +95,7 @@ copytrade_manager = None
 
 # ── Bloco 5 - Encerramento ──
 async def shutdown_cleanup():
-    global router_task, tcp_router_instance, mt5_processes, broker_manager, mt5_monitor
+    global router_task, tcp_router_instance, mt5_processes, broker_manager, mt5_monitor, copytrade_manager
     logger.info("Iniciando shutdown_cleanup...")
 
     if mt5_monitor:
@@ -138,6 +138,12 @@ async def shutdown_cleanup():
         except Exception as e:
             logger.error(f"Erro ao parar MT5 para {key}: {e}")
     mt5_processes.clear()
+
+    if copytrade_manager:
+        try:
+            copytrade_manager.close()
+        except Exception as e:
+            logger.warning(f"Erro ao fechar CopyTradeManager: {e}")
 
     logger.info("shutdown_cleanup concluído.")
 

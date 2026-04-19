@@ -17,6 +17,19 @@ Tipos de mudança:
 
 ## [Unreleased]
 
+## [0.1.5] — 2026-04-19
+
+### Fixed
+- **SQLite sem transaction wrapping em writes multi-statement** (#62): quatro pontos do `copytrade_manager` executavam dois UPDATEs consecutivos e só commitavam no fim. Se o processo crashasse (ou lançasse exceção) entre os statements, a primeira escrita era perdida no rollback implícito, deixando `open_positions` e `master_positions` dessincronizados. Envolvido em `with self.db:` (context manager do sqlite3 → commit em sucesso, rollback em exceção):
+  - `handle_master_sltp_update` (open_positions + master_positions)
+  - `_track_master_position` em PARTIAL_CLOSE (master + open_positions legacy)
+  - `_track_master_position` em CLOSE (master status + open_positions status)
+  - `emergency_close_all` (PANIC em open + CLOSED em master)
+- **SQLite connection nunca era fechada** (#63): `CopyTradeManager.db` permanecia aberto até a saída do processo. No Windows isso mantinha o arquivo `copytrade_history.db` locked, impedindo backup/delete com o app fechando graciosamente. Adicionado `CopyTradeManager.close()` e chamada em `main.shutdown_cleanup()` após o encerramento dos processos MT5.
+
+### Changed
+- Bump de versão: `0.1.4` → `0.1.5`
+
 ## [0.1.4] — 2026-04-19
 
 ### Changed
@@ -106,7 +119,8 @@ Tipos de mudança:
 - Monitor de processo MT5 (detecta crash e reinicia)
 - Monitor de internet (detecta queda de conexão)
 
-[Unreleased]: https://github.com/EPFILHO/EPCopyFlow2.0/compare/v0.1.4...HEAD
+[Unreleased]: https://github.com/EPFILHO/EPCopyFlow2.0/compare/v0.1.5...HEAD
+[0.1.5]: https://github.com/EPFILHO/EPCopyFlow2.0/compare/v0.1.4...v0.1.5
 [0.1.4]: https://github.com/EPFILHO/EPCopyFlow2.0/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/EPFILHO/EPCopyFlow2.0/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/EPFILHO/EPCopyFlow2.0/compare/v0.1.1...v0.1.2

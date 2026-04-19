@@ -586,16 +586,16 @@ class CopyTradeManager(QObject):
 
         logger.info(f"SLTP_MODIFIED: pos_id={position_id}, symbol={symbol}, sl={new_sl}, tp={new_tp}")
 
-        self.db.execute(
-            "UPDATE open_positions SET sl = ?, tp = ? WHERE master_ticket = ? AND status = 'OPEN'",
-            (new_sl, new_tp, position_id)
-        )
-        self.db.execute(
-            "UPDATE master_positions SET sl = ?, tp = ? "
-            "WHERE position_id = ? AND master_broker = ? AND status = 'OPEN'",
-            (new_sl, new_tp, position_id, sltp_data.get("broker_key", ""))
-        )
-        self.db.commit()
+        with self.db:
+            self.db.execute(
+                "UPDATE open_positions SET sl = ?, tp = ? WHERE master_ticket = ? AND status = 'OPEN'",
+                (new_sl, new_tp, position_id)
+            )
+            self.db.execute(
+                "UPDATE master_positions SET sl = ?, tp = ? "
+                "WHERE position_id = ? AND master_broker = ? AND status = 'OPEN'",
+                (new_sl, new_tp, position_id, sltp_data.get("broker_key", ""))
+            )
 
         slaves = self.broker_manager.get_connected_slave_brokers()
         tasks = []
@@ -668,61 +668,60 @@ class CopyTradeManager(QObject):
         """
         now = time.time()
 
-        if trade_action in ("BUY", "SELL"):
-            existing = self._get_master_position_info(position_id, master_broker)
-            if existing:
-                # ADD à posição existente
+        with self.db:
+            if trade_action in ("BUY", "SELL"):
+                existing = self._get_master_position_info(position_id, master_broker)
+                if existing:
+                    # ADD à posição existente
+                    self.db.execute(
+                        "UPDATE master_positions SET volume = ROUND(volume + ?, 8), sl = ?, tp = ? "
+                        "WHERE position_id = ? AND master_broker = ? AND status = 'OPEN'",
+                        (volume, sl, tp, position_id, master_broker)
+                    )
+                    logger.debug(f"  📝 master_positions ADD: pos_id={position_id}, +{volume}")
+                else:
+                    self.db.execute(
+                        """INSERT INTO master_positions
+                           (master_broker, position_id, symbol, direction, volume, volume_original,
+                            sl, tp, status, opened_at)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?)""",
+                        (master_broker, position_id, symbol, direction, volume, volume, sl, tp, now)
+                    )
+                    logger.debug(f"  📝 master_positions OPEN: pos_id={position_id}, {direction} {volume}")
+
+            elif trade_action == "REVERSAL":
                 self.db.execute(
-                    "UPDATE master_positions SET volume = ROUND(volume + ?, 8), sl = ?, tp = ? "
+                    "UPDATE master_positions SET direction = ?, volume = ROUND(?, 8), sl = ?, tp = ? "
                     "WHERE position_id = ? AND master_broker = ? AND status = 'OPEN'",
-                    (volume, sl, tp, position_id, master_broker)
+                    (direction, volume, sl, tp, position_id, master_broker)
                 )
-                logger.debug(f"  📝 master_positions ADD: pos_id={position_id}, +{volume}")
-            else:
+                logger.debug(f"  📝 master_positions REVERSAL: pos_id={position_id}, {direction} {volume}")
+
+            elif trade_action == "PARTIAL_CLOSE":
                 self.db.execute(
-                    """INSERT INTO master_positions
-                       (master_broker, position_id, symbol, direction, volume, volume_original,
-                        sl, tp, status, opened_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?)""",
-                    (master_broker, position_id, symbol, direction, volume, volume, sl, tp, now)
+                    "UPDATE master_positions SET volume = ROUND(MAX(0, volume - ?), 8) "
+                    "WHERE position_id = ? AND master_broker = ? AND status = 'OPEN'",
+                    (volume, position_id, master_broker)
                 )
-                logger.debug(f"  📝 master_positions OPEN: pos_id={position_id}, {direction} {volume}")
+                # open_positions legacy: mantido para compatibilidade
+                self.db.execute(
+                    "UPDATE open_positions SET master_volume_current = master_volume_current - ? "
+                    "WHERE master_ticket = ? AND status = 'OPEN'",
+                    (volume, position_id)
+                )
+                logger.debug(f"  📝 master_positions PARTIAL_CLOSE: pos_id={position_id}, vol_fechado={volume}")
 
-        elif trade_action == "REVERSAL":
-            self.db.execute(
-                "UPDATE master_positions SET direction = ?, volume = ROUND(?, 8), sl = ?, tp = ? "
-                "WHERE position_id = ? AND master_broker = ? AND status = 'OPEN'",
-                (direction, volume, sl, tp, position_id, master_broker)
-            )
-            logger.debug(f"  📝 master_positions REVERSAL: pos_id={position_id}, {direction} {volume}")
-
-        elif trade_action == "PARTIAL_CLOSE":
-            self.db.execute(
-                "UPDATE master_positions SET volume = ROUND(MAX(0, volume - ?), 8) "
-                "WHERE position_id = ? AND master_broker = ? AND status = 'OPEN'",
-                (volume, position_id, master_broker)
-            )
-            # open_positions legacy: mantido para compatibilidade
-            self.db.execute(
-                "UPDATE open_positions SET master_volume_current = master_volume_current - ? "
-                "WHERE master_ticket = ? AND status = 'OPEN'",
-                (volume, position_id)
-            )
-            logger.debug(f"  📝 master_positions PARTIAL_CLOSE: pos_id={position_id}, vol_fechado={volume}")
-
-        elif trade_action == "CLOSE":
-            self.db.execute(
-                "UPDATE master_positions SET status = 'CLOSED', closed_at = ? "
-                "WHERE position_id = ? AND master_broker = ? AND status = 'OPEN'",
-                (now, position_id, master_broker)
-            )
-            self.db.execute(
-                "UPDATE open_positions SET status = 'CLOSING' WHERE master_ticket = ? AND status = 'OPEN'",
-                (position_id,)
-            )
-            logger.debug(f"  📝 master_positions CLOSED: pos_id={position_id}")
-
-        self.db.commit()
+            elif trade_action == "CLOSE":
+                self.db.execute(
+                    "UPDATE master_positions SET status = 'CLOSED', closed_at = ? "
+                    "WHERE position_id = ? AND master_broker = ? AND status = 'OPEN'",
+                    (now, position_id, master_broker)
+                )
+                self.db.execute(
+                    "UPDATE open_positions SET status = 'CLOSING' WHERE master_ticket = ? AND status = 'OPEN'",
+                    (position_id,)
+                )
+                logger.debug(f"  📝 master_positions CLOSED: pos_id={position_id}")
 
     def _get_slave_position_info(self, position_id: int, slave_key: str) -> dict:
         """Retorna info da posição do slave: {volume, direction, master_volume}. None se não encontrado."""
@@ -1371,15 +1370,15 @@ class CopyTradeManager(QObject):
 
         # Marcar TODAS as posições como PANIC/CLOSED no DB (diferencia de CLOSED normal)
         now = time.time()
-        self.db.execute(
-            "UPDATE open_positions SET status = 'PANIC', closed_at = ?, close_reason = 'EMERGENCY' WHERE status IN ('OPEN', 'SYNCING', 'CLOSING')",
-            (now,)
-        )
-        self.db.execute(
-            "UPDATE master_positions SET status = 'CLOSED', closed_at = ? WHERE status = 'OPEN'",
-            (now,)
-        )
-        self.db.commit()
+        with self.db:
+            self.db.execute(
+                "UPDATE open_positions SET status = 'PANIC', closed_at = ?, close_reason = 'EMERGENCY' WHERE status IN ('OPEN', 'SYNCING', 'CLOSING')",
+                (now,)
+            )
+            self.db.execute(
+                "UPDATE master_positions SET status = 'CLOSED', closed_at = ? WHERE status = 'OPEN'",
+                (now,)
+            )
         logger.info("  📝 Todas as posições marcadas como PANIC no DB")
 
         # Limpa mapa de posições e locks
@@ -1460,3 +1459,21 @@ class CopyTradeManager(QObject):
             (today_start,)
         ).fetchone()
         return {"total": row[0] or 0, "success": row[1] or 0, "failed": row[2] or 0}
+
+    # ──────────────────────────────────────────────
+    # Bloco 6 - Shutdown
+    # ──────────────────────────────────────────────
+    def close(self):
+        """Fecha a conexão SQLite. Chamado pelo shutdown_cleanup do main.
+
+        No Windows, conexões SQLite abertas mantêm o arquivo locked e impedem
+        backup/delete. Fechar explicitamente libera o lock.
+        """
+        if self.db is not None:
+            try:
+                self.db.close()
+                logger.info("Conexão SQLite fechada.")
+            except Exception as e:
+                logger.warning(f"Erro ao fechar DB: {e}")
+            finally:
+                self.db = None
