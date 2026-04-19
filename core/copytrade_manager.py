@@ -101,6 +101,25 @@ class CopyTradeManager(QObject):
             )
         """)
 
+        # Tabela: Estado do master (fonte de verdade independente dos slaves)
+        self.db.execute("""
+            CREATE TABLE IF NOT EXISTS master_positions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                master_broker TEXT NOT NULL,
+                position_id INTEGER NOT NULL,
+                symbol TEXT NOT NULL,
+                direction TEXT NOT NULL,
+                volume REAL NOT NULL,
+                volume_original REAL NOT NULL,
+                sl REAL DEFAULT 0.0,
+                tp REAL DEFAULT 0.0,
+                status TEXT NOT NULL DEFAULT 'OPEN',
+                opened_at REAL NOT NULL,
+                closed_at REAL,
+                UNIQUE(master_broker, position_id)
+            )
+        """)
+
         self.db.commit()
 
         # Migrações: adicionar colunas novas se não existirem
@@ -119,7 +138,7 @@ class CopyTradeManager(QObject):
             except sqlite3.OperationalError:
                 pass  # Coluna já existe
 
-        logger.info("Banco de dados SQLite inicializado (3 tabelas).")
+        logger.info("Banco de dados SQLite inicializado (4 tabelas).")
 
     def validate_broker_for_copytrade(self, broker_key: str) -> tuple[bool, str]:
         """
@@ -512,11 +531,23 @@ class CopyTradeManager(QObject):
             self.copy_trade_log.emit(log_msg)
             logger.info(log_msg)
 
-            # Atualizar tracking master no DB (CLOSE/PARTIAL_CLOSE).
-            # REVERSAL não atualiza aqui — o fluxo _execute_reversal cuida do DB
-            # via _on_close_success (perna antiga) + _on_open_success (perna nova).
-            if trade_action != "REVERSAL":
-                self._track_master_position(position_id, volume, trade_action)
+            # Ler estado atual do master ANTES de atualizar (prev_vol para cálculos do slave)
+            master_info_before = self._get_master_position_info(position_id, master_broker)
+
+            # Atualizar master_positions (fonte de verdade do estado do master — todos os actions)
+            direction_str = "BUY" if order_type == 0 else "SELL"
+            if is_reversal_event:
+                self._track_master_position(
+                    position_id, float(new_volume or 0), "REVERSAL",
+                    master_broker=master_broker, symbol=symbol,
+                    direction=new_direction or direction_str, sl=sl, tp=tp
+                )
+            else:
+                self._track_master_position(
+                    position_id, volume, trade_action,
+                    master_broker=master_broker, symbol=symbol,
+                    direction=direction_str, sl=sl, tp=tp
+                )
 
             # Replica para cada slave conectado (em paralelo entre slaves)
             slaves = self.broker_manager.get_connected_slave_brokers()
@@ -532,6 +563,7 @@ class CopyTradeManager(QObject):
                     trade_action, symbol, volume, order_type, price, sl, tp,
                     reversal_new_direction=new_direction if is_reversal_event else None,
                     reversal_new_volume=new_volume if is_reversal_event else None,
+                    master_info_before=master_info_before,
                 ))
 
             if tasks:
@@ -557,6 +589,11 @@ class CopyTradeManager(QObject):
         self.db.execute(
             "UPDATE open_positions SET sl = ?, tp = ? WHERE master_ticket = ? AND status = 'OPEN'",
             (new_sl, new_tp, position_id)
+        )
+        self.db.execute(
+            "UPDATE master_positions SET sl = ?, tp = ? "
+            "WHERE position_id = ? AND master_broker = ? AND status = 'OPEN'",
+            (new_sl, new_tp, position_id, sltp_data.get("broker_key", ""))
         )
         self.db.commit()
 
@@ -622,26 +659,70 @@ class CopyTradeManager(QObject):
                 return "SELL"
         return None
 
-    def _track_master_position(self, position_id: int, volume: float, trade_action: str):
+    def _track_master_position(self, position_id: int, volume: float, trade_action: str,
+                                master_broker: str = "", symbol: str = "",
+                                direction: str = "", sl: float = 0.0, tp: float = 0.0):
         """
-        Atualiza tracking no DB para CLOSE/PARTIAL_CLOSE.
-        Para BUY/SELL, as rows são criadas em _replicate_to_slave (uma por slave).
+        Mantém master_positions como fonte de verdade do estado do master.
+        Cobre todos os trade_actions: BUY/SELL (open ou ADD), REVERSAL, PARTIAL_CLOSE, CLOSE.
         """
-        if trade_action == "CLOSE":
+        now = time.time()
+
+        if trade_action in ("BUY", "SELL"):
+            existing = self._get_master_position_info(position_id, master_broker)
+            if existing:
+                # ADD à posição existente
+                self.db.execute(
+                    "UPDATE master_positions SET volume = ROUND(volume + ?, 8), sl = ?, tp = ? "
+                    "WHERE position_id = ? AND master_broker = ? AND status = 'OPEN'",
+                    (volume, sl, tp, position_id, master_broker)
+                )
+                logger.debug(f"  📝 master_positions ADD: pos_id={position_id}, +{volume}")
+            else:
+                self.db.execute(
+                    """INSERT INTO master_positions
+                       (master_broker, position_id, symbol, direction, volume, volume_original,
+                        sl, tp, status, opened_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?)""",
+                    (master_broker, position_id, symbol, direction, volume, volume, sl, tp, now)
+                )
+                logger.debug(f"  📝 master_positions OPEN: pos_id={position_id}, {direction} {volume}")
+
+        elif trade_action == "REVERSAL":
+            self.db.execute(
+                "UPDATE master_positions SET direction = ?, volume = ROUND(?, 8), sl = ?, tp = ? "
+                "WHERE position_id = ? AND master_broker = ? AND status = 'OPEN'",
+                (direction, volume, sl, tp, position_id, master_broker)
+            )
+            logger.debug(f"  📝 master_positions REVERSAL: pos_id={position_id}, {direction} {volume}")
+
+        elif trade_action == "PARTIAL_CLOSE":
+            self.db.execute(
+                "UPDATE master_positions SET volume = ROUND(MAX(0, volume - ?), 8) "
+                "WHERE position_id = ? AND master_broker = ? AND status = 'OPEN'",
+                (volume, position_id, master_broker)
+            )
+            # open_positions legacy: mantido para compatibilidade
+            self.db.execute(
+                "UPDATE open_positions SET master_volume_current = master_volume_current - ? "
+                "WHERE master_ticket = ? AND status = 'OPEN'",
+                (volume, position_id)
+            )
+            logger.debug(f"  📝 master_positions PARTIAL_CLOSE: pos_id={position_id}, vol_fechado={volume}")
+
+        elif trade_action == "CLOSE":
+            self.db.execute(
+                "UPDATE master_positions SET status = 'CLOSED', closed_at = ? "
+                "WHERE position_id = ? AND master_broker = ? AND status = 'OPEN'",
+                (now, position_id, master_broker)
+            )
             self.db.execute(
                 "UPDATE open_positions SET status = 'CLOSING' WHERE master_ticket = ? AND status = 'OPEN'",
                 (position_id,)
             )
-            self.db.commit()
-            logger.debug(f"  📝 Posição marcada CLOSING: position_id={position_id}")
+            logger.debug(f"  📝 master_positions CLOSED: pos_id={position_id}")
 
-        elif trade_action == "PARTIAL_CLOSE":
-            self.db.execute(
-                "UPDATE open_positions SET master_volume_current = master_volume_current - ? WHERE master_ticket = ? AND status = 'OPEN'",
-                (volume, position_id)
-            )
-            self.db.commit()
-            logger.debug(f"  📝 Fechamento parcial master: position_id={position_id}, vol_fechado={volume}")
+        self.db.commit()
 
     def _get_slave_position_info(self, position_id: int, slave_key: str) -> dict:
         """Retorna info da posição do slave: {volume, direction, master_volume}. None se não encontrado."""
@@ -656,6 +737,22 @@ class CopyTradeManager(QObject):
                 "volume": round(row[0], 8),
                 "direction": row[1] or "BUY",
                 "master_volume": round(row[2], 8) if row[2] is not None else 0.0,
+            }
+        return None
+
+    def _get_master_position_info(self, position_id: int, master_broker: str) -> dict | None:
+        """Retorna estado atual do master: {volume, direction, sl, tp}. None se não encontrado."""
+        row = self.db.execute(
+            "SELECT volume, direction, sl, tp FROM master_positions "
+            "WHERE position_id = ? AND master_broker = ? AND status = 'OPEN'",
+            (position_id, master_broker)
+        ).fetchone()
+        if row:
+            return {
+                "volume": round(row[0], 8),
+                "direction": row[1],
+                "sl": row[2] or 0.0,
+                "tp": row[3] or 0.0,
             }
         return None
 
@@ -677,7 +774,8 @@ class CopyTradeManager(QObject):
                                    trade_action: str, symbol: str, volume: float,
                                    order_type: int, price: float, sl: float, tp: float,
                                    reversal_new_direction: str = None,
-                                   reversal_new_volume: float = None):
+                                   reversal_new_volume: float = None,
+                                   master_info_before: dict = None):
         """
         Envia comando de trade para um slave específico (NETTING mode).
 
@@ -703,7 +801,8 @@ class CopyTradeManager(QObject):
         has_open_position = pos_info is not None and pos_info["volume"] > 0
         existing_slave_vol = pos_info["volume"] if pos_info else 0.0
         existing_direction = pos_info["direction"] if pos_info else None
-        master_prev_vol = pos_info["master_volume"] if pos_info else 0.0
+        # master_prev_vol: estado do master ANTES do evento atual (master_positions é a fonte)
+        master_prev_vol = master_info_before["volume"] if master_info_before else 0.0
 
         # ── REVERSAL sintético (EA detectou cruzamento de zero via OnTrade) ──
         # O EA já entregou new_direction/new_volume — não dependemos do DB
@@ -748,10 +847,10 @@ class CopyTradeManager(QObject):
                                      volume, slave_key, 0, 0, "SKIPPED", "slave sem posição aberta")
                 return
 
-            # master_volume_current já foi decrementado em _track_master_position.
+            # master_prev_vol é o volume ANTES do partial close (de master_info_before).
             # O `volume` do evento é quanto o master fechou agora.
-            master_remaining = master_prev_vol  # já decrementado
-            master_before = master_remaining + volume
+            master_before = master_prev_vol
+            master_remaining = max(0.0, master_before - volume)
 
             close_vol, is_full_close = self.calculate_close_volume(
                 master_remaining, master_before, existing_slave_vol, symbol_specs
@@ -1270,10 +1369,14 @@ class CopyTradeManager(QObject):
                             close_reason="EMERGENCY"
                         )
 
-        # Marcar TODAS as posições como PANIC no DB (diferencia de CLOSED normal)
+        # Marcar TODAS as posições como PANIC/CLOSED no DB (diferencia de CLOSED normal)
         now = time.time()
         self.db.execute(
             "UPDATE open_positions SET status = 'PANIC', closed_at = ?, close_reason = 'EMERGENCY' WHERE status IN ('OPEN', 'SYNCING', 'CLOSING')",
+            (now,)
+        )
+        self.db.execute(
+            "UPDATE master_positions SET status = 'CLOSED', closed_at = ? WHERE status = 'OPEN'",
             (now,)
         )
         self.db.commit()
