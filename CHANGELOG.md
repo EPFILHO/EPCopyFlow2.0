@@ -17,6 +17,12 @@ Tipos de mudança:
 
 ## [Unreleased]
 
+## [0.1.6] — 2026-04-19
+
+### Changed
+- **Emergency close paraleliza slaves**: o master continua sendo fechado sequencialmente (primeiro, para que `_emergency_active=True` suprima replicação redundante), mas os slaves agora são processados em paralelo via `asyncio.gather`. Dentro de cada broker, as posições também são fechadas em paralelo. Em teste com 1 master + 1 slave a sequência era ~3.7s (POSITIONS+CLOSE do master + POSITIONS+CLOSE do slave em série); com múltiplos slaves o ganho escala. Extraídos helpers `_emergency_close_broker` e `_emergency_close_one` para isolar a lógica por broker/posição.
+- Bump de versão: `0.1.5` → `0.1.6`
+
 ## [0.1.5] — 2026-04-19
 
 ### Fixed
@@ -119,7 +125,8 @@ Tipos de mudança:
 - Monitor de processo MT5 (detecta crash e reinicia)
 - Monitor de internet (detecta queda de conexão)
 
-[Unreleased]: https://github.com/EPFILHO/EPCopyFlow2.0/compare/v0.1.5...HEAD
+[Unreleased]: https://github.com/EPFILHO/EPCopyFlow2.0/compare/v0.1.6...HEAD
+[0.1.6]: https://github.com/EPFILHO/EPCopyFlow2.0/compare/v0.1.5...v0.1.6
 [0.1.5]: https://github.com/EPFILHO/EPCopyFlow2.0/compare/v0.1.4...v0.1.5
 [0.1.4]: https://github.com/EPFILHO/EPCopyFlow2.0/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/EPFILHO/EPCopyFlow2.0/compare/v0.1.2...v0.1.3
