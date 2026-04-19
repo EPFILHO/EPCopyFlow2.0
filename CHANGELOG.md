@@ -17,8 +17,15 @@ Tipos de mudança:
 
 ## [Unreleased]
 
+## [0.1.2] — 2026-04-18
+
+### Fixed
+- **Master invertia direção e slave ficava com posição oposta** (#104): quando o master fazia uma ordem contrária com volume maior que a posição atual (cruzando zero em netting), o `POSITION_IDENTIFIER` permanecia estável mas `POSITION_TYPE` invertia — o diff do `OnTrade()` comparava apenas volume e classificava o evento como PARTIAL_CLOSE. Resultado: slave fechava parte da posição na direção antiga em vez de inverter, ficando LONG enquanto master ficava SHORT (e vice-versa). O EA agora compara também `POSITION_TYPE`; ao detectar inversão, emite um TRADE_EVENT sintético com `is_reversal=true` carregando `new_direction`, `new_volume` (excedente na perna nova) e `old_direction`/`old_volume`. O Python processa via fluxo de reversal (close da perna antiga + open na nova) usando diretamente os dados do evento, dispensando inferência do DB — evita o off-by-one do `master_volume_current` após cruzamentos de zero
+
 ### Changed
 - **EA renomeado**: `mt5_ea/ZmqTraderBridge.mq5` → `mt5_ea/EPCopyFlow2_EA.mq5` (nome antigo era legado da era ZMQ). Recompilar no MetaEditor para gerar `EPCopyFlow2_EA.ex5`
+- **Dedup de eventos do master**: em reversal sintético, ambos `order_type` (BUY=0 e SELL=1) são registrados no dedup com mesmo `(position_id, timestamp_mql)` — impede que o evento subsequente do `OnTradeTransaction` (com volume total da ordem) seja reprocessado como ADD ou abertura nova
+- Bump de versão: `0.1.1` → `0.1.2`
 
 ## [0.1.1] — 2026-04-18
 
@@ -79,7 +86,8 @@ Tipos de mudança:
 - Monitor de processo MT5 (detecta crash e reinicia)
 - Monitor de internet (detecta queda de conexão)
 
-[Unreleased]: https://github.com/EPFILHO/EPCopyFlow2.0/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/EPFILHO/EPCopyFlow2.0/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/EPFILHO/EPCopyFlow2.0/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/EPFILHO/EPCopyFlow2.0/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/EPFILHO/EPCopyFlow2.0/compare/v0.0.1...v0.1.0
 [0.0.1]: https://github.com/EPFILHO/EPCopyFlow2.0/releases/tag/v0.0.1

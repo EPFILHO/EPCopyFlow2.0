@@ -1547,6 +1547,58 @@ void EmitSyntheticTradeEvent(const CachedPosition &cached, double closed_volume,
                cached.position_id, cached.symbol, closed_volume, remaining_volume);
 }
 
+void EmitReversalEvent(const CachedPosition &old_pos, const CachedPosition &new_pos)
+{
+   // Em netting, uma ordem oposta de volume maior que a posição atual faz o
+   // POSITION_IDENTIFIER permanecer, POSITION_TYPE inverter e POSITION_VOLUME
+   // virar o excedente na direção nova. OnTradeTransaction reporta a ordem
+   // original (volume total), mas não sinaliza a inversão — detectamos aqui.
+   JSONNode stream_msg;
+   stream_msg["type"]       = "STREAM";
+   stream_msg["event"]      = "TRADE_EVENT";
+   stream_msg["timestamp_mql"] = (long)TimeCurrent();
+   stream_msg["role"]       = g_role;
+   stream_msg["source"]     = "ONTRADE_REVERSAL";
+   stream_msg["is_reversal"] = true;
+
+   stream_msg["request_action"]       = 1;  // TRADE_ACTION_DEAL
+   stream_msg["request_order"]        = (long)0;
+   stream_msg["request_symbol"]       = new_pos.symbol;
+   stream_msg["request_volume"]       = new_pos.volume;
+   stream_msg["request_price"]        = 0.0;
+   stream_msg["request_sl"]           = 0.0;
+   stream_msg["request_tp"]           = 0.0;
+   stream_msg["request_deviation"]    = (long)0;
+   // request_type reflete a direção da NOVA perna
+   stream_msg["request_type"]         = (int)new_pos.pos_type;
+   stream_msg["request_type_filling"] = 0;
+   stream_msg["request_comment"]      = "";
+   stream_msg["request_position"]     = (long)0;
+
+   stream_msg["result_retcode"] = (long)TRADE_RETCODE_DONE;
+   stream_msg["result_deal"]    = (long)0;
+   stream_msg["result_order"]   = (long)0;
+   stream_msg["result_volume"]  = new_pos.volume;
+   stream_msg["result_price"]   = 0.0;
+   stream_msg["result_comment"] = "reversal detected by OnTrade";
+
+   // Campos específicos do reversal (Python usa diretamente, sem inferir do DB)
+   stream_msg["old_direction"] = (old_pos.pos_type == POSITION_TYPE_BUY) ? "BUY" : "SELL";
+   stream_msg["new_direction"] = (new_pos.pos_type == POSITION_TYPE_BUY) ? "BUY" : "SELL";
+   stream_msg["old_volume"]    = old_pos.volume;
+   stream_msg["new_volume"]    = new_pos.volume;
+   stream_msg["position_volume_remaining"] = new_pos.volume;
+   stream_msg["position_id"]               = new_pos.position_id;
+
+   if(!SendJsonMessage(stream_msg, "Event"))
+      Print("ERROR: Falha ao enviar REVERSAL TRADE_EVENT via EventSocket");
+
+   PrintFormat("OnTrade: REVERSAL detectado (pos_id=%lld, symbol=%s, %s %.2f -> %s %.2f)",
+               new_pos.position_id, new_pos.symbol,
+               (old_pos.pos_type == POSITION_TYPE_BUY) ? "BUY" : "SELL", old_pos.volume,
+               (new_pos.pos_type == POSITION_TYPE_BUY) ? "BUY" : "SELL", new_pos.volume);
+}
+
 void EmitSltpModified(const CachedPosition &old_pos, const CachedPosition &new_pos)
 {
    JSONNode msg;
@@ -1588,7 +1640,16 @@ void OnTrade()
 
          found = true;
 
-         // Volume diminuiu → partial close externo
+         // pos_type mudou → reversal em netting (ordem oposta com volume > posição atual).
+         // Precisa vir ANTES do diff de volume: o volume "diminuiu" visualmente mas a
+         // direção virou — tratar como partial close produziria slave em direção oposta.
+         if(new_snap[j].pos_type != g_pos_cache[i].pos_type)
+         {
+            EmitReversalEvent(g_pos_cache[i], new_snap[j]);
+            break;
+         }
+
+         // Volume diminuiu → partial close externo (mesma direção)
          if(new_snap[j].volume < g_pos_cache[i].volume - 0.000001)
          {
             double closed_vol = g_pos_cache[i].volume - new_snap[j].volume;

@@ -459,12 +459,25 @@ class CopyTradeManager(QObject):
             logger.warning("Trade event sem símbolo, ignorando.")
             return
 
-        # Determinar tipo de ação para replicação
-        trade_action = self._classify_trade_action(action, order_type, position_ticket, position_volume_remaining)
-        logger.info(f"  trade_action={trade_action}")
-        if not trade_action:
-            logger.debug(f"Ação de trade não replicável: action={action}, type={order_type}")
-            return
+        # Reversal sintético do EA (OnTrade detectou cruzamento de zero em netting).
+        # O evento carrega new_direction/new_volume já calculados — dispensa inferir
+        # do DB e é imune ao bug em que o master_volume_current ficava dessincronizado
+        # após uma ordem oposta de volume maior que a posição.
+        is_reversal_event = bool(trade_event.get("is_reversal"))
+        new_direction = trade_event.get("new_direction")
+        new_volume = trade_event.get("new_volume")
+
+        if is_reversal_event:
+            trade_action = "REVERSAL"
+            logger.info(f"  🔄 REVERSAL sintético: {trade_event.get('old_direction')} {trade_event.get('old_volume')} "
+                        f"-> {new_direction} {new_volume}")
+        else:
+            # Determinar tipo de ação para replicação
+            trade_action = self._classify_trade_action(action, order_type, position_ticket, position_volume_remaining)
+            logger.info(f"  trade_action={trade_action}")
+            if not trade_action:
+                logger.debug(f"Ação de trade não replicável: action={action}, type={order_type}")
+                return
 
         # Validar que temos position_id (obrigatório para tracking)
         if not position_id:
@@ -481,6 +494,13 @@ class CopyTradeManager(QObject):
             logger.debug(f"  Evento duplicado ignorado: pos_id={position_id}, ts_mql={timestamp_mql}, action={trade_action}")
             return
         self._master_event_dedup[dedup_key] = now
+        # No reversal sintético, o OnTradeTransaction subsequente chega com o volume
+        # total da ordem (ex: BUY 0.14 fechando SELL 0.10 para abrir BUY 0.04) e
+        # seria reprocessado como BUY novo. Registrar ambos order_types no dedup
+        # impede esse reprocessamento — o evento sintético é a fonte de verdade.
+        if is_reversal_event:
+            opposite = 0 if order_type == 1 else 1
+            self._master_event_dedup[(position_id, timestamp_mql, opposite)] = now
         self._master_event_dedup = {k: v for k, v in self._master_event_dedup.items() if now - v < 10}
 
         # ── Serializar por position_id ──
@@ -492,8 +512,11 @@ class CopyTradeManager(QObject):
             self.copy_trade_log.emit(log_msg)
             logger.info(log_msg)
 
-            # Atualizar tracking master no DB (CLOSE/PARTIAL_CLOSE)
-            self._track_master_position(position_id, volume, trade_action)
+            # Atualizar tracking master no DB (CLOSE/PARTIAL_CLOSE).
+            # REVERSAL não atualiza aqui — o fluxo _execute_reversal cuida do DB
+            # via _on_close_success (perna antiga) + _on_open_success (perna nova).
+            if trade_action != "REVERSAL":
+                self._track_master_position(position_id, volume, trade_action)
 
             # Replica para cada slave conectado (em paralelo entre slaves)
             slaves = self.broker_manager.get_connected_slave_brokers()
@@ -506,7 +529,9 @@ class CopyTradeManager(QObject):
 
                 tasks.append(self._replicate_to_slave(
                     slave_key, master_broker, deal_ticket, position_id,
-                    trade_action, symbol, volume, order_type, price, sl, tp
+                    trade_action, symbol, volume, order_type, price, sl, tp,
+                    reversal_new_direction=new_direction if is_reversal_event else None,
+                    reversal_new_volume=new_volume if is_reversal_event else None,
                 ))
 
             if tasks:
@@ -650,7 +675,9 @@ class CopyTradeManager(QObject):
     async def _replicate_to_slave(self, slave_key: str, master_broker: str,
                                    deal_ticket: int, position_id: int,
                                    trade_action: str, symbol: str, volume: float,
-                                   order_type: int, price: float, sl: float, tp: float):
+                                   order_type: int, price: float, sl: float, tp: float,
+                                   reversal_new_direction: str = None,
+                                   reversal_new_volume: float = None):
         """
         Envia comando de trade para um slave específico (NETTING mode).
 
@@ -677,6 +704,35 @@ class CopyTradeManager(QObject):
         existing_slave_vol = pos_info["volume"] if pos_info else 0.0
         existing_direction = pos_info["direction"] if pos_info else None
         master_prev_vol = pos_info["master_volume"] if pos_info else 0.0
+
+        # ── REVERSAL sintético (EA detectou cruzamento de zero via OnTrade) ──
+        # O EA já entregou new_direction/new_volume — não dependemos do DB
+        # pro master_prev_vol, que estaria desatualizado após o cruzamento.
+        if trade_action == "REVERSAL":
+            new_vol = float(reversal_new_volume or 0.0)
+            new_dir = reversal_new_direction or ("BUY" if order_type == 0 else "SELL")
+            if has_open_position:
+                await self._execute_reversal(
+                    slave_key, master_broker, deal_ticket, position_id, symbol,
+                    new_vol, new_dir, new_vol, multiplier,
+                    existing_slave_vol, symbol_specs, sl, tp
+                )
+                return
+            # Slave sem posição (floor anterior zerou ou slave nunca entrou):
+            # abre direto na direção nova com o volume da perna nova.
+            slave_lot = self.calculate_slave_lot(new_vol, multiplier, symbol_specs)
+            if slave_lot <= 0:
+                logger.info(f"    🔄 REVERSAL sem posição: {new_vol} × {multiplier} < volume_min. Slave fica zerado.")
+                self._insert_history(master_broker, deal_ticket, symbol, f"REVERSAL_{new_dir}",
+                                     new_vol, slave_key, 0, 0, "SKIPPED",
+                                     "excess < volume_min (slave sem posição prévia)")
+                return
+            logger.info(f"    🔄 REVERSAL sem posição: abrindo {new_dir} {slave_lot} direto")
+            await self._send_open_command(
+                slave_key, master_broker, deal_ticket, position_id, symbol,
+                new_vol, slave_lot, new_dir, 0.0, sl, tp
+            )
+            return
 
         # ── CLOSE TOTAL ──
         if trade_action == "CLOSE":
