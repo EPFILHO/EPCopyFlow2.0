@@ -161,6 +161,12 @@ class TcpMessageHandler(QObject):
                 "result": result,
                 "position_volume_remaining": message.get("position_volume_remaining"),
                 "position_id": message.get("position_id", 0),
+                "source": message.get("source", ""),
+                "is_reversal": bool(message.get("is_reversal", False)),
+                "old_direction": message.get("old_direction"),
+                "new_direction": message.get("new_direction"),
+                "old_volume": message.get("old_volume"),
+                "new_volume": message.get("new_volume"),
             }
             self.trade_event_received.emit(trade_event_data)
             logger.info(f"TRADE_EVENT de {identified_broker_key} - symbol={request.get('symbol', 'N/A')}")
