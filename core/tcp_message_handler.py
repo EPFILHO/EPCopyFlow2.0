@@ -10,10 +10,6 @@ from PySide6.QtCore import QObject, Signal, Slot
 
 logger = logging.getLogger(__name__)
 
-# Buffers globais de estado por corretora
-trade_allowed_states = {}
-connection_status_states = {}  # True = broker conectado ao servidor, False = desconectado
-
 
 class TcpMessageHandler(QObject):
     # Sinais mantidos (essenciais para copytrade)
@@ -43,6 +39,10 @@ class TcpMessageHandler(QObject):
         self.heartbeat_active = {}
         self._background_tasks: set = set()
 
+        # Buffers de estado por corretora (broker_key -> bool)
+        self._trade_allowed_states = {}
+        self._connection_status_states = {}  # True = broker conectado, False = desconectado
+
     def set_copytrade_manager(self, copytrade_manager):
         self.copytrade_manager = copytrade_manager
 
@@ -51,13 +51,11 @@ class TcpMessageHandler(QObject):
     # ──────────────────────────────────────────────
     @Slot(bytes, object)
     async def handle_tcp_message(self, client_id_bytes: bytes, message: dict):
-        global trade_allowed_states, connection_status_states
-
         # Identifica broker
         client_id_hex = client_id_bytes.hex()
         identified_broker_key = None
-        for key, zid in self.tcp_router._clients.items():
-            if zid == client_id_bytes:
+        for key, client_id in self.tcp_router._clients.items():
+            if client_id == client_id_bytes:
                 identified_broker_key = key
                 break
         if not identified_broker_key:
@@ -102,8 +100,8 @@ class TcpMessageHandler(QObject):
                 self.log_message_received.emit(f"INFO: Corretora {broker_key} desconectada.")
                 self.ping_button_state_changed.emit(False)
                 self.heartbeat_active.pop(broker_key, None)
-                trade_allowed_states.pop(broker_key, None)
-                connection_status_states.pop(broker_key, None)
+                self._trade_allowed_states.pop(broker_key, None)
+                self._connection_status_states.pop(broker_key, None)
 
         # ── STREAM events ──
         elif msg_type == "STREAM" and event == "TRADE_ALLOWED_UPDATE":
@@ -113,7 +111,7 @@ class TcpMessageHandler(QObject):
                 "timestamp_mql": message.get("timestamp_mql", 0)
             }
             if identified_broker_key and data["trade_allowed"] is not None:
-                trade_allowed_states[identified_broker_key] = data["trade_allowed"]
+                self._trade_allowed_states[identified_broker_key] = data["trade_allowed"]
             self.trade_allowed_update_received.emit(data)
 
         elif msg_type == "STREAM" and event == "CONNECTION_STATUS":
@@ -124,7 +122,7 @@ class TcpMessageHandler(QObject):
                 "timestamp_mql": message.get("timestamp_mql", 0)
             }
             if identified_broker_key and connected is not None:
-                connection_status_states[identified_broker_key] = connected
+                self._connection_status_states[identified_broker_key] = connected
             self.connection_status_received.emit(data)
             logger.info(f"CONNECTION_STATUS de {identified_broker_key}: {connected}")
 
@@ -362,12 +360,12 @@ class TcpMessageHandler(QObject):
     # Bloco 5 - Auxiliares
     # ──────────────────────────────────────────────
     def get_trade_allowed_states(self):
-        return trade_allowed_states.copy()
+        return self._trade_allowed_states.copy()
 
     def get_connection_status_states(self):
-        return connection_status_states.copy()
+        return self._connection_status_states.copy()
 
     def clear_broker_status(self, broker_key):
         """Clear all cached status for a broker (on disconnect)."""
-        trade_allowed_states.pop(broker_key, None)
-        connection_status_states.pop(broker_key, None)
+        self._trade_allowed_states.pop(broker_key, None)
+        self._connection_status_states.pop(broker_key, None)

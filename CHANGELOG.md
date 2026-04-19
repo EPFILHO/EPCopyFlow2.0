@@ -17,6 +17,13 @@ Tipos de mudança:
 
 ## [Unreleased]
 
+## [0.1.4] — 2026-04-19
+
+### Changed
+- **`TcpMessageHandler` deixou de usar globals de módulo** (#74): `trade_allowed_states` e `connection_status_states` eram dicionários no nível do módulo — vestígio da era ZMQ que impedia múltiplas instâncias e dificultava testes unitários. Agora são atributos de instância (`self._trade_allowed_states`, `self._connection_status_states`). API pública (`get_trade_allowed_states()`, `get_connection_status_states()`, `clear_broker_status()`) permanece inalterada, então os consumidores em `gui/pages/brokers_page.py` e `gui/pages/dashboard_page.py` não precisaram de mudança.
+- Renomeado o parâmetro `zid` para `client_id` no loop de identificação de broker em `handle_tcp_message` — última referência nominal ao ZMQ no código Python.
+- Bump de versão: `0.1.3` → `0.1.4`
+
 ## [0.1.3] — 2026-04-19
 
 ### Added
@@ -99,7 +106,8 @@ Tipos de mudança:
 - Monitor de processo MT5 (detecta crash e reinicia)
 - Monitor de internet (detecta queda de conexão)
 
-[Unreleased]: https://github.com/EPFILHO/EPCopyFlow2.0/compare/v0.1.3...HEAD
+[Unreleased]: https://github.com/EPFILHO/EPCopyFlow2.0/compare/v0.1.4...HEAD
+[0.1.4]: https://github.com/EPFILHO/EPCopyFlow2.0/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/EPFILHO/EPCopyFlow2.0/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/EPFILHO/EPCopyFlow2.0/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/EPFILHO/EPCopyFlow2.0/compare/v0.1.0...v0.1.1
