@@ -17,6 +17,19 @@ Tipos de mudança:
 
 ## [Unreleased]
 
+## [0.1.3] — 2026-04-19
+
+### Added
+- **Tabela `master_positions` como fonte de verdade do estado do master** (#101): nova tabela SQLite rastreia o estado do master (direction, volume, sl, tp, status) independentemente dos slaves. Resolve dois edge-cases pós-fix #102: (a) master abre com volume tão pequeno que o multiplier do slave dá floor=0 — nenhuma row em `open_positions` era criada, então um ADD subsequente era tratado como abertura fresh e a razão de partial close ficava errada; (b) REVERSAL após floor=0 — Python não conseguia calcular o excess correto sem saber o `prev_vol` do master.
+
+### Changed
+- **`_track_master_position`** expandido para cobrir todos os trade_actions (BUY/SELL open, ADD, REVERSAL, PARTIAL_CLOSE, CLOSE); mantém `master_positions` em cada evento. Assinatura ampliada com `master_broker`, `symbol`, `direction`, `sl`, `tp`.
+- **`_replicate_to_slave`** agora lê `master_prev_vol` de `master_positions` (via `master_info_before`) em vez de `open_positions.master_volume_current` — elimina o off-by-one que ocorria quando slave nunca abriu ou após zero-crossings.
+- **PARTIAL_CLOSE**: lógica corrigida para usar `master_prev_vol` como volume ANTES do parcial (e não como já decrementado), deixando o cálculo de `master_before` e `master_remaining` explícitos e sem ambiguidade.
+- **`handle_master_sltp_update`** também atualiza `master_positions.sl/tp` além de `open_positions`.
+- **`emergency_close_all`** marca `master_positions` como `CLOSED` além de `open_positions` como `PANIC`.
+- Bump de versão: `0.1.2` → `0.1.3`
+
 ## [0.1.2] — 2026-04-18
 
 ### Fixed
@@ -86,7 +99,8 @@ Tipos de mudança:
 - Monitor de processo MT5 (detecta crash e reinicia)
 - Monitor de internet (detecta queda de conexão)
 
-[Unreleased]: https://github.com/EPFILHO/EPCopyFlow2.0/compare/v0.1.2...HEAD
+[Unreleased]: https://github.com/EPFILHO/EPCopyFlow2.0/compare/v0.1.3...HEAD
+[0.1.3]: https://github.com/EPFILHO/EPCopyFlow2.0/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/EPFILHO/EPCopyFlow2.0/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/EPFILHO/EPCopyFlow2.0/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/EPFILHO/EPCopyFlow2.0/compare/v0.0.1...v0.1.0
