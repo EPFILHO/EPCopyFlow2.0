@@ -17,6 +17,32 @@ Tipos de mudança:
 
 ## [Unreleased]
 
+## [0.1.6] — 2026-04-19
+
+### Changed
+- **Emergency close paraleliza slaves**: o master continua sendo fechado sequencialmente (primeiro, para que `_emergency_active=True` suprima replicação redundante), mas os slaves agora são processados em paralelo via `asyncio.gather`. Dentro de cada broker, as posições também são fechadas em paralelo. Em teste com 1 master + 1 slave a sequência era ~3.7s (POSITIONS+CLOSE do master + POSITIONS+CLOSE do slave em série); com múltiplos slaves o ganho escala. Extraídos helpers `_emergency_close_broker` e `_emergency_close_one` para isolar a lógica por broker/posição.
+- Bump de versão: `0.1.5` → `0.1.6`
+
+## [0.1.5] — 2026-04-19
+
+### Fixed
+- **SQLite sem transaction wrapping em writes multi-statement** (#62): quatro pontos do `copytrade_manager` executavam dois UPDATEs consecutivos e só commitavam no fim. Se o processo crashasse (ou lançasse exceção) entre os statements, a primeira escrita era perdida no rollback implícito, deixando `open_positions` e `master_positions` dessincronizados. Envolvido em `with self.db:` (context manager do sqlite3 → commit em sucesso, rollback em exceção):
+  - `handle_master_sltp_update` (open_positions + master_positions)
+  - `_track_master_position` em PARTIAL_CLOSE (master + open_positions legacy)
+  - `_track_master_position` em CLOSE (master status + open_positions status)
+  - `emergency_close_all` (PANIC em open + CLOSED em master)
+- **SQLite connection nunca era fechada** (#63): `CopyTradeManager.db` permanecia aberto até a saída do processo. No Windows isso mantinha o arquivo `copytrade_history.db` locked, impedindo backup/delete com o app fechando graciosamente. Adicionado `CopyTradeManager.close()` e chamada em `main.shutdown_cleanup()` após o encerramento dos processos MT5.
+
+### Changed
+- Bump de versão: `0.1.4` → `0.1.5`
+
+## [0.1.4] — 2026-04-19
+
+### Changed
+- **`TcpMessageHandler` deixou de usar globals de módulo** (#74): `trade_allowed_states` e `connection_status_states` eram dicionários no nível do módulo — vestígio da era ZMQ que impedia múltiplas instâncias e dificultava testes unitários. Agora são atributos de instância (`self._trade_allowed_states`, `self._connection_status_states`). API pública (`get_trade_allowed_states()`, `get_connection_status_states()`, `clear_broker_status()`) permanece inalterada, então os consumidores em `gui/pages/brokers_page.py` e `gui/pages/dashboard_page.py` não precisaram de mudança.
+- Renomeado o parâmetro `zid` para `client_id` no loop de identificação de broker em `handle_tcp_message` — última referência nominal ao ZMQ no código Python.
+- Bump de versão: `0.1.3` → `0.1.4`
+
 ## [0.1.3] — 2026-04-19
 
 ### Added
@@ -99,7 +125,10 @@ Tipos de mudança:
 - Monitor de processo MT5 (detecta crash e reinicia)
 - Monitor de internet (detecta queda de conexão)
 
-[Unreleased]: https://github.com/EPFILHO/EPCopyFlow2.0/compare/v0.1.3...HEAD
+[Unreleased]: https://github.com/EPFILHO/EPCopyFlow2.0/compare/v0.1.6...HEAD
+[0.1.6]: https://github.com/EPFILHO/EPCopyFlow2.0/compare/v0.1.5...v0.1.6
+[0.1.5]: https://github.com/EPFILHO/EPCopyFlow2.0/compare/v0.1.4...v0.1.5
+[0.1.4]: https://github.com/EPFILHO/EPCopyFlow2.0/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/EPFILHO/EPCopyFlow2.0/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/EPFILHO/EPCopyFlow2.0/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/EPFILHO/EPCopyFlow2.0/compare/v0.1.0...v0.1.1

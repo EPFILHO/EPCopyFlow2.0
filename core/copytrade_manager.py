@@ -586,16 +586,16 @@ class CopyTradeManager(QObject):
 
         logger.info(f"SLTP_MODIFIED: pos_id={position_id}, symbol={symbol}, sl={new_sl}, tp={new_tp}")
 
-        self.db.execute(
-            "UPDATE open_positions SET sl = ?, tp = ? WHERE master_ticket = ? AND status = 'OPEN'",
-            (new_sl, new_tp, position_id)
-        )
-        self.db.execute(
-            "UPDATE master_positions SET sl = ?, tp = ? "
-            "WHERE position_id = ? AND master_broker = ? AND status = 'OPEN'",
-            (new_sl, new_tp, position_id, sltp_data.get("broker_key", ""))
-        )
-        self.db.commit()
+        with self.db:
+            self.db.execute(
+                "UPDATE open_positions SET sl = ?, tp = ? WHERE master_ticket = ? AND status = 'OPEN'",
+                (new_sl, new_tp, position_id)
+            )
+            self.db.execute(
+                "UPDATE master_positions SET sl = ?, tp = ? "
+                "WHERE position_id = ? AND master_broker = ? AND status = 'OPEN'",
+                (new_sl, new_tp, position_id, sltp_data.get("broker_key", ""))
+            )
 
         slaves = self.broker_manager.get_connected_slave_brokers()
         tasks = []
@@ -668,61 +668,60 @@ class CopyTradeManager(QObject):
         """
         now = time.time()
 
-        if trade_action in ("BUY", "SELL"):
-            existing = self._get_master_position_info(position_id, master_broker)
-            if existing:
-                # ADD à posição existente
+        with self.db:
+            if trade_action in ("BUY", "SELL"):
+                existing = self._get_master_position_info(position_id, master_broker)
+                if existing:
+                    # ADD à posição existente
+                    self.db.execute(
+                        "UPDATE master_positions SET volume = ROUND(volume + ?, 8), sl = ?, tp = ? "
+                        "WHERE position_id = ? AND master_broker = ? AND status = 'OPEN'",
+                        (volume, sl, tp, position_id, master_broker)
+                    )
+                    logger.debug(f"  📝 master_positions ADD: pos_id={position_id}, +{volume}")
+                else:
+                    self.db.execute(
+                        """INSERT INTO master_positions
+                           (master_broker, position_id, symbol, direction, volume, volume_original,
+                            sl, tp, status, opened_at)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?)""",
+                        (master_broker, position_id, symbol, direction, volume, volume, sl, tp, now)
+                    )
+                    logger.debug(f"  📝 master_positions OPEN: pos_id={position_id}, {direction} {volume}")
+
+            elif trade_action == "REVERSAL":
                 self.db.execute(
-                    "UPDATE master_positions SET volume = ROUND(volume + ?, 8), sl = ?, tp = ? "
+                    "UPDATE master_positions SET direction = ?, volume = ROUND(?, 8), sl = ?, tp = ? "
                     "WHERE position_id = ? AND master_broker = ? AND status = 'OPEN'",
-                    (volume, sl, tp, position_id, master_broker)
+                    (direction, volume, sl, tp, position_id, master_broker)
                 )
-                logger.debug(f"  📝 master_positions ADD: pos_id={position_id}, +{volume}")
-            else:
+                logger.debug(f"  📝 master_positions REVERSAL: pos_id={position_id}, {direction} {volume}")
+
+            elif trade_action == "PARTIAL_CLOSE":
                 self.db.execute(
-                    """INSERT INTO master_positions
-                       (master_broker, position_id, symbol, direction, volume, volume_original,
-                        sl, tp, status, opened_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?)""",
-                    (master_broker, position_id, symbol, direction, volume, volume, sl, tp, now)
+                    "UPDATE master_positions SET volume = ROUND(MAX(0, volume - ?), 8) "
+                    "WHERE position_id = ? AND master_broker = ? AND status = 'OPEN'",
+                    (volume, position_id, master_broker)
                 )
-                logger.debug(f"  📝 master_positions OPEN: pos_id={position_id}, {direction} {volume}")
+                # open_positions legacy: mantido para compatibilidade
+                self.db.execute(
+                    "UPDATE open_positions SET master_volume_current = master_volume_current - ? "
+                    "WHERE master_ticket = ? AND status = 'OPEN'",
+                    (volume, position_id)
+                )
+                logger.debug(f"  📝 master_positions PARTIAL_CLOSE: pos_id={position_id}, vol_fechado={volume}")
 
-        elif trade_action == "REVERSAL":
-            self.db.execute(
-                "UPDATE master_positions SET direction = ?, volume = ROUND(?, 8), sl = ?, tp = ? "
-                "WHERE position_id = ? AND master_broker = ? AND status = 'OPEN'",
-                (direction, volume, sl, tp, position_id, master_broker)
-            )
-            logger.debug(f"  📝 master_positions REVERSAL: pos_id={position_id}, {direction} {volume}")
-
-        elif trade_action == "PARTIAL_CLOSE":
-            self.db.execute(
-                "UPDATE master_positions SET volume = ROUND(MAX(0, volume - ?), 8) "
-                "WHERE position_id = ? AND master_broker = ? AND status = 'OPEN'",
-                (volume, position_id, master_broker)
-            )
-            # open_positions legacy: mantido para compatibilidade
-            self.db.execute(
-                "UPDATE open_positions SET master_volume_current = master_volume_current - ? "
-                "WHERE master_ticket = ? AND status = 'OPEN'",
-                (volume, position_id)
-            )
-            logger.debug(f"  📝 master_positions PARTIAL_CLOSE: pos_id={position_id}, vol_fechado={volume}")
-
-        elif trade_action == "CLOSE":
-            self.db.execute(
-                "UPDATE master_positions SET status = 'CLOSED', closed_at = ? "
-                "WHERE position_id = ? AND master_broker = ? AND status = 'OPEN'",
-                (now, position_id, master_broker)
-            )
-            self.db.execute(
-                "UPDATE open_positions SET status = 'CLOSING' WHERE master_ticket = ? AND status = 'OPEN'",
-                (position_id,)
-            )
-            logger.debug(f"  📝 master_positions CLOSED: pos_id={position_id}")
-
-        self.db.commit()
+            elif trade_action == "CLOSE":
+                self.db.execute(
+                    "UPDATE master_positions SET status = 'CLOSED', closed_at = ? "
+                    "WHERE position_id = ? AND master_broker = ? AND status = 'OPEN'",
+                    (now, position_id, master_broker)
+                )
+                self.db.execute(
+                    "UPDATE open_positions SET status = 'CLOSING' WHERE master_ticket = ? AND status = 'OPEN'",
+                    (position_id,)
+                )
+                logger.debug(f"  📝 master_positions CLOSED: pos_id={position_id}")
 
     def _get_slave_position_info(self, position_id: int, slave_key: str) -> dict:
         """Retorna info da posição do slave: {volume, direction, master_volume}. None se não encontrado."""
@@ -1304,82 +1303,56 @@ class CopyTradeManager(QObject):
     # Bloco 4 - Fechamento de Emergência
     # ──────────────────────────────────────────────
     async def emergency_close_all(self):
-        """Fecha TODAS as posições em TODOS os MT5s (master + slaves)."""
+        """Fecha TODAS as posições em TODOS os MT5s (master + slaves).
+
+        Estratégia: master é fechado primeiro (sequencial) para que o
+        `_emergency_active=True` suprima replicação redundante quando o
+        OnTrade do master reportar o close. Em seguida os slaves são
+        fechados em paralelo via asyncio.gather para cortar latência.
+        """
         logger.warning("EMERGÊNCIA: Fechando todas as posições!")
         self._emergency_active = True
         self.copy_trade_log.emit("EMERGÊNCIA: Iniciando fechamento de todas as posições...")
 
-        connected = self.broker_manager.get_connected_brokers()
+        connected = list(self.broker_manager.get_connected_brokers())
+        master_key = self.broker_manager.get_master_broker()
+
         total_closed = 0
-        errors = []
+        errors: list[str] = []
 
-        for broker_key in connected:
-            # Solicita posições abertas
-            request_id = f"positions_{broker_key}_{int(time.time())}"
-            response = await self.tcp_router.send_command_to_broker(
-                broker_key, "POSITIONS", {}, request_id
+        # 1) Master sequencial (se conectado)
+        if master_key and master_key in connected:
+            closed, errs = await self._emergency_close_broker(master_key)
+            total_closed += closed
+            errors.extend(errs)
+
+        # 2) Slaves em paralelo
+        slaves = [k for k in connected if k != master_key]
+        if slaves:
+            results = await asyncio.gather(
+                *(self._emergency_close_broker(k) for k in slaves),
+                return_exceptions=True,
             )
-
-            if response.get("status") != "OK":
-                errors.append(f"{broker_key}: falha ao obter posições")
-                continue
-
-            # Parsear posições do formato flattenado (pos_0_ticket, pos_1_ticket, ...)
-            positions = []
-            positions_count = response.get("positions_count", 0)
-            for i in range(positions_count):
-                prefix = f"pos_{i}_"
-                ticket = response.get(f"{prefix}ticket", 0)
-                symbol = response.get(f"{prefix}symbol", "")
-                volume = response.get(f"{prefix}volume", 0.0)
-                if ticket and ticket > 0:
-                    positions.append({"ticket": ticket, "symbol": symbol, "volume": volume})
-
-            broker_role = self.broker_manager.get_broker_role(broker_key)
-            master_broker = broker_key if broker_role == "master" else self.broker_manager.get_master_broker()
-
-            for pos in positions:
-                ticket = pos.get("ticket", 0)
-                symbol = pos.get("symbol", "")
-                volume = pos.get("volume", 0.0)
-                if ticket > 0:
-                    close_id = f"close_{broker_key}_{ticket}_{int(time.time())}"
-                    close_response = await self.tcp_router.send_command_to_broker(
-                        broker_key, "TRADE_POSITION_CLOSE_ID",
-                        {"ticket": ticket, "emergency": True}, close_id
-                    )
-                    if close_response.get("status") == "OK":
-                        total_closed += 1
-                        deal_ticket = close_response.get("deal", 0) or close_response.get("order", 0)
-                        self._insert_history(
-                            master_broker or broker_key, deal_ticket, symbol,
-                            "EMERGENCY_CLOSE", volume,
-                            broker_key, ticket, volume, "SUCCESS",
-                            close_reason="EMERGENCY"
-                        )
-                        self.copy_trade_log.emit(
-                            f"EMERGÊNCIA: Fechado {symbol} ticket={ticket} em {broker_key}")
-                    else:
-                        error = close_response.get("message", "erro")
-                        errors.append(f"{broker_key}/{symbol}: {error}")
-                        self._insert_history(
-                            master_broker or broker_key, ticket, symbol,
-                            "EMERGENCY_CLOSE", volume,
-                            broker_key, ticket, volume, "FAILED", error,
-                            close_reason="EMERGENCY"
-                        )
+            for slave_key, result in zip(slaves, results):
+                if isinstance(result, Exception):
+                    logger.exception(f"Emergency close falhou em {slave_key}: {result}")
+                    errors.append(f"{slave_key}: exceção {result}")
+                    continue
+                closed, errs = result
+                total_closed += closed
+                errors.extend(errs)
 
         # Marcar TODAS as posições como PANIC/CLOSED no DB (diferencia de CLOSED normal)
         now = time.time()
-        self.db.execute(
-            "UPDATE open_positions SET status = 'PANIC', closed_at = ?, close_reason = 'EMERGENCY' WHERE status IN ('OPEN', 'SYNCING', 'CLOSING')",
-            (now,)
-        )
-        self.db.execute(
-            "UPDATE master_positions SET status = 'CLOSED', closed_at = ? WHERE status = 'OPEN'",
-            (now,)
-        )
-        self.db.commit()
+        with self.db:
+            self.db.execute(
+                "UPDATE open_positions SET status = 'PANIC', closed_at = ?, close_reason = 'EMERGENCY' WHERE status IN ('OPEN', 'SYNCING', 'CLOSING')",
+                (now,)
+            )
+            self.db.execute(
+                "UPDATE master_positions SET status = 'CLOSED', closed_at = ? WHERE status = 'OPEN'",
+                (now,)
+            )
         logger.info("  📝 Todas as posições marcadas como PANIC no DB")
 
         # Limpa mapa de posições e locks
@@ -1397,6 +1370,92 @@ class CopyTradeManager(QObject):
 
         self.copy_trade_log.emit(msg)
         logger.warning(msg)
+
+    async def _emergency_close_broker(self, broker_key: str) -> tuple[int, list[str]]:
+        """Fecha todas as posições de um broker. Retorna (closed_count, errors)."""
+        errors: list[str] = []
+        closed_count = 0
+
+        # 1) Solicitar posições
+        request_id = f"positions_{broker_key}_{int(time.time() * 1000)}"
+        response = await self.tcp_router.send_command_to_broker(
+            broker_key, "POSITIONS", {}, request_id
+        )
+        if response.get("status") != "OK":
+            errors.append(f"{broker_key}: falha ao obter posições")
+            return closed_count, errors
+
+        # Parsear posições (formato flattenado: pos_0_ticket, pos_1_ticket, ...)
+        positions = []
+        for i in range(response.get("positions_count", 0)):
+            prefix = f"pos_{i}_"
+            ticket = response.get(f"{prefix}ticket", 0)
+            if ticket and ticket > 0:
+                positions.append({
+                    "ticket": ticket,
+                    "symbol": response.get(f"{prefix}symbol", ""),
+                    "volume": response.get(f"{prefix}volume", 0.0),
+                })
+
+        if not positions:
+            return closed_count, errors
+
+        broker_role = self.broker_manager.get_broker_role(broker_key)
+        master_broker = (broker_key if broker_role == "master"
+                         else self.broker_manager.get_master_broker())
+
+        # 2) Fechar posições em paralelo dentro do mesmo broker
+        close_tasks = [
+            self._emergency_close_one(broker_key, master_broker, pos)
+            for pos in positions
+        ]
+        results = await asyncio.gather(*close_tasks, return_exceptions=True)
+        for pos, result in zip(positions, results):
+            if isinstance(result, Exception):
+                logger.exception(f"Exceção ao fechar {broker_key}/{pos['symbol']}: {result}")
+                errors.append(f"{broker_key}/{pos['symbol']}: exceção {result}")
+                continue
+            ok, err = result
+            if ok:
+                closed_count += 1
+            elif err:
+                errors.append(err)
+
+        return closed_count, errors
+
+    async def _emergency_close_one(self, broker_key: str, master_broker: str,
+                                    pos: dict) -> tuple[bool, str]:
+        """Fecha uma posição específica. Retorna (sucesso, mensagem_erro)."""
+        ticket = pos["ticket"]
+        symbol = pos["symbol"]
+        volume = pos["volume"]
+
+        close_id = f"close_{broker_key}_{ticket}_{int(time.time() * 1000)}"
+        close_response = await self.tcp_router.send_command_to_broker(
+            broker_key, "TRADE_POSITION_CLOSE_ID",
+            {"ticket": ticket, "emergency": True}, close_id,
+        )
+
+        if close_response.get("status") == "OK":
+            deal_ticket = close_response.get("deal", 0) or close_response.get("order", 0)
+            self._insert_history(
+                master_broker or broker_key, deal_ticket, symbol,
+                "EMERGENCY_CLOSE", volume,
+                broker_key, ticket, volume, "SUCCESS",
+                close_reason="EMERGENCY",
+            )
+            self.copy_trade_log.emit(
+                f"EMERGÊNCIA: Fechado {symbol} ticket={ticket} em {broker_key}")
+            return True, ""
+
+        error = close_response.get("message", "erro")
+        self._insert_history(
+            master_broker or broker_key, ticket, symbol,
+            "EMERGENCY_CLOSE", volume,
+            broker_key, ticket, volume, "FAILED", error,
+            close_reason="EMERGENCY",
+        )
+        return False, f"{broker_key}/{symbol}: {error}"
 
     # ──────────────────────────────────────────────
     # Bloco 5 - Histórico e Estatísticas (SQLite)
@@ -1460,3 +1519,21 @@ class CopyTradeManager(QObject):
             (today_start,)
         ).fetchone()
         return {"total": row[0] or 0, "success": row[1] or 0, "failed": row[2] or 0}
+
+    # ──────────────────────────────────────────────
+    # Bloco 6 - Shutdown
+    # ──────────────────────────────────────────────
+    def close(self):
+        """Fecha a conexão SQLite. Chamado pelo shutdown_cleanup do main.
+
+        No Windows, conexões SQLite abertas mantêm o arquivo locked e impedem
+        backup/delete. Fechar explicitamente libera o lock.
+        """
+        if self.db is not None:
+            try:
+                self.db.close()
+                logger.info("Conexão SQLite fechada.")
+            except Exception as e:
+                logger.warning(f"Erro ao fechar DB: {e}")
+            finally:
+                self.db = None
