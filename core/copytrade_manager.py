@@ -1305,123 +1305,150 @@ class CopyTradeManager(QObject):
     async def emergency_close_all(self):
         """Fecha TODAS as posições em TODOS os MT5s (master + slaves).
 
-        Estratégia: master é fechado primeiro (sequencial) para que o
-        `_emergency_active=True` suprima replicação redundante quando o
-        OnTrade do master reportar o close. Em seguida os slaves são
-        fechados em paralelo via asyncio.gather para cortar latência.
+        Fase 1 — close direto por ticket (sem round-trip de POSITIONS):
+          Lê master_positions e open_positions do DB e dispara todos os
+          closes em paralelo (master + todos os slaves ao mesmo tempo).
+          _emergency_active suprime replicação redundante do OnTrade do master.
+
+        Fase 2 — reconciliação (#56):
+          GET_POSITIONS em cada broker para garantir que nada ficou aberto.
+          Fecha órfãos (posições não rastreadas ou cujo close falhou silenciosamente).
         """
         logger.warning("EMERGÊNCIA: Fechando todas as posições!")
         self._emergency_active = True
         self.copy_trade_log.emit("EMERGÊNCIA: Iniciando fechamento de todas as posições...")
 
-        connected = list(self.broker_manager.get_connected_brokers())
+        connected = set(self.broker_manager.get_connected_brokers())
         master_key = self.broker_manager.get_master_broker()
-
         total_closed = 0
         errors: list[str] = []
 
-        # 1) Master sequencial (se conectado)
+        # ── Fase 1: closes em paralelo a partir do DB ──────────────────────
+        tasks: list = []  # (coro, label)
+
+        # Master — lê de master_positions
         if master_key and master_key in connected:
-            closed, errs = await self._emergency_close_broker(master_key)
-            total_closed += closed
-            errors.extend(errs)
+            rows = self.db.execute(
+                "SELECT position_id, symbol, volume FROM master_positions WHERE status = 'OPEN'"
+            ).fetchall()
+            for pos_id, symbol, volume in rows:
+                pos = {"ticket": pos_id, "symbol": symbol, "volume": volume}
+                tasks.append((self._emergency_close_one(master_key, master_key, pos),
+                               master_key))
 
-        # 2) Slaves em paralelo
-        slaves = [k for k in connected if k != master_key]
-        if slaves:
-            results = await asyncio.gather(
-                *(self._emergency_close_broker(k) for k in slaves),
-                return_exceptions=True,
-            )
-            for slave_key, result in zip(slaves, results):
+        # Slaves — lê de open_positions
+        slave_rows = self.db.execute(
+            "SELECT slave_broker, slave_ticket, symbol, slave_volume_current "
+            "FROM open_positions WHERE status IN ('OPEN', 'SYNCING')"
+        ).fetchall()
+        for slave_broker, slave_ticket, symbol, volume in slave_rows:
+            if slave_broker in connected and slave_ticket:
+                pos = {"ticket": slave_ticket, "symbol": symbol, "volume": volume or 0.0}
+                tasks.append((self._emergency_close_one(slave_broker, master_key, pos),
+                               slave_broker))
+
+        if tasks:
+            coros, labels = zip(*tasks)
+            results = await asyncio.gather(*coros, return_exceptions=True)
+            for label, result in zip(labels, results):
                 if isinstance(result, Exception):
-                    logger.exception(f"Emergency close falhou em {slave_key}: {result}")
-                    errors.append(f"{slave_key}: exceção {result}")
-                    continue
-                closed, errs = result
-                total_closed += closed
-                errors.extend(errs)
+                    logger.exception(f"Emergency close exceção em {label}: {result}")
+                    errors.append(f"{label}: exceção {result}")
+                else:
+                    ok, err = result
+                    if ok:
+                        total_closed += 1
+                    elif err:
+                        errors.append(err)
 
-        # Marcar TODAS as posições como PANIC/CLOSED no DB (diferencia de CLOSED normal)
+        # ── Marcar DB como PANIC ───────────────────────────────────────────
         now = time.time()
         with self.db:
             self.db.execute(
-                "UPDATE open_positions SET status = 'PANIC', closed_at = ?, close_reason = 'EMERGENCY' WHERE status IN ('OPEN', 'SYNCING', 'CLOSING')",
+                "UPDATE open_positions SET status='PANIC', closed_at=?, close_reason='EMERGENCY'"
+                " WHERE status IN ('OPEN','SYNCING','CLOSING')",
                 (now,)
             )
             self.db.execute(
-                "UPDATE master_positions SET status = 'CLOSED', closed_at = ? WHERE status = 'OPEN'",
+                "UPDATE master_positions SET status='CLOSED', closed_at=? WHERE status='OPEN'",
                 (now,)
             )
         logger.info("  📝 Todas as posições marcadas como PANIC no DB")
 
-        # Limpa mapa de posições e locks
         self.position_map.clear()
         self._position_locks.clear()
-        self._emergency_completed_at = time.time()  # Inicia grace period de 5s
+        self._emergency_completed_at = time.time()
+
+        # ── Fase 2: reconciliação — detecta e fecha órfãos (#56) ──────────
+        recon_tasks = [
+            self._emergency_reconcile(bk, master_key) for bk in connected
+        ]
+        recon_results = await asyncio.gather(*recon_tasks, return_exceptions=True)
+        orphans_total = 0
+        for bk, result in zip(list(connected), recon_results):
+            if isinstance(result, Exception):
+                logger.warning(f"Reconciliação falhou em {bk}: {result}")
+            else:
+                orphans, msgs = result
+                orphans_total += orphans
+                errors.extend(msgs)
+
         self._emergency_active = False
 
+        grand_total = total_closed + orphans_total
         if errors:
-            msg = f"Fechadas {total_closed} posições. Erros: {'; '.join(errors)}"
+            msg = f"Emergência: {grand_total} posição(ões) fechada(s). Avisos: {'; '.join(errors)}"
             self.emergency_completed.emit(False, msg)
         else:
-            msg = f"EMERGÊNCIA concluída: {total_closed} posições fechadas."
+            msg = f"EMERGÊNCIA concluída: {grand_total} posição(ões) fechada(s)."
             self.emergency_completed.emit(True, msg)
 
         self.copy_trade_log.emit(msg)
         logger.warning(msg)
 
-    async def _emergency_close_broker(self, broker_key: str) -> tuple[int, list[str]]:
-        """Fecha todas as posições de um broker. Retorna (closed_count, errors)."""
-        errors: list[str] = []
-        closed_count = 0
-
-        # 1) Solicitar posições
-        request_id = f"positions_{broker_key}_{int(time.time() * 1000)}"
+    async def _emergency_reconcile(self, broker_key: str,
+                                    master_key: str) -> tuple[int, list[str]]:
+        """Fase 2: GET_POSITIONS para fechar posições órfãs não cobertas pelo DB."""
+        request_id = f"positions_recon_{broker_key}_{int(time.time() * 1000)}"
         response = await self.tcp_router.send_command_to_broker(
             broker_key, "POSITIONS", {}, request_id
         )
         if response.get("status") != "OK":
-            errors.append(f"{broker_key}: falha ao obter posições")
-            return closed_count, errors
+            logger.warning(f"Reconciliação: falha ao obter posições de {broker_key}")
+            return 0, []
 
-        # Parsear posições (formato flattenado: pos_0_ticket, pos_1_ticket, ...)
-        positions = []
-        for i in range(response.get("positions_count", 0)):
+        count = response.get("positions_count", 0)
+        if count == 0:
+            return 0, []
+
+        orphan_closed = 0
+        msgs: list[str] = []
+        close_tasks = []
+        orphan_positions = []
+        for i in range(count):
             prefix = f"pos_{i}_"
             ticket = response.get(f"{prefix}ticket", 0)
-            if ticket and ticket > 0:
-                positions.append({
-                    "ticket": ticket,
-                    "symbol": response.get(f"{prefix}symbol", ""),
-                    "volume": response.get(f"{prefix}volume", 0.0),
-                })
-
-        if not positions:
-            return closed_count, errors
-
-        broker_role = self.broker_manager.get_broker_role(broker_key)
-        master_broker = (broker_key if broker_role == "master"
-                         else self.broker_manager.get_master_broker())
-
-        # 2) Fechar posições em paralelo dentro do mesmo broker
-        close_tasks = [
-            self._emergency_close_one(broker_key, master_broker, pos)
-            for pos in positions
-        ]
-        results = await asyncio.gather(*close_tasks, return_exceptions=True)
-        for pos, result in zip(positions, results):
-            if isinstance(result, Exception):
-                logger.exception(f"Exceção ao fechar {broker_key}/{pos['symbol']}: {result}")
-                errors.append(f"{broker_key}/{pos['symbol']}: exceção {result}")
+            symbol = response.get(f"{prefix}symbol", "")
+            volume = response.get(f"{prefix}volume", 0.0)
+            if not ticket:
                 continue
-            ok, err = result
-            if ok:
-                closed_count += 1
-            elif err:
-                errors.append(err)
+            logger.warning(f"  Reconciliação: órfã em {broker_key}: {symbol} ticket={ticket}")
+            self.copy_trade_log.emit(
+                f"EMERGÊNCIA RECONCILIAÇÃO: {broker_key} {symbol} ticket={ticket} ainda aberta!")
+            pos = {"ticket": ticket, "symbol": symbol, "volume": volume}
+            close_tasks.append(self._emergency_close_one(broker_key, master_key, pos))
+            orphan_positions.append(pos)
 
-        return closed_count, errors
+        if close_tasks:
+            results = await asyncio.gather(*close_tasks, return_exceptions=True)
+            for pos, result in zip(orphan_positions, results):
+                if isinstance(result, Exception) or not result[0]:
+                    err = str(result) if isinstance(result, Exception) else result[1]
+                    msgs.append(f"{broker_key}/{pos['symbol']} órfã não fechada: {err}")
+                else:
+                    orphan_closed += 1
+
+        return orphan_closed, msgs
 
     async def _emergency_close_one(self, broker_key: str, master_broker: str,
                                     pos: dict) -> tuple[bool, str]:
