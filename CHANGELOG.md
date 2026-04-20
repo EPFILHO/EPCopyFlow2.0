@@ -17,6 +17,15 @@ Tipos de mudança:
 
 ## [Unreleased]
 
+## [0.1.7] — 2026-04-19
+
+### Changed
+- **Emergency close Option C** (#56): reescrita completa de `emergency_close_all`.
+  - **Fase 1** — close direto por ticket sem round-trip de POSITIONS: lê `master_positions` e `open_positions` do DB e dispara todos os closes (master + todos os slaves) em paralelo via `asyncio.gather`. Elimina ~1–2s de overhead por POSITIONS desnecessário e remove a serialização master-primeiro/slaves-depois.
+  - **Fase 2** — reconciliação: GET_POSITIONS em cada broker após fase 1 para detectar e fechar posições órfãs (não rastreadas no DB ou cujo close falhou silenciosamente). Fecha órfãs também em paralelo. Resolve #56.
+  - Helper `_emergency_close_broker` removido (substituído pelo novo fluxo). `_emergency_close_one` mantido e reaproveitado pelas duas fases.
+- Bump de versão: `0.1.6` → `0.1.7`
+
 ## [0.1.6] — 2026-04-19
 
 ### Changed
@@ -125,7 +134,8 @@ Tipos de mudança:
 - Monitor de processo MT5 (detecta crash e reinicia)
 - Monitor de internet (detecta queda de conexão)
 
-[Unreleased]: https://github.com/EPFILHO/EPCopyFlow2.0/compare/v0.1.6...HEAD
+[Unreleased]: https://github.com/EPFILHO/EPCopyFlow2.0/compare/v0.1.7...HEAD
+[0.1.7]: https://github.com/EPFILHO/EPCopyFlow2.0/compare/v0.1.6...v0.1.7
 [0.1.6]: https://github.com/EPFILHO/EPCopyFlow2.0/compare/v0.1.5...v0.1.6
 [0.1.5]: https://github.com/EPFILHO/EPCopyFlow2.0/compare/v0.1.4...v0.1.5
 [0.1.4]: https://github.com/EPFILHO/EPCopyFlow2.0/compare/v0.1.3...v0.1.4
