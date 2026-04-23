@@ -17,6 +17,12 @@ Tipos de mudança:
 
 ## [Unreleased]
 
+## [0.1.8] — 2026-04-23
+
+### Fixed
+- **`position_id=0` em conta real com execução assíncrona na B3** (#109): em corretoras reais, `OrderSend` retorna com `result.deal=0` (o deal é confirmado assincronamente pela bolsa). As duas tentativas existentes de derivar o `POSITION_IDENTIFIER` (`HistoryDealSelect` e `PositionSelect`) falhavam nesse cenário, fazendo o Python rejeitar o TRADE_EVENT com `❌ TRADE_EVENT sem position_id!` e não replicar a abertura para os slaves. Adicionada **3ª tentativa** via `HistoryOrderGetInteger(result.order, ORDER_POSITION_ID)`: a ordem já existe no histórico com `ORDER_POSITION_ID` preenchido mesmo antes do deal ser confirmado. Fix cirúrgico no EA (`EPCopyFlow2_EA.mq5`); comportamento em conta demo inalterado.
+- Bump de versão: `0.1.7` → `0.1.8`
+
 ## [0.1.7] — 2026-04-19
 
 ### Changed
@@ -134,7 +140,8 @@ Tipos de mudança:
 - Monitor de processo MT5 (detecta crash e reinicia)
 - Monitor de internet (detecta queda de conexão)
 
-[Unreleased]: https://github.com/EPFILHO/EPCopyFlow2.0/compare/v0.1.7...HEAD
+[Unreleased]: https://github.com/EPFILHO/EPCopyFlow2.0/compare/v0.1.8...HEAD
+[0.1.8]: https://github.com/EPFILHO/EPCopyFlow2.0/compare/v0.1.7...v0.1.8
 [0.1.7]: https://github.com/EPFILHO/EPCopyFlow2.0/compare/v0.1.6...v0.1.7
 [0.1.6]: https://github.com/EPFILHO/EPCopyFlow2.0/compare/v0.1.5...v0.1.6
 [0.1.5]: https://github.com/EPFILHO/EPCopyFlow2.0/compare/v0.1.4...v0.1.5

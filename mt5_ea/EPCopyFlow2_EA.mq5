@@ -1867,6 +1867,14 @@ void OnTradeTransaction(const MqlTradeTransaction &trans, const MqlTradeRequest 
          }
       }
 
+      // 3ª tentativa: ORDER_POSITION_ID via histórico da ordem.
+      // Cobre o caso de conta real onde result.deal chega zero (execução assíncrona na bolsa):
+      // a ordem já existe no histórico com ORDER_POSITION_ID preenchido mesmo sem deal confirmado.
+      if(position_id == 0 && result.order > 0 && HistoryOrderSelect(result.order))
+      {
+         position_id = HistoryOrderGetInteger(result.order, ORDER_POSITION_ID);
+      }
+
       if(position_id == 0 && InpDebugLog)
          PrintFormat("WARNING: Não foi possível obter POSITION_IDENTIFIER para %s (deal=%lld, pos=%lld)",
                      request.symbol, result.deal, request.position);
