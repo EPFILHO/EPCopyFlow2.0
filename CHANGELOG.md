@@ -17,6 +17,9 @@ Tipos de mudança:
 
 ## [Unreleased]
 
+### Added
+- **`core/engine_thread.py`** (#111, PR 1): infraestrutura `EngineThread` para hospedar o event loop do motor de trade em uma thread daemon dedicada, isolada da main thread (Qt). API mínima: `start()` (bloqueia até loop pronto via `threading.Event`), `submit(coro) -> concurrent.futures.Future` (wrapper sobre `asyncio.run_coroutine_threadsafe`), `stop(timeout)` (cancela tasks pendentes, para o loop, faz join). Inclui `loop.set_exception_handler` para que exceções em coroutines/tasks não derrubem o loop. Acompanhada de `tests/test_engine_thread.py` (13 testes unitários, stdlib `unittest`). **Não conectada ao app ainda** — primeiro passo da refatoração para separar GUI Qt e motor asyncio em threads distintas (resolve freeze de replicação durante Alt+Tab no Windows).
+
 ## [0.1.8] — 2026-04-23
 
 ### Fixed
