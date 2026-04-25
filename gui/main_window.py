@@ -3,7 +3,6 @@
 # Janela principal com sidebar de navegação e header com monitor de sistema.
 
 import logging
-import asyncio
 from PySide6.QtWidgets import (
     QMainWindow, QVBoxLayout, QHBoxLayout, QWidget, QLabel,
     QPushButton, QStackedWidget, QFrame, QSizePolicy, QMessageBox
@@ -36,22 +35,27 @@ class MainWindow(QMainWindow):
                  config: ConfigManager,
                  broker_manager: BrokerManager,
                  tcp_router: TcpRouter,
-                 shutdown_event_ref: asyncio.Event,
+                 engine,
                  root_path: str,
                  mt5_monitor,
-                 copytrade_manager=None):
+                 copytrade_manager,
+                 tcp_message_handler: TcpMessageHandler):
+        """
+        engine: core.engine_thread.EngineThread — usado para submeter
+        coroutines (emergency close, shutdown) ao loop do motor.
+        tcp_message_handler: construído no bootstrap do motor (na thread do
+        motor) e injetado aqui para garantir que QObjects emissores nasçam
+        com a thread affinity correta. Ver issue #111.
+        """
         super().__init__()
         self.config = config
         self.broker_manager = broker_manager
         self.tcp_router = tcp_router
-        self.shutdown_event_ref = shutdown_event_ref
+        self.engine = engine
         self.root_path = root_path
         self.mt5_monitor = mt5_monitor
         self.copytrade_manager = copytrade_manager
-        self.tcp_message_handler = TcpMessageHandler(
-            config, tcp_router, broker_manager=broker_manager,
-            copytrade_manager=copytrade_manager
-        )
+        self.tcp_message_handler = tcp_message_handler
 
         self.brokers = self.broker_manager.load_brokers()
         self.broker_status = {}
@@ -330,8 +334,10 @@ class MainWindow(QMainWindow):
             QMessageBox.No
         )
         if reply == QMessageBox.Yes:
-            if self.copytrade_manager:
-                asyncio.ensure_future(self.copytrade_manager.emergency_close_all())
+            if self.copytrade_manager and self.engine:
+                # Submete ao loop do motor — emergency_close_all roda fora
+                # da main thread e não bloqueia a GUI durante o fechamento.
+                self.engine.submit(self.copytrade_manager.emergency_close_all())
                 self.logs_page.append_log("EMERGENCIA: Fechando todas as posicoes...")
             else:
                 QMessageBox.information(self, "Info", "CopyTradeManager nao inicializado.")
@@ -342,13 +348,25 @@ class MainWindow(QMainWindow):
         logger.info("MainWindow exibida.")
 
     def closeEvent(self, event: QCloseEvent):
-        logger.info("Fechando MainWindow...")
+        """
+        Sequência de shutdown ordenada (issue #111):
+        1. Para timers e monitores da GUI (main thread).
+        2. Desconecta todos os brokers — isso submete coroutines ao motor
+           para fechar sockets do TcpRouter; aceitamos a latência e prosseguimos.
+        3. Para MT5ProcessMonitor (thread separada).
+        4. Submete coroutine de teardown do motor (TcpRouter.stop) e aguarda.
+        5. Fecha CopyTradeManager (libera SQLite).
+        6. Para EngineThread (cancela tasks pendentes, join na thread).
+        7. event.accept() — Qt fecha a janela; app.exec() retorna.
+        """
+        logger.info("Fechando MainWindow — iniciando shutdown ordenado...")
         self.indicators_timer.stop()
         self.internet_monitor.stop()
         if hasattr(self, "notification_center"):
             self.notification_center.shutdown()
 
-        # Desconectar todas as corretoras e fechar MT5
+        # Desconectar todas as corretoras e fechar MT5 (síncrono nesta thread;
+        # internamente submete os disconnect_broker_sockets ao motor).
         try:
             for key in list(self.broker_manager.get_connected_brokers()):
                 try:
@@ -359,5 +377,34 @@ class MainWindow(QMainWindow):
         except Exception as e:
             logger.error(f"Erro ao obter corretoras conectadas no fechamento: {e}")
 
-        self.shutdown_event_ref.set()
+        # Para watchdog do MT5 (thread própria).
+        if self.mt5_monitor is not None:
+            try:
+                self.mt5_monitor.stop()
+            except Exception as e:
+                logger.warning(f"Erro ao parar MT5ProcessMonitor: {e}")
+
+        # Teardown do motor: parar TcpRouter dentro do loop dele.
+        if self.engine is not None and self.tcp_router is not None:
+            try:
+                fut = self.engine.submit(self.tcp_router.stop())
+                fut.result(timeout=5.0)
+            except Exception as e:
+                logger.warning(f"Erro/timeout ao parar TcpRouter: {e}")
+
+        # Fechar CopyTradeManager (libera SQLite — importante no Windows).
+        if self.copytrade_manager is not None:
+            try:
+                self.copytrade_manager.close()
+            except Exception as e:
+                logger.warning(f"Erro ao fechar CopyTradeManager: {e}")
+
+        # Parar a thread do motor.
+        if self.engine is not None:
+            try:
+                self.engine.stop(timeout=5.0)
+            except Exception as e:
+                logger.warning(f"Erro ao parar EngineThread: {e}")
+
+        logger.info("Shutdown ordenado concluído.")
         event.accept()
