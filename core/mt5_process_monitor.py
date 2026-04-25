@@ -87,7 +87,7 @@ class MT5ProcessMonitor:
             if key in self._failed_brokers:
                 continue
 
-            process = self.broker_manager.mt5_processes.get(key)
+            process = self.broker_manager.get_mt5_process(key)
             process_dead = (process is None) or (process.poll() is not None)
 
             if not process_dead:
@@ -97,14 +97,17 @@ class MT5ProcessMonitor:
 
             # --- Processo morto ---
 
-            # Limpar processo morto do broker_manager
-            if process and key in self.broker_manager.mt5_processes:
+            # Limpar processo morto do broker_manager (via acessores thread-safe)
+            if process is not None:
                 exit_code = process.poll()
-                del self.broker_manager.mt5_processes[key]
-                self.broker_manager.connected_brokers[key] = False
+                self.broker_manager.set_mt5_process(key, None)
+                # set_mt5_process com None deixa um valor None no dict; remove
+                # explicitamente para manter o dict consistente.
+                with self.broker_manager._state_lock:
+                    self.broker_manager.mt5_processes.pop(key, None)
             else:
                 exit_code = "N/A"
-                self.broker_manager.connected_brokers[key] = False
+            self.broker_manager.set_connected(key, False)
 
             # Detectar crash loop: se morreu rápido demais após último restart
             last_restart = self._last_restart_at.get(key)
@@ -185,11 +188,13 @@ class MT5ProcessMonitor:
                     ],
                     cwd=os.path.dirname(instance_path)
                 )
-            self.broker_manager.mt5_processes[key] = process
-            self.broker_manager.connected_brokers[key] = True
+            self.broker_manager.set_mt5_process(key, process)
+            self.broker_manager.set_connected(key, True)
             logger.info(f"MT5 reiniciado para {key} (PID: {process.pid}).")
 
-            if self.broker_manager.tcp_router:
+            if self.broker_manager.tcp_router and self.event_loop:
+                # event_loop aqui é o loop do EngineThread (motor). Submeter
+                # o connect_broker_sockets garante que ele rode na thread certa.
                 asyncio.run_coroutine_threadsafe(
                     self.broker_manager.tcp_router.connect_broker_sockets(key, broker_config),
                     self.event_loop
@@ -197,5 +202,5 @@ class MT5ProcessMonitor:
             return True
         except Exception as e:
             logger.error(f"Erro ao reiniciar MT5 para {key}: {e}")
-            self.broker_manager.connected_brokers[key] = False
+            self.broker_manager.set_connected(key, False)
             return False

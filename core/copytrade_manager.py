@@ -10,6 +10,7 @@ import logging
 import asyncio
 import hashlib
 import datetime
+import threading
 from PySide6.QtCore import QObject, Signal
 
 logger = logging.getLogger(__name__)
@@ -36,7 +37,20 @@ class CopyTradeManager(QObject):
         self.symbol_specs_cache = {}  # (broker_key, symbol) -> {volume_min, volume_max, volume_step}
         self._position_locks = {}  # position_id -> asyncio.Lock (serializa eventos do mesmo position_id)
         self._master_event_dedup = {}  # (position_id, timestamp_mql) -> process_time
-        self.db = sqlite3.connect(DB_FILE)
+
+        # SQLite cross-thread (PR 2 intermediário, issue #111):
+        # - Construção do CopyTradeManager acontece DENTRO da thread do motor
+        #   (bootstrap_engine em main.py), então a connection nasce na thread
+        #   onde 99% das operações ocorrem (writes via coroutines).
+        # - check_same_thread=False habilita as 2 leituras síncronas que ainda
+        #   acontecem na main thread (Qt): get_trade_history (history_page) e
+        #   get_today_stats (dashboard_page). Essas são protegidas por _db_lock.
+        # - Writes do motor são single-threaded (rodam no event loop do motor),
+        #   então não competem entre si — sqlite serializa writes vs. reads
+        #   internamente.
+        # - PR 3 troca isso por modelo signal-based (DB confinado ao motor).
+        self.db = sqlite3.connect(DB_FILE, check_same_thread=False)
+        self._db_lock = threading.Lock()
         self._init_db()
 
         logger.info("CopyTradeManager inicializado.")
@@ -1515,36 +1529,45 @@ class CopyTradeManager(QObject):
         self.db.commit()
 
     def get_trade_history(self, broker_key=None, limit=100):
-        """Retorna histórico de cópias, filtrado opcionalmente por broker."""
-        if broker_key:
-            rows = self.db.execute(
-                """SELECT * FROM copytrade_history
-                   WHERE master_broker=? OR slave_broker=?
-                   ORDER BY timestamp DESC LIMIT ?""",
-                (broker_key, broker_key, limit)
-            ).fetchall()
-        else:
-            rows = self.db.execute(
-                "SELECT * FROM copytrade_history ORDER BY timestamp DESC LIMIT ?",
-                (limit,)
-            ).fetchall()
+        """Retorna histórico de cópias, filtrado opcionalmente por broker.
+
+        Chamado da main thread (history_page). Lock serializa contra writes
+        em andamento no engine thread. PR 3 substituirá por signal-based.
+        """
+        with self._db_lock:
+            if broker_key:
+                rows = self.db.execute(
+                    """SELECT * FROM copytrade_history
+                       WHERE master_broker=? OR slave_broker=?
+                       ORDER BY timestamp DESC LIMIT ?""",
+                    (broker_key, broker_key, limit)
+                ).fetchall()
+            else:
+                rows = self.db.execute(
+                    "SELECT * FROM copytrade_history ORDER BY timestamp DESC LIMIT ?",
+                    (limit,)
+                ).fetchall()
         columns = ["id", "timestamp", "master_broker", "master_ticket", "symbol",
                     "action", "master_lot", "slave_broker", "slave_ticket",
                     "slave_lot", "status", "error_message", "close_reason"]
         return [dict(zip(columns, row)) for row in rows]
 
     def get_today_stats(self):
-        """Retorna estatísticas do dia (trades copiados, sucesso, falha)."""
+        """Retorna estatísticas do dia (trades copiados, sucesso, falha).
+
+        Chamado da main thread (dashboard_page) — vide nota em get_trade_history.
+        """
         today_start = datetime.datetime.now().replace(
             hour=0, minute=0, second=0, microsecond=0).timestamp()
-        row = self.db.execute(
-            """SELECT
-                COUNT(*) as total,
-                SUM(CASE WHEN status='SUCCESS' THEN 1 ELSE 0 END) as success,
-                SUM(CASE WHEN status='FAILED' THEN 1 ELSE 0 END) as failed
-               FROM copytrade_history WHERE timestamp >= ?""",
-            (today_start,)
-        ).fetchone()
+        with self._db_lock:
+            row = self.db.execute(
+                """SELECT
+                    COUNT(*) as total,
+                    SUM(CASE WHEN status='SUCCESS' THEN 1 ELSE 0 END) as success,
+                    SUM(CASE WHEN status='FAILED' THEN 1 ELSE 0 END) as failed
+                   FROM copytrade_history WHERE timestamp >= ?""",
+                (today_start,)
+            ).fetchone()
         return {"total": row[0] or 0, "success": row[1] or 0, "failed": row[2] or 0}
 
     # ──────────────────────────────────────────────
@@ -1556,11 +1579,12 @@ class CopyTradeManager(QObject):
         No Windows, conexões SQLite abertas mantêm o arquivo locked e impedem
         backup/delete. Fechar explicitamente libera o lock.
         """
-        if self.db is not None:
-            try:
-                self.db.close()
-                logger.info("Conexão SQLite fechada.")
-            except Exception as e:
-                logger.warning(f"Erro ao fechar DB: {e}")
-            finally:
-                self.db = None
+        with self._db_lock:
+            if self.db is not None:
+                try:
+                    self.db.close()
+                    logger.info("Conexão SQLite fechada.")
+                except Exception as e:
+                    logger.warning(f"Erro ao fechar DB: {e}")
+                finally:
+                    self.db = None

@@ -9,7 +9,7 @@ import shutil
 import logging
 import subprocess
 import sys
-import asyncio
+import threading
 from PySide6.QtCore import QObject, Signal
 
 logger = logging.getLogger(__name__)
@@ -21,7 +21,13 @@ class BrokerManager(QObject):
     # ──────────────────────────────────────────────
     # Bloco 1 - Inicialização
     # ──────────────────────────────────────────────
-    def __init__(self, config, base_mt5_path, root_path, tcp_router):
+    def __init__(self, config, base_mt5_path, root_path, tcp_router, engine=None):
+        """
+        engine: instância de core.engine_thread.EngineThread. Usada para submeter
+        coroutines de connect/disconnect de sockets ao loop do motor a partir de
+        callers da GUI (que rodam na main thread, sem event loop asyncio próprio).
+        Pode ser None em testes ou em fluxos puramente síncronos.
+        """
         super().__init__()
         self.brokers_file = config.get('General', 'brokers_file', fallback='brokers.json')
         self.base_mt5_path = base_mt5_path
@@ -31,12 +37,26 @@ class BrokerManager(QObject):
         self.connected_brokers = {}
         self.mt5_processes = {}
         self.tcp_router = tcp_router
-        self._background_tasks: set = set()
+        self.engine = engine
+
+        # Reentrant lock: alguns fluxos chamam métodos públicos a partir de
+        # outros que já seguram o lock (ex.: modify_broker → disconnect_broker).
+        self._state_lock = threading.RLock()
+
         logger.debug("BrokerManager inicializado.")
 
     # ──────────────────────────────────────────────
     # Bloco 2 - Load / Save
     # ──────────────────────────────────────────────
+    def _submit_to_engine(self, coro):
+        """Submete uma coroutine ao loop do motor. Se não há engine configurado,
+        loga e ignora (ambiente de teste)."""
+        if self.engine is None:
+            logger.warning("BrokerManager sem engine — coroutine ignorada.")
+            coro.close()
+            return None
+        return self.engine.submit(coro)
+
     def load_brokers(self):
         try:
             if os.path.exists(self.brokers_file):
@@ -108,7 +128,8 @@ class BrokerManager(QObject):
             "event_port": event_port,
         }
         self.save_brokers()
-        self.connected_brokers[key] = False
+        with self._state_lock:
+            self.connected_brokers[key] = False
         self.create_mt5_config(key)
         logger.info(f"Corretora {key} adicionada (role={role}).")
         self.brokers_updated.emit()
@@ -124,7 +145,8 @@ class BrokerManager(QObject):
 
         del self.brokers[key]
         self.save_brokers()
-        self.connected_brokers.pop(key, None)
+        with self._state_lock:
+            self.connected_brokers.pop(key, None)
         instance_path = os.path.join(self.instances_dir, key)
         if os.path.exists(instance_path):
             shutil.rmtree(instance_path, ignore_errors=True)
@@ -182,10 +204,11 @@ class BrokerManager(QObject):
             "event_port": event_port,
         }
         self.save_brokers()
-        if old_key in self.connected_brokers:
-            self.connected_brokers[new_key] = self.connected_brokers.pop(old_key)
-        else:
-            self.connected_brokers[new_key] = False
+        with self._state_lock:
+            if old_key in self.connected_brokers:
+                self.connected_brokers[new_key] = self.connected_brokers.pop(old_key)
+            else:
+                self.connected_brokers[new_key] = False
         self.create_mt5_config(new_key)
         logger.info(f"Corretora {old_key} modificada para {new_key} (role={role}).")
         self.brokers_updated.emit()
@@ -314,14 +337,18 @@ class BrokerManager(QObject):
             return False
 
         # Já está rodando?
-        if key in self.mt5_processes and self.mt5_processes[key].poll() is None:
+        with self._state_lock:
+            existing = self.mt5_processes.get(key)
+            already_running = existing is not None and existing.poll() is None
+        if already_running:
             logger.warning(f"MT5 já em execução para {key}. Reconectando sockets.")
             if self.tcp_router:
                 broker_config = self.brokers[key]
-                t = asyncio.create_task(self.tcp_router.connect_broker_sockets(key, broker_config))
-                self._background_tasks.add(t)
-                t.add_done_callback(self._background_tasks.discard)
-            self.connected_brokers[key] = True
+                self._submit_to_engine(
+                    self.tcp_router.connect_broker_sockets(key, broker_config)
+                )
+            with self._state_lock:
+                self.connected_brokers[key] = True
             self.brokers_updated.emit()
             return True
 
@@ -346,15 +373,16 @@ class BrokerManager(QObject):
                     [instance_path, "/portable"],
                     cwd=os.path.dirname(instance_path)
                 )
-            self.mt5_processes[key] = process
-            self.connected_brokers[key] = True
+            with self._state_lock:
+                self.mt5_processes[key] = process
+                self.connected_brokers[key] = True
             logger.info(f"MT5 iniciado para {key}.")
 
             if self.tcp_router:
                 broker_config = self.brokers[key]
-                t = asyncio.create_task(self.tcp_router.connect_broker_sockets(key, broker_config))
-                self._background_tasks.add(t)
-                t.add_done_callback(self._background_tasks.discard)
+                self._submit_to_engine(
+                    self.tcp_router.connect_broker_sockets(key, broker_config)
+                )
             self.brokers_updated.emit()
             return True
         except Exception as e:
@@ -367,12 +395,12 @@ class BrokerManager(QObject):
             return False
 
         if self.tcp_router:
-            t = asyncio.create_task(self.tcp_router.disconnect_broker_sockets(key))
-            self._background_tasks.add(t)
-            t.add_done_callback(self._background_tasks.discard)
+            self._submit_to_engine(self.tcp_router.disconnect_broker_sockets(key))
 
-        if key in self.mt5_processes:
-            process = self.mt5_processes[key]
+        with self._state_lock:
+            process = self.mt5_processes.pop(key, None)
+
+        if process is not None:
             if process.poll() is None:
                 try:
                     process.terminate()
@@ -381,20 +409,41 @@ class BrokerManager(QObject):
                     process.kill()
                 except Exception as e:
                     logger.error(f"Erro ao parar MT5 para {key}: {e}")
-                    self.connected_brokers[key] = False
+                    with self._state_lock:
+                        self.connected_brokers[key] = False
                     self.brokers_updated.emit()
                     return False
-            del self.mt5_processes[key]
 
-        self.connected_brokers[key] = False
+        with self._state_lock:
+            self.connected_brokers[key] = False
         self.brokers_updated.emit()
         return True
 
     def is_connected(self, key):
-        return self.connected_brokers.get(key, False)
+        with self._state_lock:
+            return self.connected_brokers.get(key, False)
 
     def get_connected_brokers(self):
-        return [key for key, connected in self.connected_brokers.items() if connected]
+        with self._state_lock:
+            return [key for key, connected in self.connected_brokers.items() if connected]
+
+    # ──────────────────────────────────────────────
+    # Bloco 5b - Acessores thread-safe (usados por mt5_process_monitor)
+    # ──────────────────────────────────────────────
+    def set_mt5_process(self, key, process):
+        """Registra um processo MT5 (usado por watchdog ao reiniciar instância)."""
+        with self._state_lock:
+            self.mt5_processes[key] = process
+
+    def set_connected(self, key, value: bool):
+        """Atualiza flag de conexão de um broker."""
+        with self._state_lock:
+            self.connected_brokers[key] = value
+
+    def get_mt5_process(self, key):
+        """Retorna o subprocess.Popen do MT5 de um broker (ou None)."""
+        with self._state_lock:
+            return self.mt5_processes.get(key)
 
     def get_connected_slave_brokers(self):
         """Retorna lista de slaves conectados."""

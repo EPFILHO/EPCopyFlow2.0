@@ -4,6 +4,7 @@
 # Removidos: signals de indicadores, OHLC, ticks, streams (não usados no copytrade).
 
 import logging
+import threading
 import time
 import asyncio
 from PySide6.QtCore import QObject, Signal, Slot
@@ -30,18 +31,29 @@ class TcpMessageHandler(QObject):
     # ──────────────────────────────────────────────
     # Bloco 1 - Inicialização
     # ──────────────────────────────────────────────
-    def __init__(self, config, tcp_router, broker_manager=None, copytrade_manager=None, parent=None):
+    def __init__(self, config, tcp_router, broker_manager=None, copytrade_manager=None,
+                 engine=None, parent=None):
+        """
+        engine: instância de core.engine_thread.EngineThread. Necessária para
+        que `send_ping` / `send_get_status_info` (chamados de botões da GUI na
+        main thread) submetam coroutines ao loop do motor. Pode ser None em
+        testes; nesse caso, esses métodos viram no-op com warning.
+        """
         super().__init__(parent)
         self.config = config
         self.tcp_router = tcp_router
         self.broker_manager = broker_manager
         self.copytrade_manager = copytrade_manager
+        self.engine = engine
         self.heartbeat_active = {}
         self._background_tasks: set = set()
 
         # Buffers de estado por corretora (broker_key -> bool)
+        # Escritos pelo motor (handle_tcp_message) e lidos pela GUI (QTimer 2s).
+        # Acesso protegido por _state_lock para evitar dirty reads.
         self._trade_allowed_states = {}
         self._connection_status_states = {}  # True = broker conectado, False = desconectado
+        self._state_lock = threading.Lock()
 
     def set_copytrade_manager(self, copytrade_manager):
         self.copytrade_manager = copytrade_manager
@@ -100,8 +112,9 @@ class TcpMessageHandler(QObject):
                 self.log_message_received.emit(f"INFO: Corretora {broker_key} desconectada.")
                 self.ping_button_state_changed.emit(False)
                 self.heartbeat_active.pop(broker_key, None)
-                self._trade_allowed_states.pop(broker_key, None)
-                self._connection_status_states.pop(broker_key, None)
+                with self._state_lock:
+                    self._trade_allowed_states.pop(broker_key, None)
+                    self._connection_status_states.pop(broker_key, None)
 
         # ── STREAM events ──
         elif msg_type == "STREAM" and event == "TRADE_ALLOWED_UPDATE":
@@ -111,7 +124,8 @@ class TcpMessageHandler(QObject):
                 "timestamp_mql": message.get("timestamp_mql", 0)
             }
             if identified_broker_key and data["trade_allowed"] is not None:
-                self._trade_allowed_states[identified_broker_key] = data["trade_allowed"]
+                with self._state_lock:
+                    self._trade_allowed_states[identified_broker_key] = data["trade_allowed"]
             self.trade_allowed_update_received.emit(data)
 
         elif msg_type == "STREAM" and event == "CONNECTION_STATUS":
@@ -122,7 +136,8 @@ class TcpMessageHandler(QObject):
                 "timestamp_mql": message.get("timestamp_mql", 0)
             }
             if identified_broker_key and connected is not None:
-                self._connection_status_states[identified_broker_key] = connected
+                with self._state_lock:
+                    self._connection_status_states[identified_broker_key] = connected
             self.connection_status_received.emit(data)
             logger.info(f"CONNECTION_STATUS de {identified_broker_key}: {connected}")
 
@@ -334,38 +349,45 @@ class TcpMessageHandler(QObject):
     # ──────────────────────────────────────────────
     # Bloco 4 - Envio de Comandos
     # ──────────────────────────────────────────────
-    def _track_task(self, task):
-        self._background_tasks.add(task)
-        task.add_done_callback(self._background_tasks.discard)
+    def _submit_to_engine(self, coro):
+        """Submete uma coroutine ao loop do motor. Os métodos send_* são
+        chamados de slots Qt na main thread (sem event loop asyncio próprio),
+        então precisam atravessar threads para entrar no loop do motor."""
+        if self.engine is None:
+            logger.warning("TcpMessageHandler sem engine — comando ignorado.")
+            coro.close()
+            return None
+        return self.engine.submit(coro)
 
     def send_ping(self, broker_key: str):
         timestamp = time.time()
-        t = asyncio.create_task(self.tcp_router.send_command_to_broker(
+        self._submit_to_engine(self.tcp_router.send_command_to_broker(
             broker_key, "PING",
             {"timestamp": timestamp},
             f"ping_{broker_key}_{timestamp}"
         ))
-        self._track_task(t)
 
     def send_get_status_info(self, broker_key: str):
         timestamp = time.time()
-        t = asyncio.create_task(self.tcp_router.send_command_to_broker(
+        self._submit_to_engine(self.tcp_router.send_command_to_broker(
             broker_key, "GET_STATUS_INFO",
             {"timestamp": timestamp},
             f"get_status_info_{broker_key}_{int(timestamp)}"
         ))
-        self._track_task(t)
 
     # ──────────────────────────────────────────────
     # Bloco 5 - Auxiliares
     # ──────────────────────────────────────────────
     def get_trade_allowed_states(self):
-        return self._trade_allowed_states.copy()
+        with self._state_lock:
+            return self._trade_allowed_states.copy()
 
     def get_connection_status_states(self):
-        return self._connection_status_states.copy()
+        with self._state_lock:
+            return self._connection_status_states.copy()
 
     def clear_broker_status(self, broker_key):
         """Clear all cached status for a broker (on disconnect)."""
-        self._trade_allowed_states.pop(broker_key, None)
-        self._connection_status_states.pop(broker_key, None)
+        with self._state_lock:
+            self._trade_allowed_states.pop(broker_key, None)
+            self._connection_status_states.pop(broker_key, None)

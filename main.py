@@ -1,27 +1,37 @@
-# EPCopyFlow 2.0 - Versão 0.0.1 - Claude Code Parte 000
+# EPCopyFlow 2.0
 # main.py
 # Ponto de entrada principal da aplicação EPCopyFlow 2.0.
-# Usa PySide6.QtAsyncio (solução oficial Qt) ao invés de qasync.
+#
+# Arquitetura (issue #111):
+#   Main thread (Qt) ←─ signals (QueuedConnection auto cross-thread) ─→ Engine thread (asyncio)
+#
+#   Main thread executa app.exec() padrão. O motor de trade (TcpRouter,
+#   CopyTradeManager, TcpMessageHandler) é construído e roda DENTRO do
+#   EngineThread. Os QObjects do motor nascem com thread affinity correta
+#   porque são criados dentro de uma coroutine submetida à engine.
 
 import sys
 import asyncio
 import warnings
 import logging
 import signal
-import subprocess
+import os
+from datetime import datetime
+
 from PySide6.QtWidgets import QApplication, QLabel, QVBoxLayout, QProgressBar, QWidget
 from PySide6.QtGui import QFont
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
+
 from core.config_manager import ConfigManager
 from core.broker_manager import BrokerManager
 from core.tcp_router import TcpRouter
 from core.copytrade_manager import CopyTradeManager
+from core.tcp_message_handler import TcpMessageHandler
 from core.mt5_process_monitor import MT5ProcessMonitor
+from core.engine_thread import EngineThread
 from core.version import __version__
 from gui.main_window import MainWindow
 from gui import themes
-import os
-from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
@@ -32,10 +42,7 @@ def filter_warnings():
     warnings.filterwarnings("ignore", category=DeprecationWarning, module="asyncio.*")
 
 
-# ── Bloco 2 - (Reservado) ──
-
-
-# ── Bloco 3 - Logging ──
+# ── Bloco 2 - Logging ──
 class ColoredFormatter(logging.Formatter):
     BLUE = "\x1b[34;20m"
     LIME = "\x1b[92m"
@@ -83,79 +90,11 @@ def setup_logging(config_manager_instance: ConfigManager):
     logger.info(f"Logging configurado. Log file: {log_filename}")
 
 
-# ── Bloco 4 - Variáveis Globais ──
-shutdown_event = asyncio.Event()
-router_task = None
-tcp_router_instance = None
-mt5_processes = {}
-broker_manager = None
-mt5_monitor = None
-copytrade_manager = None
-
-
-# ── Bloco 5 - Encerramento ──
-async def shutdown_cleanup():
-    global router_task, tcp_router_instance, mt5_processes, broker_manager, mt5_monitor, copytrade_manager
-    logger.info("Iniciando shutdown_cleanup...")
-
-    if mt5_monitor:
-        mt5_monitor.stop()
-        logger.info("MT5ProcessMonitor parado.")
-
-    if tcp_router_instance:
-        try:
-            await tcp_router_instance.stop()
-        except Exception as e:
-            logger.warning(f"Erro ao parar TcpRouter: {e}")
-
-    if router_task and not router_task.done():
-        try:
-            await asyncio.wait_for(router_task, timeout=2.0)
-        except asyncio.TimeoutError:
-            try:
-                router_task.cancel()
-            except Exception:
-                pass
-        except Exception as e:
-            logger.exception(f"Erro ao esperar tarefa TCP router: {e}")
-
-    if broker_manager:
-        try:
-            for key in list(broker_manager.get_connected_brokers()):
-                try:
-                    broker_manager.disconnect_broker(key)
-                except Exception as e:
-                    logger.error(f"Erro ao desconectar {key}: {e}")
-        except Exception as e:
-            logger.error(f"Erro ao obter corretoras conectadas: {e}")
-
-    for key, process in list(mt5_processes.items()):
-        try:
-            process.terminate()
-            process.wait(timeout=10)
-        except subprocess.TimeoutExpired:
-            process.kill()
-        except Exception as e:
-            logger.error(f"Erro ao parar MT5 para {key}: {e}")
-    mt5_processes.clear()
-
-    if copytrade_manager:
-        try:
-            copytrade_manager.close()
-        except Exception as e:
-            logger.warning(f"Erro ao fechar CopyTradeManager: {e}")
-
-    logger.info("shutdown_cleanup concluído.")
-
-
-def sigint_handler(*args):
-    if not shutdown_event.is_set():
-        shutdown_event.set()
-
-
-# ── Bloco 6 - Splash Screen Async ──
-async def show_splash_async(duration):
-    """Exibe splash screen como coroutine sem bloquear o event loop."""
+# ── Bloco 3 - Splash Screen (QTimer-based, sem await) ──
+def show_splash(duration_seconds: float, on_close):
+    """Exibe splash screen na main thread (Qt). Após `duration_seconds`, fecha
+    o splash e chama `on_close()`. Não bloqueia — usa QTimer.singleShot.
+    """
     s = themes.splash_style()
     app = QApplication.instance()
     splash_widget = QWidget()
@@ -196,123 +135,147 @@ async def show_splash_async(duration):
         (screen.height() - splash_widget.height()) // 2,
     )
     splash_widget.show()
-    await asyncio.sleep(duration)
-    splash_widget.close()
+
+    def _close_and_continue():
+        splash_widget.close()
+        on_close()
+
+    QTimer.singleShot(int(duration_seconds * 1000), _close_and_continue)
 
 
-# ── Bloco 7 - Fluxo Principal ──
-async def main_application_flow(config: ConfigManager):
-    global router_task, tcp_router_instance, shutdown_event, mt5_processes
-    global broker_manager, mt5_monitor, copytrade_manager
-    logger.info("Iniciando EPCopyFlow 2.0...")
+# ── Bloco 4 - Bootstrap do Motor (roda DENTRO do EngineThread) ──
+async def bootstrap_engine(broker_manager: BrokerManager, config: ConfigManager):
+    """
+    Coroutine submetida ao EngineThread no startup. Constrói os QObjects do
+    motor (TcpRouter, CopyTradeManager, TcpMessageHandler) na thread do motor
+    para que a thread affinity do Qt fique correta. Retorna os componentes
+    já wired-up (mas o tcp_router.run() ainda não foi iniciado — quem inicia
+    é o passo seguinte).
+    """
+    tcp_router = TcpRouter(broker_manager)
+    broker_manager.tcp_router = tcp_router
 
-    # Carregar tema salvo antes do splash
-    saved_theme = config.get('GUI', 'theme', fallback='Escuro')
-    themes.set_theme(saved_theme)
+    copytrade_manager = CopyTradeManager(broker_manager, tcp_router)
 
-    # Splash screen (non-blocking)
-    show_splash = config.getboolean('General', 'show_splash', fallback=True)
-    if show_splash:
-        splash_duration = config.getfloat('General', 'splash_duration', fallback=1.0)
-        await show_splash_async(splash_duration)
-
-    base_mt5_path = config.get('General', 'base_mt5_path', fallback='C:/Temp/MT5')
-    root_path = os.path.dirname(os.path.abspath(__file__))
-
-    tcp_router_instance = TcpRouter(None)
-    broker_manager = BrokerManager(config, base_mt5_path, root_path, tcp_router_instance)
-    tcp_router_instance.broker_manager = broker_manager
-
-    # CopyTradeManager é criado normalmente
-    # Validação de NETTING é feita quando tenta usar CopyTrade
-    # Heartbeat é gerenciado pelo EA (Master), não pelo Python
-    copytrade_manager = CopyTradeManager(broker_manager, tcp_router_instance)
-
-    mt5_monitor = MT5ProcessMonitor(
-        broker_manager,
-        event_loop=asyncio.get_event_loop(),
-        config_manager=config,
-        check_interval=config.getint('General', 'monitor_interval', fallback=10)
+    tcp_message_handler = TcpMessageHandler(
+        config, tcp_router,
+        broker_manager=broker_manager,
+        copytrade_manager=copytrade_manager,
     )
-    mt5_monitor.start()
-    logger.info("MT5ProcessMonitor iniciado.")
 
-    signal.signal(signal.SIGINT, sigint_handler)
-
-    main_window = MainWindow(
-        config, broker_manager, tcp_router_instance,
-        shutdown_event, root_path, mt5_monitor, copytrade_manager
-    )
-    main_window.show()
-    logger.info("MainWindow exibida.")
-
-    # Wire copytrade_manager and process monitor into message handler
-    main_window.tcp_message_handler.set_copytrade_manager(copytrade_manager)
-    main_window.tcp_message_handler.mt5_monitor = mt5_monitor
-
-    # Detectar account modes em background (após MT5 instâncias iniciarem)
-    asyncio.create_task(copytrade_manager.detect_all_account_modes())
-
-    router_task = asyncio.create_task(tcp_router_instance.run(main_window.tcp_message_handler))
-
-    logger.info("Setup concluído. Aguardando shutdown_event...")
-
-    # Manter o event loop vivo até o app fechar
-    app = QApplication.instance()
-    app.aboutToQuit.connect(lambda: shutdown_event.set())
-
-    await shutdown_event.wait()
-
-    logger.info("Sinal de encerramento recebido.")
-    try:
-        await shutdown_cleanup()
-    except Exception as e:
-        logger.error(f"Erro durante shutdown: {e}")
-
-    logger.info("main_application_flow concluída.")
+    return tcp_router, copytrade_manager, tcp_message_handler
 
 
-# ── Bloco 8 - Entry Point ──
-if __name__ == "__main__":
+# ── Bloco 5 - Entry Point ──
+def main():
     initial_app_config = ConfigManager()
     setup_logging(initial_app_config)
-    logger.info("Iniciando EPCopyFlow 2.0.")
-
+    logger.info(f"Iniciando EPCopyFlow 2.0 v{__version__}.")
     filter_warnings()
 
     app = QApplication.instance()
     if app is None:
         app = QApplication(sys.argv)
 
-    # Aplicar stylesheet global (cobre QMessageBox, dropdowns, scrollbars, etc.)
-    from gui import themes as _themes
-    saved_theme_early = initial_app_config.get('GUI', 'theme', fallback='Escuro')
-    _themes.set_theme(saved_theme_early)
-    app.setStyleSheet(_themes.global_app_style())
+    # Tema + stylesheet global aplicado cedo (cobre QMessageBox, etc.)
+    saved_theme = initial_app_config.get('GUI', 'theme', fallback='Escuro')
+    themes.set_theme(saved_theme)
+    app.setStyleSheet(themes.global_app_style())
 
+    # ── Iniciar EngineThread ──
+    engine = EngineThread(name="AsyncEngine")
+    engine.start()
+    logger.info("EngineThread iniciado.")
+
+    # ── Construir BrokerManager (main thread; consumido pela GUI) ──
+    base_mt5_path = initial_app_config.get('General', 'base_mt5_path', fallback='C:/Temp/MT5')
+    root_path = os.path.dirname(os.path.abspath(__file__))
+    broker_manager = BrokerManager(
+        initial_app_config, base_mt5_path, root_path,
+        tcp_router=None,   # preenchido pelo bootstrap_engine
+        engine=engine,
+    )
+
+    # ── Bootstrap dos QObjects do motor DENTRO do engine thread ──
+    bootstrap_fut = engine.submit(bootstrap_engine(broker_manager, initial_app_config))
     try:
-        # PySide6.QtAsyncio - solução oficial do Qt para asyncio + Qt
-        from PySide6.QtAsyncio import QAsyncioEventLoop
-        loop = QAsyncioEventLoop(app)
-        asyncio.set_event_loop(loop)
-        logger.info("Usando PySide6.QtAsyncio (solução oficial).")
-        loop.run_until_complete(main_application_flow(initial_app_config))
-    except ImportError:
-        # Fallback para qasync se PySide6.QtAsyncio não disponível
-        logger.warning("PySide6.QtAsyncio não disponível. Usando qasync como fallback.")
-        import qasync
-        loop = qasync.QEventLoop(app)
-        asyncio.set_event_loop(loop)
-        loop.run_until_complete(main_application_flow(initial_app_config))
-    except KeyboardInterrupt:
-        if not shutdown_event.is_set():
-            shutdown_event.set()
-    except asyncio.CancelledError:
-        pass
-    except RuntimeError as e:
-        if "Event loop stopped" not in str(e):
-            logger.exception(f"Erro runtime: {e}")
+        tcp_router, copytrade_manager, tcp_message_handler = bootstrap_fut.result(timeout=10.0)
     except Exception as e:
-        logger.exception(f"Erro inesperado: {e}")
-    finally:
-        logger.info("Aplicação encerrada.")
+        logger.exception(f"Falha no bootstrap do motor: {e}")
+        engine.stop(timeout=2.0)
+        sys.exit(1)
+
+    # Wire engine no tcp_message_handler (precisa para os send_* da GUI).
+    tcp_message_handler.engine = engine
+    tcp_message_handler.set_copytrade_manager(copytrade_manager)
+    logger.info("Bootstrap do motor concluído (TcpRouter, CopyTradeManager, TcpMessageHandler).")
+
+    # ── MT5 process monitor (thread própria, recebe loop do motor) ──
+    mt5_monitor = MT5ProcessMonitor(
+        broker_manager,
+        event_loop=engine.loop,
+        config_manager=initial_app_config,
+        check_interval=initial_app_config.getint('General', 'monitor_interval', fallback=10),
+    )
+    mt5_monitor.start()
+    tcp_message_handler.mt5_monitor = mt5_monitor
+    logger.info("MT5ProcessMonitor iniciado.")
+
+    # ── SIGINT / Ctrl+C: pede ao Qt para sair (closeEvent faz o teardown) ──
+    def _sigint(*_args):
+        logger.info("SIGINT recebido — solicitando saída.")
+        QApplication.instance().quit()
+    signal.signal(signal.SIGINT, _sigint)
+
+    # ── Construir MainWindow (recebe handler já construído + engine) ──
+    main_window = MainWindow(
+        config=initial_app_config,
+        broker_manager=broker_manager,
+        tcp_router=tcp_router,
+        engine=engine,
+        root_path=root_path,
+        mt5_monitor=mt5_monitor,
+        copytrade_manager=copytrade_manager,
+        tcp_message_handler=tcp_message_handler,
+    )
+
+    # ── Iniciar TcpRouter no motor (em background dentro do engine loop) ──
+    # tcp_router.run() é uma coroutine que fica viva até stop() ser chamado.
+    # Submetemos e seguimos — o Future fica vivo até o teardown.
+    router_future = engine.submit(tcp_router.run(tcp_message_handler))
+    logger.info("TcpRouter.run() submetido ao motor.")
+
+    # ── Detecção de account modes em background ──
+    engine.submit(copytrade_manager.detect_all_account_modes())
+
+    # ── Splash + show window ──
+    def _after_splash():
+        main_window.show()
+        logger.info("MainWindow exibida.")
+
+    show_splash_flag = initial_app_config.getboolean('General', 'show_splash', fallback=True)
+    if show_splash_flag:
+        splash_duration = initial_app_config.getfloat('General', 'splash_duration', fallback=1.0)
+        show_splash(splash_duration, _after_splash)
+    else:
+        _after_splash()
+
+    # ── Event loop Qt ──
+    try:
+        exit_code = app.exec()
+    except KeyboardInterrupt:
+        exit_code = 0
+
+    # Drenar router_future após shutdown (closeEvent já parou o tcp_router).
+    if not router_future.done():
+        try:
+            router_future.result(timeout=2.0)
+        except Exception:
+            pass
+
+    logger.info("Aplicação encerrada.")
+    sys.exit(exit_code)
+
+
+if __name__ == "__main__":
+    main()
