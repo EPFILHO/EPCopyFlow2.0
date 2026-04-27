@@ -65,6 +65,15 @@ class ColoredFormatter(logging.Formatter):
 
 
 def setup_logging(config_manager_instance: ConfigManager):
+    # Reconfigura stdout/stderr para UTF-8 antes de anexar StreamHandler.
+    # No Windows, o default é cp1252 e logs com emoji (✅ ❌ ⚠️ — usados em
+    # copytrade_manager.py) disparam UnicodeEncodeError no console.
+    # errors="replace" evita crash em caracteres exóticos. hasattr protege
+    # contra stdout/stderr já redirecionados (testes, pipes peculiares).
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
+
     logs_dir = "logs"
     if not os.path.exists(logs_dir):
         os.makedirs(logs_dir)
