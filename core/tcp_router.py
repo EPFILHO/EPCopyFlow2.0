@@ -22,8 +22,6 @@ import struct
 import threading
 import time
 
-from core.latency_tracker import get_tracker
-
 logger = logging.getLogger(__name__)
 
 # Tamanho máximo de frame aceito (sanity check): 16 MiB.
@@ -372,11 +370,6 @@ class TcpRouter:
         future = loop.create_future()
         self._response_futures[request_id] = future
 
-        # Instrumentação T2: prestes a enviar comando ao broker. Captura t2
-        # para calcular round-trip (T3 - T2) na resposta. Ver issue #111.
-        tracker = get_tracker()
-        t2 = tracker.command_sent(broker_key, command, request_id) if tracker else 0.0
-
         try:
             frame = self._encode_frame(message)
             lock = self._conn_locks.get(broker_key, threading.Lock())
@@ -389,24 +382,14 @@ class TcpRouter:
                 await loop.run_in_executor(None, do_send)
             except Exception as e:
                 logger.warning(f"Falha ao enviar {command} para {broker_key}: {e}")
-                if tracker is not None:
-                    tracker.command_response(broker_key, command, request_id, t2, status="SEND_ERROR")
                 return {"status": "ERROR", "message": f"Falha no envio: {e}"}
 
             logger.debug(f"Comando {command} enviado para {broker_key} (id={request_id})")
 
             try:
-                response = await asyncio.wait_for(future, timeout=5.0)
-                if tracker is not None:
-                    tracker.command_response(
-                        broker_key, command, request_id, t2,
-                        status=str(response.get("status", "")) if isinstance(response, dict) else ""
-                    )
-                return response
+                return await asyncio.wait_for(future, timeout=5.0)
             except asyncio.TimeoutError:
                 logger.error(f"Timeout aguardando resposta de {command} de {broker_key}")
-                if tracker is not None:
-                    tracker.command_response(broker_key, command, request_id, t2, status="TIMEOUT")
                 return {"status": "ERROR", "message": "Timeout na resposta"}
 
         finally:

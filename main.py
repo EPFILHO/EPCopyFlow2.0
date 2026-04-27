@@ -29,7 +29,6 @@ from core.copytrade_manager import CopyTradeManager
 from core.tcp_message_handler import TcpMessageHandler
 from core.mt5_process_monitor import MT5ProcessMonitor
 from core.engine_thread import EngineThread
-from core.latency_tracker import LatencyTracker, set_tracker
 from core.version import __version__
 from gui.main_window import MainWindow
 from gui import themes
@@ -183,12 +182,6 @@ def main():
     themes.set_theme(saved_theme)
     app.setStyleSheet(themes.global_app_style())
 
-    # ── Iniciar LatencyTracker (instrumentação para diagnóstico do lag #111) ──
-    # Não bloqueia hot path; CSV em logs/latency_<timestamp>.csv.
-    latency_tracker = LatencyTracker()
-    latency_tracker.start()
-    set_tracker(latency_tracker)
-
     # ── Iniciar EngineThread ──
     engine = EngineThread(name="AsyncEngine")
     engine.start()
@@ -279,12 +272,6 @@ def main():
             router_future.result(timeout=2.0)
         except Exception:
             pass
-
-    # Parar instrumentação de latência (drena o que faltar no buffer).
-    try:
-        latency_tracker.stop(timeout=2.0)
-    except Exception:
-        logger.exception("Erro ao parar LatencyTracker.")
 
     logger.info("Aplicação encerrada.")
     sys.exit(exit_code)
