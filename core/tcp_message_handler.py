@@ -9,6 +9,8 @@ import time
 import asyncio
 from PySide6.QtCore import QObject, Signal, Slot
 
+from core.latency_tracker import get_tracker
+
 logger = logging.getLogger(__name__)
 
 
@@ -187,6 +189,15 @@ class TcpMessageHandler(QObject):
             # Copytrade: se é do Master, replica para Slaves
             if self.copytrade_manager and self.broker_manager:
                 if self.broker_manager.get_broker_role(identified_broker_key) == "master":
+                    # Instrumentação T1: TRADE_EVENT do master chegou ao Python.
+                    # Comparado contra timestamp_mql do EA dá a latência MT5→Python.
+                    tracker = get_tracker()
+                    if tracker is not None:
+                        tracker.trade_event_received(
+                            broker_key=identified_broker_key,
+                            position_id=trade_event_data.get("position_id", 0),
+                            timestamp_mql=trade_event_data.get("timestamp_mql", 0),
+                        )
                     t = asyncio.create_task(
                         self.copytrade_manager.handle_master_trade_event(trade_event_data)
                     )
