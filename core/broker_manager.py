@@ -363,10 +363,15 @@ class BrokerManager(QObject):
                 si = subprocess.STARTUPINFO()
                 si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
                 si.wShowWindow = 6  # SW_MINIMIZE
+                # HIGH_PRIORITY_CLASS evita que o Windows throttle o processo MT5
+                # quando a janela perde foco (Alt+Tab). Sem isso, observamos
+                # respostas de TRADE_POSITION_CLOSE_ID demorando 25s+ em slaves
+                # ociosos enquanto o usuário estava em outra janela.
                 process = subprocess.Popen(
                     [instance_path, "/portable"],
                     cwd=os.path.dirname(instance_path),
-                    startupinfo=si
+                    startupinfo=si,
+                    creationflags=subprocess.HIGH_PRIORITY_CLASS,
                 )
             else:
                 process = subprocess.Popen(

@@ -166,6 +166,9 @@ class MT5ProcessMonitor:
                 si = subprocess.STARTUPINFO()
                 si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
                 si.wShowWindow = 6  # SW_MINIMIZE
+                # HIGH_PRIORITY_CLASS: mesmo motivo de connect_broker — o
+                # processo reiniciado pelo watchdog precisa da mesma proteção
+                # contra throttle do Windows quando perde foco.
                 process = subprocess.Popen(
                     [
                         instance_path,
@@ -175,7 +178,8 @@ class MT5ProcessMonitor:
                         f"/server:{broker_config['server']}"
                     ],
                     cwd=os.path.dirname(instance_path),
-                    startupinfo=si
+                    startupinfo=si,
+                    creationflags=subprocess.HIGH_PRIORITY_CLASS,
                 )
             else:
                 process = subprocess.Popen(
