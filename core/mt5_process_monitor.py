@@ -5,10 +5,13 @@
 
 import os
 import subprocess
+import sys
 import time
 import logging
 import asyncio
 import threading
+
+from core.win_process import disable_power_throttling
 
 logger = logging.getLogger(__name__)
 
@@ -195,6 +198,10 @@ class MT5ProcessMonitor:
             self.broker_manager.set_mt5_process(key, process)
             self.broker_manager.set_connected(key, True)
             logger.info(f"MT5 reiniciado para {key} (PID: {process.pid}).")
+
+            # EcoQoS opt-out (mesmo motivo de connect_broker).
+            if sys.platform.startswith("win") and disable_power_throttling(process.pid):
+                logger.debug(f"Power throttling desligado para {key} (pid={process.pid}).")
 
             if self.broker_manager.tcp_router and self.event_loop:
                 # event_loop aqui é o loop do EngineThread (motor). Submeter
