@@ -265,6 +265,9 @@ class MainWindow(QMainWindow):
             self.copytrade_manager.copy_trade_log.connect(self.logs_page.append_log)
             self.copytrade_manager.copy_trade_executed.connect(self.history_page.refresh)
             self.copytrade_manager.copy_trade_failed.connect(self.history_page.refresh)
+            # Refresh dos stat cards do dashboard a cada trade replicado.
+            self.copytrade_manager.copy_trade_executed.connect(self.dashboard_page.refresh_stats)
+            self.copytrade_manager.copy_trade_failed.connect(self.dashboard_page.refresh_stats)
         # Alien trade detection
         self.tcp_message_handler.alien_trade_detected.connect(self._on_alien_trade_detected)
 
