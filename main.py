@@ -214,9 +214,10 @@ def main():
         engine.stop(timeout=2.0)
         sys.exit(1)
 
-    # Wire engine no tcp_message_handler (precisa para os send_* da GUI).
+    # Wire engine nos managers (necessário para os métodos chamados da GUI).
     tcp_message_handler.engine = engine
     tcp_message_handler.set_copytrade_manager(copytrade_manager)
+    copytrade_manager.engine = engine
     logger.info("Bootstrap do motor concluído (TcpRouter, CopyTradeManager, TcpMessageHandler).")
 
     # ── MT5 process monitor (thread própria, recebe loop do motor) ──

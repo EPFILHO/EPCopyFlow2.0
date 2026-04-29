@@ -21,6 +21,8 @@ class HistoryPage(QWidget):
         self.copytrade_manager = copytrade_manager
         self.setStyleSheet(themes.history_page_style())
         self._init_ui()
+        if self.copytrade_manager is not None:
+            self.copytrade_manager.trade_history_ready.connect(self._on_history_ready)
 
     def _init_ui(self):
         layout = QVBoxLayout(self)
@@ -61,15 +63,15 @@ class HistoryPage(QWidget):
 
     @Slot()
     def refresh(self, _data=None):
+        """Pede o histórico ao motor. Resposta chega via signal
+        trade_history_ready → _on_history_ready."""
         if not self.copytrade_manager:
             return
+        self.copytrade_manager.request_trade_history(limit=200)
 
-        try:
-            rows = self.copytrade_manager.get_trade_history(limit=200)
-        except Exception as e:
-            logger.error(f"Erro ao carregar historico: {e}")
-            return
-
+    @Slot(list, str)
+    def _on_history_ready(self, rows, broker_key_filter):
+        """Slot do signal cross-thread. Roda na main thread."""
         filter_text = self.filter_combo.currentText()
 
         filtered = []
