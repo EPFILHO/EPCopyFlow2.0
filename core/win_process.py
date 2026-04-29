@@ -1,12 +1,5 @@
-# EPCopyFlow 2.0
 # core/win_process.py
 # Helpers Windows-específicos via ctypes.
-#
-# disable_power_throttling: opt-out do EcoQoS / Power Throttling do Windows
-# para um processo. HIGH_PRIORITY_CLASS e EcoQoS são ortogonais — Windows
-# pode marcar processo em background como "Eco" mesmo com prioridade alta,
-# reduzindo CPU/IO. Isso afeta MT5 ao perder foco.
-# Doc: https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/ns-processthreadsapi-process_power_throttling_state
 
 import sys
 import logging
@@ -23,9 +16,14 @@ _PROCESS_POWER_THROTTLING_EXECUTION_SPEED = 0x1
 def disable_power_throttling(pid: int) -> bool:
     """Desliga EcoQoS / Power Throttling para o processo `pid`.
 
-    Retorna True em sucesso, False em qualquer falha (ambiente não-Windows,
-    API indisponível em versão antiga do Windows, processo já morto, sem
-    permissão, etc.). Nunca lança — falha silenciosa com log de warning.
+    HIGH_PRIORITY_CLASS e EcoQoS são ortogonais: Windows pode marcar processo
+    em background como "Eco" mesmo com prioridade alta. Esta chamada via
+    `SetProcessInformation` desliga o throttle de execution speed.
+
+    Retorna True em sucesso, False em qualquer falha (não-Windows, Windows
+    pré-1709, processo morto, sem permissão). Nunca lança.
+
+    Doc: https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/ns-processthreadsapi-process_power_throttling_state
     """
     if not sys.platform.startswith("win"):
         return False

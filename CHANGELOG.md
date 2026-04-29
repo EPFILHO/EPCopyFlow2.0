@@ -25,6 +25,36 @@ Tipos de mudança:
 - **Dívida técnica registrada (não corrigida neste PR)**: como o Python loga falha por timeout enquanto o broker pode confirmar a operação tardiamente (ex.: trade do XP foi executado com `retcode: 10009` mas o registro local já tinha sido marcado como falha), o DB do copytrade pode ficar inconsistente com a realidade do broker em cenários de throttle severo. Natureza similar (mas independente) do que motivou #56. Tratamento adequado fica para issue futura — depende de medirmos se o `HIGH_PRIORITY_CLASS` por si só já elimina o cenário em produção real.
 
 ### Changed
+- **Limpeza geral de código pós-refactor** (#111, follow-up): aplicada após
+  review automatizado dos PRs 2.5/2.6/B/3. Mudanças:
+  - **Índice em `copytrade_history(timestamp)`** (`_init_db`): `_fetch_today_stats`
+    e `_fetch_trade_history` faziam full scan; com a tabela crescendo, o WHERE
+    timestamp + ORDER BY DESC ficavam lentos. `CREATE INDEX IF NOT EXISTS` no
+    init resolve.
+  - **Debounce de 200ms em `dashboard_page.refresh_stats`**: cada
+    `copy_trade_executed`/`copy_trade_failed` disparava `request_today_stats`.
+    Em real-B3 com burst de trades isso geraria múltiplas queries por segundo.
+    Coalesce via `QTimer.singleShot(200)` → max 1 refresh por janela de 200ms.
+  - **Remoção de `sys.platform.startswith("win")` redundante** em
+    `broker_manager.py::connect_broker` e `mt5_process_monitor.py::restart_mt5_instance`:
+    `disable_power_throttling` já checa internamente e retorna False fora do
+    Windows. Também removido `import sys` órfão de `mt5_process_monitor.py`.
+  - **Refator de `CopyTradeManager.close()`**: extraído `_do_close()` como
+    helper síncrono compartilhado entre o caminho com engine (via
+    `engine.submit(_async_close)` + `result(timeout=2.0)`) e o caminho sem
+    engine (test environment). Elimina duplicação do `try/except/finally` que
+    existia em 2 lugares.
+  - **Round defensivo no log de ADD ok**: linha
+    `📊 ADD ok: +0.05 (slave: 0.1 → 0.15000000000000002)` (ruído de aritmética
+    float em SQLite/Python) virou `slave: 0.1 → 0.15`. Cosmético.
+  - **Comentários enxugados**: removidas referências "PR X troca por Y", "issue
+    #111", anedotas tipo "respostas demorando 25s+", e Slot docstrings óbvios
+    ("roda na main thread") em `copytrade_manager.py`, `broker_manager.py`,
+    `mt5_process_monitor.py`, `win_process.py`, `history_page.py`,
+    `dashboard_page.py`, `notification_center.py`, `main_window.py`. O CHANGELOG
+    e o histórico git já documentam o "porquê" histórico — código mantém só o
+    "porquê" intemporal.
+
 - **SQLite confinado ao thread do motor** (#111, PR 3): fim da solução intermediária do PR 2. `CopyTradeManager` agora usa conexão SQLite com `check_same_thread` default (sem flag de bypass) e **sem locks** — engine asyncio é single-threaded, então não há contenção possível. Leituras pedidas pela GUI seguem padrão **request + fetch async + signal**: `request_trade_history()` / `request_today_stats()` (sync, qualquer thread) submetem coroutine ao motor via `engine.submit()`; coroutines `_fetch_trade_history` / `_fetch_today_stats` rodam no motor, fazem a query e emitem 2 sinais novos (`trade_history_ready(list, str)`, `today_stats_ready(dict)`) via cross-thread queued connection — slots na main thread atualizam UI quando o resultado chega. `close()` virou wrapper que submete `_async_close` ao motor (com `result(timeout=2.0)`) — garante que o `db.close()` aconteça na thread certa antes do `engine.stop()`. Wire de `copytrade_manager.engine` feito em `main.py` após o bootstrap (mesmo padrão do `tcp_message_handler`). `gui/pages/history_page.py` e `gui/pages/dashboard_page.py` adaptados: conectam aos sinais no `__init__` e disparam `request_*()` em vez do antigo `get_*()` síncrono. Resultado: zero risco de contenção SQLite entre motor e GUI; código também fica mais simples (não precisa mais de `threading` import em `copytrade_manager.py`).
 - **Bootstrap separado em GUI thread (Qt) e motor thread (asyncio)** (#111, PR 2): mudança arquitetural atômica. `main.py` reescrito: removida dependência de `PySide6.QtAsyncio`/`qasync`, `app.exec()` padrão volta a ser o event loop da main thread. Um `EngineThread` dedicado hospeda o loop do motor — `TcpRouter`, `CopyTradeManager` e `TcpMessageHandler` são construídos **dentro** desse thread (via coroutine de bootstrap submetida à engine), garantindo thread affinity Qt correta dos QObjects emissores. Isso resolve o **freeze de replicação durante Alt+Tab** observado em produção (B3): com a única main thread, Windows throttlava CPU do motor junto com a GUI; agora o motor compete por CPU em pé de igualdade com a GUI dentro do processo.
 - **`BrokerManager`**: recebe parâmetro `engine` no construtor. Os 3 sites que usavam `asyncio.create_task(...)` em `connect_broker`/`disconnect_broker` (chamados da main thread via botões) viraram `engine.submit(...)`. Adicionado `threading.RLock` (`_state_lock`) protegendo `connected_brokers` e `mt5_processes`. Novos acessores thread-safe: `set_mt5_process`, `set_connected`, `get_mt5_process`.

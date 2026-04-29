@@ -1,16 +1,9 @@
-# EPCopyFlow 2.0 - Versão 0.0.1 - Claude Code Parte 000
 # gui/widgets/notification_center.py
 # Centro de notificações global exibido no centro da barra superior.
-#
-# Substitui QMessageBox modais por um widget não-modal que:
-#   - Fica oculto quando não há notificações não-lidas
-#   - Aparece com ícone + contador colorido pela maior severidade
-#   - Pisca (WARNING/ERROR) e emite beep do sistema ao receber
-#   - Ao clicar, abre um popup não-modal com o histórico recente
-#   - Auto-dispensa INFO após 5s; WARNING/ERROR só saem por clique
-#
-# Essencial: este widget NÃO usa exec()/QMessageBox, portanto não cria
-# event loop aninhado — compatível com QtAsyncio.
+# Substitui QMessageBox modais por um widget não-modal: fica oculto quando
+# não há notificações, aparece com ícone+contador colorido pela maior
+# severidade, pisca em WARNING/ERROR, e abre popup com histórico ao clicar.
+# Auto-dispensa INFO após 5s; WARNING/ERROR só saem por clique.
 
 import logging
 from collections import deque
