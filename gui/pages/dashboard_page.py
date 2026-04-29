@@ -159,6 +159,13 @@ class DashboardPage(QWidget):
         self.copytrade_manager.request_today_stats()
 
     @Slot(dict)
+    def refresh_stats(self, _data=None):
+        """Slot público para refresh dos stat cards. Conectado a
+        copy_trade_executed/copy_trade_failed em main_window — atualiza
+        os cards a cada trade replicado."""
+        self._update_copytrade_stats()
+
+    @Slot(dict)
     def _on_today_stats_ready(self, stats):
         """Slot do signal cross-thread. Roda na main thread."""
         self.stat_total._value_label.setText(str(stats.get("total", 0)))
