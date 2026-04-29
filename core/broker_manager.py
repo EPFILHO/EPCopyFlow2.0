@@ -12,6 +12,8 @@ import sys
 import threading
 from PySide6.QtCore import QObject, Signal
 
+from core.win_process import disable_power_throttling
+
 logger = logging.getLogger(__name__)
 
 
@@ -382,6 +384,12 @@ class BrokerManager(QObject):
                 self.mt5_processes[key] = process
                 self.connected_brokers[key] = True
             logger.info(f"MT5 iniciado para {key}.")
+
+            # EcoQoS opt-out: HIGH_PRIORITY_CLASS sozinho não impede o Windows
+            # de marcar o processo como "Eco" quando perde foco. Esta chamada
+            # via SetProcessInformation desliga o throttle de execution speed.
+            if sys.platform.startswith("win") and disable_power_throttling(process.pid):
+                logger.debug(f"Power throttling desligado para {key} (pid={process.pid}).")
 
             if self.tcp_router:
                 broker_config = self.brokers[key]
