@@ -25,6 +25,8 @@ class DashboardPage(QWidget):
         self.broker_cards = {}
         self.setStyleSheet(themes.dashboard_style())
         self._init_ui()
+        if self.copytrade_manager is not None:
+            self.copytrade_manager.today_stats_ready.connect(self._on_today_stats_ready)
         self.refresh_brokers()
 
     def set_broker_status(self, broker_status):
@@ -151,15 +153,17 @@ class DashboardPage(QWidget):
         self.update_broker_indicators()
 
     def _update_copytrade_stats(self):
+        """Pede stats ao motor. Resposta chega via _on_today_stats_ready."""
         if not self.copytrade_manager:
             return
-        try:
-            stats = self.copytrade_manager.get_today_stats()
-            self.stat_total._value_label.setText(str(stats.get("total", 0)))
-            self.stat_success._value_label.setText(str(stats.get("success", 0)))
-            self.stat_failed._value_label.setText(str(stats.get("failed", 0)))
-        except Exception as e:
-            logger.error(f"Erro ao atualizar stats: {e}")
+        self.copytrade_manager.request_today_stats()
+
+    @Slot(dict)
+    def _on_today_stats_ready(self, stats):
+        """Slot do signal cross-thread. Roda na main thread."""
+        self.stat_total._value_label.setText(str(stats.get("total", 0)))
+        self.stat_success._value_label.setText(str(stats.get("success", 0)))
+        self.stat_failed._value_label.setText(str(stats.get("failed", 0)))
 
     @Slot()
     def update_broker_indicators(self):

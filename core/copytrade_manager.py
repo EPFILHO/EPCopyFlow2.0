@@ -10,7 +10,6 @@ import logging
 import asyncio
 import hashlib
 import datetime
-import threading
 from PySide6.QtCore import QObject, Signal
 
 logger = logging.getLogger(__name__)
@@ -23,6 +22,12 @@ class CopyTradeManager(QObject):
     copy_trade_failed = Signal(dict)
     copy_trade_log = Signal(str)
     emergency_completed = Signal(bool, str)  # (success, message)
+
+    # Sinais usados pelo padrão signal-based de leitura (PR 3, issue #111):
+    # GUI chama request_*(), motor executa _fetch_*() e emite o sinal
+    # cross-thread. Slot na main thread atualiza UI.
+    trade_history_ready = Signal(list, str)   # (rows, broker_key_filter)
+    today_stats_ready = Signal(dict)          # {"total", "success", "failed"}
 
     # ──────────────────────────────────────────────
     # Bloco 1 - Inicialização e Banco de Dados
@@ -38,20 +43,19 @@ class CopyTradeManager(QObject):
         self._position_locks = {}  # position_id -> asyncio.Lock (serializa eventos do mesmo position_id)
         self._master_event_dedup = {}  # (position_id, timestamp_mql) -> process_time
 
-        # SQLite cross-thread (PR 2 intermediário, issue #111):
-        # - Construção do CopyTradeManager acontece DENTRO da thread do motor
-        #   (bootstrap_engine em main.py), então a connection nasce na thread
-        #   onde 99% das operações ocorrem (writes via coroutines).
-        # - check_same_thread=False habilita as 2 leituras síncronas que ainda
-        #   acontecem na main thread (Qt): get_trade_history (history_page) e
-        #   get_today_stats (dashboard_page). Essas são protegidas por _db_lock.
-        # - Writes do motor são single-threaded (rodam no event loop do motor),
-        #   então não competem entre si — sqlite serializa writes vs. reads
-        #   internamente.
-        # - PR 3 troca isso por modelo signal-based (DB confinado ao motor).
-        self.db = sqlite3.connect(DB_FILE, check_same_thread=False)
-        self._db_lock = threading.Lock()
+        # SQLite confinado à thread do motor (PR 3, issue #111):
+        # - CopyTradeManager é construído DENTRO do motor (bootstrap_engine).
+        # - Connection nasce na thread do motor; check_same_thread default
+        #   garante que só ela toca o DB.
+        # - Leituras pedidas pela GUI vão via request_*() → engine.submit() →
+        #   _fetch_*() (motor) → signal cross-thread → slot na GUI.
+        # - Engine asyncio é single-threaded: zero locks necessários.
+        self.db = sqlite3.connect(DB_FILE)
         self._init_db()
+
+        # Wire pelo main.py após bootstrap (mesmo padrão do tcp_message_handler).
+        # Necessário para request_trade_history / request_today_stats / close().
+        self.engine = None
 
         logger.info("CopyTradeManager inicializado.")
 
@@ -1528,13 +1532,20 @@ class CopyTradeManager(QObject):
             )
         self.db.commit()
 
-    def get_trade_history(self, broker_key=None, limit=100):
-        """Retorna histórico de cópias, filtrado opcionalmente por broker.
+    def request_trade_history(self, broker_key=None, limit=100):
+        """Solicita histórico de cópias. Fire-and-forget: a resposta chega
+        via signal `trade_history_ready` emitido na main thread.
 
-        Chamado da main thread (history_page). Lock serializa contra writes
-        em andamento no engine thread. PR 3 substituirá por signal-based.
+        Pode ser chamado de qualquer thread; o fetch acontece no motor.
         """
-        with self._db_lock:
+        if self.engine is None:
+            logger.warning("request_trade_history: engine não wired — ignorado.")
+            return
+        self.engine.submit(self._fetch_trade_history(broker_key, limit))
+
+    async def _fetch_trade_history(self, broker_key, limit):
+        """Roda no motor. Sem lock — engine asyncio é single-threaded."""
+        try:
             if broker_key:
                 rows = self.db.execute(
                     """SELECT * FROM copytrade_history
@@ -1547,19 +1558,28 @@ class CopyTradeManager(QObject):
                     "SELECT * FROM copytrade_history ORDER BY timestamp DESC LIMIT ?",
                     (limit,)
                 ).fetchall()
-        columns = ["id", "timestamp", "master_broker", "master_ticket", "symbol",
-                    "action", "master_lot", "slave_broker", "slave_ticket",
-                    "slave_lot", "status", "error_message", "close_reason"]
-        return [dict(zip(columns, row)) for row in rows]
+            columns = ["id", "timestamp", "master_broker", "master_ticket", "symbol",
+                       "action", "master_lot", "slave_broker", "slave_ticket",
+                       "slave_lot", "status", "error_message", "close_reason"]
+            result = [dict(zip(columns, row)) for row in rows]
+        except Exception as e:
+            logger.error(f"_fetch_trade_history falhou: {e}")
+            result = []
+        self.trade_history_ready.emit(result, broker_key or "")
 
-    def get_today_stats(self):
-        """Retorna estatísticas do dia (trades copiados, sucesso, falha).
+    def request_today_stats(self):
+        """Solicita estatísticas do dia. Fire-and-forget; resposta via
+        signal `today_stats_ready`."""
+        if self.engine is None:
+            logger.warning("request_today_stats: engine não wired — ignorado.")
+            return
+        self.engine.submit(self._fetch_today_stats())
 
-        Chamado da main thread (dashboard_page) — vide nota em get_trade_history.
-        """
+    async def _fetch_today_stats(self):
+        """Roda no motor."""
         today_start = datetime.datetime.now().replace(
             hour=0, minute=0, second=0, microsecond=0).timestamp()
-        with self._db_lock:
+        try:
             row = self.db.execute(
                 """SELECT
                     COUNT(*) as total,
@@ -1568,23 +1588,46 @@ class CopyTradeManager(QObject):
                    FROM copytrade_history WHERE timestamp >= ?""",
                 (today_start,)
             ).fetchone()
-        return {"total": row[0] or 0, "success": row[1] or 0, "failed": row[2] or 0}
+            stats = {"total": row[0] or 0, "success": row[1] or 0, "failed": row[2] or 0}
+        except Exception as e:
+            logger.error(f"_fetch_today_stats falhou: {e}")
+            stats = {"total": 0, "success": 0, "failed": 0}
+        self.today_stats_ready.emit(stats)
 
     # ──────────────────────────────────────────────
     # Bloco 6 - Shutdown
     # ──────────────────────────────────────────────
     def close(self):
-        """Fecha a conexão SQLite. Chamado pelo shutdown_cleanup do main.
+        """Fecha a conexão SQLite. Chamado pelo closeEvent do MainWindow.
 
-        No Windows, conexões SQLite abertas mantêm o arquivo locked e impedem
-        backup/delete. Fechar explicitamente libera o lock.
+        Submete o close ao motor (DB nasceu lá e só ele deve tocar). Bloqueia
+        até o close terminar ou estourar timeout. Se engine não estiver
+        disponível (test environment), faz close direto.
         """
-        with self._db_lock:
+        if self.engine is None:
             if self.db is not None:
                 try:
                     self.db.close()
-                    logger.info("Conexão SQLite fechada.")
+                    logger.info("Conexão SQLite fechada (sem engine).")
                 except Exception as e:
                     logger.warning(f"Erro ao fechar DB: {e}")
                 finally:
                     self.db = None
+            return
+        try:
+            fut = self.engine.submit(self._async_close())
+            fut.result(timeout=2.0)
+        except Exception as e:
+            logger.warning(f"async_close timeout/erro: {e}")
+
+    async def _async_close(self):
+        """Fecha conexão SQLite no motor. No Windows, conexão aberta mantém
+        o arquivo locked e impede backup/delete."""
+        if self.db is not None:
+            try:
+                self.db.close()
+                logger.info("Conexão SQLite fechada.")
+            except Exception as e:
+                logger.warning(f"Erro ao fechar DB: {e}")
+            finally:
+                self.db = None
