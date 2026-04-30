@@ -5,7 +5,6 @@
 
 import os
 import subprocess
-import sys
 import time
 import logging
 import asyncio
@@ -169,9 +168,6 @@ class MT5ProcessMonitor:
                 si = subprocess.STARTUPINFO()
                 si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
                 si.wShowWindow = 6  # SW_MINIMIZE
-                # HIGH_PRIORITY_CLASS: mesmo motivo de connect_broker — o
-                # processo reiniciado pelo watchdog precisa da mesma proteção
-                # contra throttle do Windows quando perde foco.
                 process = subprocess.Popen(
                     [
                         instance_path,
@@ -199,8 +195,7 @@ class MT5ProcessMonitor:
             self.broker_manager.set_connected(key, True)
             logger.info(f"MT5 reiniciado para {key} (PID: {process.pid}).")
 
-            # EcoQoS opt-out (mesmo motivo de connect_broker).
-            if sys.platform.startswith("win") and disable_power_throttling(process.pid):
+            if disable_power_throttling(process.pid):
                 logger.debug(f"Power throttling desligado para {key} (pid={process.pid}).")
 
             if self.broker_manager.tcp_router and self.event_loop:

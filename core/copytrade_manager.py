@@ -23,9 +23,8 @@ class CopyTradeManager(QObject):
     copy_trade_log = Signal(str)
     emergency_completed = Signal(bool, str)  # (success, message)
 
-    # Sinais usados pelo padrão signal-based de leitura (PR 3, issue #111):
     # GUI chama request_*(), motor executa _fetch_*() e emite o sinal
-    # cross-thread. Slot na main thread atualiza UI.
+    # cross-thread; slot na main thread atualiza UI.
     trade_history_ready = Signal(list, str)   # (rows, broker_key_filter)
     today_stats_ready = Signal(dict)          # {"total", "success", "failed"}
 
@@ -43,19 +42,13 @@ class CopyTradeManager(QObject):
         self._position_locks = {}  # position_id -> asyncio.Lock (serializa eventos do mesmo position_id)
         self._master_event_dedup = {}  # (position_id, timestamp_mql) -> process_time
 
-        # SQLite confinado à thread do motor (PR 3, issue #111):
-        # - CopyTradeManager é construído DENTRO do motor (bootstrap_engine).
-        # - Connection nasce na thread do motor; check_same_thread default
-        #   garante que só ela toca o DB.
-        # - Leituras pedidas pela GUI vão via request_*() → engine.submit() →
-        #   _fetch_*() (motor) → signal cross-thread → slot na GUI.
-        # - Engine asyncio é single-threaded: zero locks necessários.
+        # SQLite confinado à thread do motor: connection nasce em
+        # bootstrap_engine, leituras da GUI vão via request_*() + signal.
+        # Engine é single-threaded asyncio, então zero locks.
         self.db = sqlite3.connect(DB_FILE)
         self._init_db()
 
-        # Wire pelo main.py após bootstrap (mesmo padrão do tcp_message_handler).
-        # Necessário para request_trade_history / request_today_stats / close().
-        self.engine = None
+        self.engine = None  # wired pelo main.py após bootstrap_engine.
 
         logger.info("CopyTradeManager inicializado.")
 
@@ -155,6 +148,14 @@ class CopyTradeManager(QObject):
                 logger.info(f"Migração: coluna '{col_name}' adicionada a {table}.")
             except sqlite3.OperationalError:
                 pass  # Coluna já existe
+
+        # Índice em timestamp acelera get_today_stats e ORDER BY DESC do
+        # get_trade_history quando a tabela cresce.
+        self.db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_copytrade_history_timestamp "
+            "ON copytrade_history(timestamp)"
+        )
+        self.db.commit()
 
         logger.info("Banco de dados SQLite inicializado (4 tabelas).")
 
@@ -1108,7 +1109,8 @@ class CopyTradeManager(QObject):
             self._update_history(record_id, "SUCCESS", slave_result_ticket)
             added_vol = response.get("volume", slave_lot)
             self._on_add_success(position_id, slave_key, added_vol, master_volume)
-            logger.info(f"    📊 ADD ok: +{added_vol} (slave: {existing_slave_vol} → {existing_slave_vol + added_vol})")
+            new_slave_vol = round(existing_slave_vol + added_vol, 8)
+            logger.info(f"    📊 ADD ok: +{added_vol} (slave: {existing_slave_vol} → {new_slave_vol})")
             self.copy_trade_executed.emit({"slave": slave_key, "symbol": symbol,
                                             "action": direction, "lot": slave_lot})
             return
@@ -1533,18 +1535,13 @@ class CopyTradeManager(QObject):
         self.db.commit()
 
     def request_trade_history(self, broker_key=None, limit=100):
-        """Solicita histórico de cópias. Fire-and-forget: a resposta chega
-        via signal `trade_history_ready` emitido na main thread.
-
-        Pode ser chamado de qualquer thread; o fetch acontece no motor.
-        """
+        """Fire-and-forget. Resposta via signal `trade_history_ready`."""
         if self.engine is None:
             logger.warning("request_trade_history: engine não wired — ignorado.")
             return
         self.engine.submit(self._fetch_trade_history(broker_key, limit))
 
     async def _fetch_trade_history(self, broker_key, limit):
-        """Roda no motor. Sem lock — engine asyncio é single-threaded."""
         try:
             if broker_key:
                 rows = self.db.execute(
@@ -1568,15 +1565,13 @@ class CopyTradeManager(QObject):
         self.trade_history_ready.emit(result, broker_key or "")
 
     def request_today_stats(self):
-        """Solicita estatísticas do dia. Fire-and-forget; resposta via
-        signal `today_stats_ready`."""
+        """Fire-and-forget. Resposta via signal `today_stats_ready`."""
         if self.engine is None:
             logger.warning("request_today_stats: engine não wired — ignorado.")
             return
         self.engine.submit(self._fetch_today_stats())
 
     async def _fetch_today_stats(self):
-        """Roda no motor."""
         today_start = datetime.datetime.now().replace(
             hour=0, minute=0, second=0, microsecond=0).timestamp()
         try:
@@ -1598,21 +1593,11 @@ class CopyTradeManager(QObject):
     # Bloco 6 - Shutdown
     # ──────────────────────────────────────────────
     def close(self):
-        """Fecha a conexão SQLite. Chamado pelo closeEvent do MainWindow.
-
-        Submete o close ao motor (DB nasceu lá e só ele deve tocar). Bloqueia
-        até o close terminar ou estourar timeout. Se engine não estiver
-        disponível (test environment), faz close direto.
-        """
+        """Fecha a conexão SQLite. No Windows, conexão aberta mantém o
+        arquivo locked. Submete ao motor (single-threaded asyncio) e
+        bloqueia até concluir ou estourar timeout."""
         if self.engine is None:
-            if self.db is not None:
-                try:
-                    self.db.close()
-                    logger.info("Conexão SQLite fechada (sem engine).")
-                except Exception as e:
-                    logger.warning(f"Erro ao fechar DB: {e}")
-                finally:
-                    self.db = None
+            self._do_close()
             return
         try:
             fut = self.engine.submit(self._async_close())
@@ -1621,13 +1606,15 @@ class CopyTradeManager(QObject):
             logger.warning(f"async_close timeout/erro: {e}")
 
     async def _async_close(self):
-        """Fecha conexão SQLite no motor. No Windows, conexão aberta mantém
-        o arquivo locked e impede backup/delete."""
-        if self.db is not None:
-            try:
-                self.db.close()
-                logger.info("Conexão SQLite fechada.")
-            except Exception as e:
-                logger.warning(f"Erro ao fechar DB: {e}")
-            finally:
-                self.db = None
+        self._do_close()
+
+    def _do_close(self):
+        if self.db is None:
+            return
+        try:
+            self.db.close()
+            logger.info("Conexão SQLite fechada.")
+        except Exception as e:
+            logger.warning(f"Erro ao fechar DB: {e}")
+        finally:
+            self.db = None

@@ -7,7 +7,7 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QScrollArea,
     QFrame, QGridLayout, QSizePolicy
 )
-from PySide6.QtCore import Slot, Qt
+from PySide6.QtCore import Slot, Qt, QTimer
 from gui.widgets.broker_card import BrokerCard
 from gui import themes
 
@@ -23,6 +23,9 @@ class DashboardPage(QWidget):
         self.tcp_message_handler = tcp_message_handler
         self._broker_status = {}  # EA registered: {key: True/False}
         self.broker_cards = {}
+        # Debounce de refresh_stats: coalesce bursts de copy_trade_executed em
+        # uma única query a cada 200ms.
+        self._stats_refresh_pending = False
         self.setStyleSheet(themes.dashboard_style())
         self._init_ui()
         if self.copytrade_manager is not None:
@@ -153,21 +156,24 @@ class DashboardPage(QWidget):
         self.update_broker_indicators()
 
     def _update_copytrade_stats(self):
-        """Pede stats ao motor. Resposta chega via _on_today_stats_ready."""
         if not self.copytrade_manager:
             return
         self.copytrade_manager.request_today_stats()
 
     @Slot(dict)
     def refresh_stats(self, _data=None):
-        """Slot público para refresh dos stat cards. Conectado a
-        copy_trade_executed/copy_trade_failed em main_window — atualiza
-        os cards a cada trade replicado."""
+        """Pede refresh dos stat cards. Coalesce bursts em 200ms."""
+        if self._stats_refresh_pending:
+            return
+        self._stats_refresh_pending = True
+        QTimer.singleShot(200, self._do_stats_refresh)
+
+    def _do_stats_refresh(self):
+        self._stats_refresh_pending = False
         self._update_copytrade_stats()
 
     @Slot(dict)
     def _on_today_stats_ready(self, stats):
-        """Slot do signal cross-thread. Roda na main thread."""
         self.stat_total._value_label.setText(str(stats.get("total", 0)))
         self.stat_success._value_label.setText(str(stats.get("success", 0)))
         self.stat_failed._value_label.setText(str(stats.get("failed", 0)))

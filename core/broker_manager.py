@@ -361,14 +361,12 @@ class BrokerManager(QObject):
 
         try:
             logger.info(f"Iniciando MT5 para {key}...")
+            # HIGH_PRIORITY_CLASS + disable_power_throttling: evitam throttle do
+            # Windows quando o terminal perde foco (Alt+Tab).
             if sys.platform.startswith("win"):
                 si = subprocess.STARTUPINFO()
                 si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
                 si.wShowWindow = 6  # SW_MINIMIZE
-                # HIGH_PRIORITY_CLASS evita que o Windows throttle o processo MT5
-                # quando a janela perde foco (Alt+Tab). Sem isso, observamos
-                # respostas de TRADE_POSITION_CLOSE_ID demorando 25s+ em slaves
-                # ociosos enquanto o usuário estava em outra janela.
                 process = subprocess.Popen(
                     [instance_path, "/portable"],
                     cwd=os.path.dirname(instance_path),
@@ -385,10 +383,7 @@ class BrokerManager(QObject):
                 self.connected_brokers[key] = True
             logger.info(f"MT5 iniciado para {key}.")
 
-            # EcoQoS opt-out: HIGH_PRIORITY_CLASS sozinho não impede o Windows
-            # de marcar o processo como "Eco" quando perde foco. Esta chamada
-            # via SetProcessInformation desliga o throttle de execution speed.
-            if sys.platform.startswith("win") and disable_power_throttling(process.pid):
+            if disable_power_throttling(process.pid):
                 logger.debug(f"Power throttling desligado para {key} (pid={process.pid}).")
 
             if self.tcp_router:

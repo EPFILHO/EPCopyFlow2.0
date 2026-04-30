@@ -63,15 +63,12 @@ class HistoryPage(QWidget):
 
     @Slot()
     def refresh(self, _data=None):
-        """Pede o histórico ao motor. Resposta chega via signal
-        trade_history_ready → _on_history_ready."""
         if not self.copytrade_manager:
             return
         self.copytrade_manager.request_trade_history(limit=200)
 
     @Slot(list, str)
     def _on_history_ready(self, rows, broker_key_filter):
-        """Slot do signal cross-thread. Roda na main thread."""
         filter_text = self.filter_combo.currentText()
 
         filtered = []

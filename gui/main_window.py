@@ -265,7 +265,6 @@ class MainWindow(QMainWindow):
             self.copytrade_manager.copy_trade_log.connect(self.logs_page.append_log)
             self.copytrade_manager.copy_trade_executed.connect(self.history_page.refresh)
             self.copytrade_manager.copy_trade_failed.connect(self.history_page.refresh)
-            # Refresh dos stat cards do dashboard a cada trade replicado.
             self.copytrade_manager.copy_trade_executed.connect(self.dashboard_page.refresh_stats)
             self.copytrade_manager.copy_trade_failed.connect(self.dashboard_page.refresh_stats)
         # Alien trade detection
@@ -301,9 +300,8 @@ class MainWindow(QMainWindow):
     def _on_alien_trade_detected(self, data: dict):
         """Publica alerta não-modal no centro de notificações da barra superior.
 
-        Importante: NÃO usar QMessageBox.warning() aqui — ele cria um event
-        loop aninhado (exec()) que conflita com QtAsyncio e deixa o main
-        loop em estado inconsistente durante o tempo que o modal fica aberto.
+        NÃO usar QMessageBox.warning() aqui — cria event loop aninhado
+        (exec()) que deixa a janela inconsistente enquanto o modal fica aberto.
         """
         broker = data.get("broker_key", "?")
         symbol = data.get("symbol", "?")
