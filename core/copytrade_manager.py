@@ -192,7 +192,6 @@ class CopyTradeManager(QObject):
         """
         try:
             request_id = f"get_account_mode_{broker_key}_{int(time.time())}"
-            logger.debug(f"🔍 Detectando account mode de {broker_key}...")
 
             response = await self.tcp_router.send_command_to_broker(
                 broker_key, "GET_ACCOUNT_MODE", {}, request_id
@@ -441,8 +440,6 @@ class CopyTradeManager(QObject):
         request_data = trade_event.get("request", {})
         result_data = trade_event.get("result", {})
 
-        logger.info(f"🔍 handle_master_trade_event recebido de {master_broker}")
-
         # Suprimir replicação durante emergency close (evita double close)
         if self._emergency_active:
             logger.warning(f"  Replicação suprimida: emergency close ativo")
@@ -461,13 +458,11 @@ class CopyTradeManager(QObject):
         # Verifica se é realmente do master
         broker_role = self.broker_manager.get_broker_role(master_broker)
         if broker_role != "master":
-            logger.debug(f"Trade event ignorado: {master_broker} não é master.")
             return
 
         # Filtrar ações não replicáveis antes de extrair tudo (reduz barulho no log)
         action = request_data.get("action", 0)
         if action != 1:  # Só TRADE_ACTION_DEAL (1) é replicável
-            logger.debug(f"Trade event ignorado: action={action} (não é DEAL)")
             return
 
         # Extrair informações do trade
@@ -484,9 +479,6 @@ class CopyTradeManager(QObject):
 
         # POSITION_IDENTIFIER — chave universal (vem do EA)
         position_id = trade_event.get("position_id", 0)
-
-        logger.info(f"  action={action}, symbol={symbol}, volume={volume}, retcode={retcode}, "
-                     f"position_id={position_id}, deal={deal_ticket}, vol_remaining={position_volume_remaining}")
 
         # Só replica trades com sucesso (retcode 10009 = TRADE_RETCODE_DONE)
         if retcode != 10009 and retcode != 0:
@@ -512,9 +504,7 @@ class CopyTradeManager(QObject):
         else:
             # Determinar tipo de ação para replicação
             trade_action = self._classify_trade_action(action, order_type, position_ticket, position_volume_remaining)
-            logger.info(f"  trade_action={trade_action}")
             if not trade_action:
-                logger.debug(f"Ação de trade não replicável: action={action}, type={order_type}")
                 return
 
         # Validar que temos position_id (obrigatório para tracking)
@@ -529,7 +519,6 @@ class CopyTradeManager(QObject):
         dedup_key = (position_id, timestamp_mql, order_type)
         now = time.time()
         if dedup_key in self._master_event_dedup:
-            logger.debug(f"  Evento duplicado ignorado: pos_id={position_id}, ts_mql={timestamp_mql}, action={trade_action}")
             return
         self._master_event_dedup[dedup_key] = now
         # No reversal sintético, o OnTradeTransaction subsequente chega com o volume
@@ -570,7 +559,6 @@ class CopyTradeManager(QObject):
 
             # Replica para cada slave conectado (em paralelo entre slaves)
             slaves = self.broker_manager.get_connected_slave_brokers()
-            logger.info(f"  Slaves conectados: {slaves}")
             tasks = []
             for slave_key in slaves:
                 if self.is_slave_paused(slave_key):
@@ -697,7 +685,6 @@ class CopyTradeManager(QObject):
                         "WHERE position_id = ? AND master_broker = ? AND status = 'OPEN'",
                         (volume, sl, tp, position_id, master_broker)
                     )
-                    logger.debug(f"  📝 master_positions ADD: pos_id={position_id}, +{volume}")
                 else:
                     self.db.execute(
                         """INSERT INTO master_positions
@@ -706,7 +693,6 @@ class CopyTradeManager(QObject):
                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?)""",
                         (master_broker, position_id, symbol, direction, volume, volume, sl, tp, now)
                     )
-                    logger.debug(f"  📝 master_positions OPEN: pos_id={position_id}, {direction} {volume}")
 
             elif trade_action == "REVERSAL":
                 self.db.execute(
@@ -714,7 +700,6 @@ class CopyTradeManager(QObject):
                     "WHERE position_id = ? AND master_broker = ? AND status = 'OPEN'",
                     (direction, volume, sl, tp, position_id, master_broker)
                 )
-                logger.debug(f"  📝 master_positions REVERSAL: pos_id={position_id}, {direction} {volume}")
 
             elif trade_action == "PARTIAL_CLOSE":
                 self.db.execute(
@@ -728,7 +713,6 @@ class CopyTradeManager(QObject):
                     "WHERE master_ticket = ? AND status = 'OPEN'",
                     (volume, position_id)
                 )
-                logger.debug(f"  📝 master_positions PARTIAL_CLOSE: pos_id={position_id}, vol_fechado={volume}")
 
             elif trade_action == "CLOSE":
                 self.db.execute(
@@ -740,7 +724,6 @@ class CopyTradeManager(QObject):
                     "UPDATE open_positions SET status = 'CLOSING' WHERE master_ticket = ? AND status = 'OPEN'",
                     (position_id,)
                 )
-                logger.debug(f"  📝 master_positions CLOSED: pos_id={position_id}")
 
     def _get_slave_position_info(self, position_id: int, slave_key: str) -> dict:
         """Retorna info da posição do slave: {volume, direction, master_volume}. None se não encontrado."""
@@ -810,8 +793,6 @@ class CopyTradeManager(QObject):
           - TRADE_ORDER_TYPE_SELL → abre/adiciona short ou reduz long
           - TRADE_POSITION_CLOSE_ID → fecha posição inteira por ticket
         """
-        logger.info(f"  ➜ _replicate_to_slave: slave={slave_key}, action={trade_action}, symbol={symbol}, pos_id={position_id}")
-
         symbol_specs = await self._fetch_symbol_specs(slave_key, symbol)
         multiplier = self.broker_manager.get_lot_multiplier(slave_key)
 
@@ -971,7 +952,6 @@ class CopyTradeManager(QObject):
         response = await self.tcp_router.send_command_to_broker(
             slave_key, "TRADE_POSITION_CLOSE_ID", {"ticket": slave_ticket}, request_id
         )
-        logger.info(f"    Resposta: {response}")
 
         if response.get("status") == "OK":
             slave_result_ticket = response.get("order", 0) or response.get("deal", 0)
@@ -1031,7 +1011,6 @@ class CopyTradeManager(QObject):
         response = await self.tcp_router.send_command_to_broker(
             slave_key, command, payload, request_id
         )
-        logger.info(f"    Resposta: {response}")
 
         if response.get("status") == "OK":
             slave_result_ticket = response.get("order", 0) or response.get("deal", 0)
@@ -1068,7 +1047,6 @@ class CopyTradeManager(QObject):
         response = await self.tcp_router.send_command_to_broker(
             slave_key, command, payload, request_id
         )
-        logger.info(f"    Resposta: {response}")
 
         if response.get("status") == "OK":
             slave_result_ticket = response.get("order", 0) or response.get("deal", 0)
@@ -1102,7 +1080,6 @@ class CopyTradeManager(QObject):
         response = await self.tcp_router.send_command_to_broker(
             slave_key, command, payload, request_id
         )
-        logger.info(f"    Resposta: {response}")
 
         if response.get("status") == "OK":
             slave_result_ticket = response.get("order", 0) or response.get("deal", 0)
@@ -1149,7 +1126,6 @@ class CopyTradeManager(QObject):
         close_response = await self.tcp_router.send_command_to_broker(
             slave_key, "TRADE_POSITION_CLOSE_ID", {"ticket": slave_ticket}, close_request_id
         )
-        logger.info(f"    REVERSAL etapa 1 (close) resposta: {close_response}")
 
         if close_response.get("status") != "OK":
             error = close_response.get("error_message", "") or close_response.get("message", "?")
@@ -1180,12 +1156,11 @@ class CopyTradeManager(QObject):
         payload = {"symbol": symbol, "volume": float(reverse_lot),
                    "price": 0.0, "sl": sl, "tp": tp,
                    "deviation": 10, "comment": f"CT:{position_id}"}
-        logger.info(f"    REVERSAL etapa 2: {command} {reverse_lot} → {command}")
+        logger.info(f"    REVERSAL etapa 2: {command} {reverse_lot}")
 
         open_response = await self.tcp_router.send_command_to_broker(
             slave_key, command, payload, open_request_id
         )
-        logger.info(f"    REVERSAL etapa 2 (open) resposta: {open_response}")
 
         if open_response.get("status") == "OK":
             new_slave_ticket = open_response.get("order", 0) or open_response.get("deal", 0)
@@ -1216,7 +1191,6 @@ class CopyTradeManager(QObject):
         se a posição realmente não existe mais (SL/TP/SO do broker fechou antes).
         Retorna True se resolvido (posição confirmada fechada), False se é erro real.
         """
-        logger.info(f"    Verificando se {symbol} ainda existe em {slave_key} via GET_POSITIONS...")
         req_id = f"verify_{slave_key}_{position_id}_{int(time.time())}"
         pos_response = await self.tcp_router.send_command_to_broker(
             slave_key, "GET_POSITIONS", {}, req_id
@@ -1277,7 +1251,6 @@ class CopyTradeManager(QObject):
              direction, request_id, now, now)
         )
         self.db.commit()
-        logger.debug(f"  ✅ Posição aberta: pos_id={position_id}, slave={slave_key}, slave_ticket={slave_ticket}, slave_lot={slave_lot}, dir={direction}")
 
     def _on_close_success(self, position_id: int, slave_key: str, close_reason: str = "COPYTRADE"):
         """Fechamento total confirmado — marcar CLOSED, limpar position_map."""
@@ -1291,7 +1264,6 @@ class CopyTradeManager(QObject):
             self.position_map[position_id].pop(slave_key, None)
             if not self.position_map[position_id]:
                 del self.position_map[position_id]
-        logger.debug(f"  ✅ Posição FECHADA: pos_id={position_id}, slave={slave_key}, reason={close_reason}")
 
     def _on_add_success(self, position_id: int, slave_key: str, added_volume: float, master_volume: float):
         """ADD à posição confirmado — incrementar volumes no DB."""
@@ -1305,7 +1277,6 @@ class CopyTradeManager(QObject):
             (added_volume, master_volume, now, position_id, slave_key)
         )
         self.db.commit()
-        logger.debug(f"  ✅ ADD ok: pos_id={position_id}, slave={slave_key}, +{added_volume} lotes")
 
     def _on_partial_close_success(self, position_id: int, slave_key: str, closed_volume: float):
         """Fechamento parcial confirmado — decrementar volume do slave."""
@@ -1317,7 +1288,6 @@ class CopyTradeManager(QObject):
             (closed_volume, now, position_id, slave_key)
         )
         self.db.commit()
-        logger.debug(f"  ✅ Parcial ok: pos_id={position_id}, slave={slave_key}, vol_fechado={closed_volume}")
 
     # ──────────────────────────────────────────────
     # Bloco 4 - Fechamento de Emergência
