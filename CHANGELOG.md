@@ -17,6 +17,8 @@ Tipos de mudança:
 
 ## [Unreleased]
 
+## [0.1.9] — 2026-05-02
+
 ### Fixed
 - **Dashboard não atualizava stat cards após trade replicado** (#111, follow-up PR 3): bug pré-existente exposto pelo smoke test do PR 3. `dashboard_page._update_copytrade_stats()` só era chamado em startup, theme change ou broker connect/disconnect — nunca em resposta a `copy_trade_executed`/`copy_trade_failed`. Histórico já tinha esse wire (linhas 266-267 de `main_window.py`); dashboard ficou de fora desde sempre. Adicionado `refresh_stats(_data=None)` como Slot público em `dashboard_page.py` e conectado os 2 sinais em `main_window.py`. Agora cada trade replicado dispara um refresh dos cards Total/Sucesso/Falha. Não tem custo extra — `request_today_stats` é fire-and-forget no motor.
 - **EcoQoS / Power Throttling do Windows não era desligado pelos processos MT5** (#111, PR 2.6): teste em conta REAL (B3) com 7 MT5s mostrou que `HIGH_PRIORITY_CLASS` do PR 2.5 não bastou — usuário relatou freeze ao alternar janelas e lentidão no painel "Negociação" do próprio MT5 (não na nossa GUI). Pesquisa confirmou: priority class e EcoQoS são ortogonais na Microsoft API. Mesmo com prioridade alta, Windows pode marcar processo em background como "Eco" e reduzir CPU/IO — efeito agravado em real (mais ticks, mais book) versus demo (sintético). Adicionado `core/win_process.py` com helper `disable_power_throttling(pid)` que chama `SetProcessInformation` via `ctypes` com `ProcessPowerThrottling` + `PROCESS_POWER_THROTTLING_EXECUTION_SPEED`, `StateMask=0` (desligado). Wired após `subprocess.Popen` em `core/broker_manager.py::connect_broker` e `core/mt5_process_monitor.py::restart_mt5_instance`. Falha silenciosa com log de warning se a API estiver indisponível (Windows < 1709) ou OpenProcess falhar — não derruba o app. Não-Windows: no-op. Doc Microsoft: https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/ns-processthreadsapi-process_power_throttling_state
@@ -25,6 +27,9 @@ Tipos de mudança:
 - **Dívida técnica registrada (não corrigida neste PR)**: como o Python loga falha por timeout enquanto o broker pode confirmar a operação tardiamente (ex.: trade do XP foi executado com `retcode: 10009` mas o registro local já tinha sido marcado como falha), o DB do copytrade pode ficar inconsistente com a realidade do broker em cenários de throttle severo. Natureza similar (mas independente) do que motivou #56. Tratamento adequado fica para issue futura — depende de medirmos se o `HIGH_PRIORITY_CLASS` por si só já elimina o cenário em produção real.
 
 ### Changed
+- **Logs reduzidos em `copytrade_manager.py`**: pente fino tirando 14 logs `DEBUG` redundantes (eventos descartados, dedup, prints internos de `_track_master_position` e `_on_*_success`) e 13 `INFO` que duplicavam informação já presente no log canônico do mesmo fluxo (recebimento, classificação, dump completo de respostas em `_replicate_close`/`_send_*_command` e nas duas etapas do REVERSAL). Total: 114 → 88 logs. `copy_trade_log.emit(...)` (alimenta a `LogsPage` da GUI) e todos `warning`/`error`/`exception` preservados.
+- **`config.ini`**: `log_level` agora `INFO` por padrão (era `DEBUG`); `monitor_interval` baixado de `1s` para `5s` — o watchdog do MT5 conferia processo a cada segundo, exagero para detecção de crash; 5s mantém o objetivo com 5× menos overhead.
+- **`MainWindow.version_label`**: passa a usar `core.version.__version__` em vez do `"v0.0.1"` hardcoded, que estava desatualizado desde a 0.1.0.
 - **Limpeza geral de código pós-refactor** (#111, follow-up): aplicada após
   review automatizado dos PRs 2.5/2.6/B/3. Mudanças:
   - **Índice em `copytrade_history(timestamp)`** (`_init_db`): `_fetch_today_stats`
@@ -192,7 +197,8 @@ Tipos de mudança:
 - Monitor de processo MT5 (detecta crash e reinicia)
 - Monitor de internet (detecta queda de conexão)
 
-[Unreleased]: https://github.com/EPFILHO/EPCopyFlow2.0/compare/v0.1.8...HEAD
+[Unreleased]: https://github.com/EPFILHO/EPCopyFlow2.0/compare/v0.1.9...HEAD
+[0.1.9]: https://github.com/EPFILHO/EPCopyFlow2.0/compare/v0.1.8...v0.1.9
 [0.1.8]: https://github.com/EPFILHO/EPCopyFlow2.0/compare/v0.1.7...v0.1.8
 [0.1.7]: https://github.com/EPFILHO/EPCopyFlow2.0/compare/v0.1.6...v0.1.7
 [0.1.6]: https://github.com/EPFILHO/EPCopyFlow2.0/compare/v0.1.5...v0.1.6

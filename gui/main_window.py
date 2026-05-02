@@ -14,6 +14,7 @@ from core.config_manager import ConfigManager
 from core.broker_manager import BrokerManager
 from core.tcp_router import TcpRouter
 from core.tcp_message_handler import TcpMessageHandler
+from core.version import __version__
 from internet_monitor import InternetMonitor
 from gui import themes
 
@@ -214,7 +215,7 @@ class MainWindow(QMainWindow):
         layout.addStretch()
 
         # Version label at bottom
-        self.version_label = QLabel("v0.0.1")
+        self.version_label = QLabel(f"v{__version__}")
         self.version_label.setStyleSheet(themes.version_label_style())
         layout.addWidget(self.version_label)
 
