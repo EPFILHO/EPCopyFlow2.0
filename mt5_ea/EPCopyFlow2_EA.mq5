@@ -855,6 +855,16 @@ void HandleTradeBuyCommand(const string request_id, JSONNode &payload)
    }
 
    string symbol = payload["symbol"].ToString();
+
+   // Garante que o símbolo existe no broker e está no Market Watch.
+   // Crítico em B3 ao virar contrato (WINQ25 → WINV25): o slave pode nunca
+   // ter operado o símbolo novo. SymbolSelect também adiciona ao Market Watch.
+   if(!SymbolSelect(symbol, true))
+   {
+      SendErrorResponse(request_id, StringFormat("Símbolo %s não disponível no broker", symbol));
+      return;
+   }
+
    double volume = payload["volume"].ToDouble();
    double price = payload["price"].ToDouble();
    double sl = payload["sl"].ToDouble();
@@ -909,6 +919,13 @@ void HandleTradeSellCommand(const string request_id, JSONNode &payload)
    }
 
    string symbol = payload["symbol"].ToString();
+
+   if(!SymbolSelect(symbol, true))
+   {
+      SendErrorResponse(request_id, StringFormat("Símbolo %s não disponível no broker", symbol));
+      return;
+   }
+
    double volume = payload["volume"].ToDouble();
    double price = payload["price"].ToDouble();
    double sl = payload["sl"].ToDouble();
@@ -1103,6 +1120,13 @@ void HandleTradePositionCloseSymbolCommand(const string request_id, JSONNode &pa
    }
 
    string symbol = payload["symbol"].ToString();
+
+   if(!SymbolSelect(symbol, true))
+   {
+      SendErrorResponse(request_id, StringFormat("Símbolo %s não disponível no broker", symbol));
+      return;
+   }
+
    int submitted = 0;
 
    for(int i = PositionsTotal() - 1; i >= 0; i--)
