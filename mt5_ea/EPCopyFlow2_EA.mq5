@@ -1213,8 +1213,8 @@ int OnInit()
 
    RefreshPositionCache();
 
-   PrintFormat("EPCopyFlow EA: Inicializado. Role=%s, BrokerKey=%s, cached_positions=%d",
-               g_role, g_brokerKey, g_pos_cache_size);
+   PrintFormat("EPCopyFlow EA: Inicializado. Role=%s, BrokerKey=%s, cached_positions=%d, TimerInterval=%dms",
+               g_role, g_brokerKey, g_pos_cache_size, InpTimerIntervalMs);
    return(INIT_SUCCEEDED);
 }
 
