@@ -3,6 +3,7 @@
 # Gerenciador de corretoras com suporte a roles (master/slave),
 # multiplicador de lote, e comunicação TCP nativa (1 porta por broker).
 
+import asyncio
 import json
 import os
 import shutil
@@ -324,11 +325,19 @@ class BrokerManager(QObject):
         return self.brokers
 
     def connect_broker(self, key):
+        """Inicia o MT5 do broker (não-bloqueante).
+
+        A parte pesada (subprocess.Popen + connect_broker_sockets) roda
+        no engine thread via asyncio + run_in_executor — a main thread
+        retorna imediatamente. UI reflete estado "conectado" na hora; se
+        algo falhar no engine, log + estado revertido + signal pra UI
+        re-renderizar.
+        """
         if key not in self.brokers:
             logger.error(f"Corretora {key} não encontrada.")
             return False
 
-        # Já está rodando?
+        # Já está rodando? Só reconecta sockets (tudo no engine).
         with self._state_lock:
             existing = self.mt5_processes.get(key)
             already_running = existing is not None and existing.poll() is None
@@ -349,73 +358,108 @@ class BrokerManager(QObject):
             logger.error(f"Instância MT5 não encontrada para {key}.")
             return False
 
-        try:
+        # Estado otimista: marca como conectado pra UI atualizar imediatamente.
+        with self._state_lock:
+            self.connected_brokers[key] = True
+        broker_config = self.brokers[key]
+        self._submit_to_engine(
+            self._async_start_mt5_process(key, instance_path, broker_config)
+        )
+        self.brokers_updated.emit()
+        return True
+
+    async def _async_start_mt5_process(self, key: str, instance_path: str,
+                                        broker_config: dict):
+        """Roda no engine. Faz Popen em executor (sem bloquear loop), aplica
+        power throttling fix, e conecta sockets TCP."""
+        loop = asyncio.get_running_loop()
+
+        def _do_popen():
             logger.info(f"Iniciando MT5 para {key}...")
-            # HIGH_PRIORITY_CLASS + disable_power_throttling: evitam throttle do
-            # Windows quando o terminal perde foco (Alt+Tab).
             if sys.platform.startswith("win"):
                 si = subprocess.STARTUPINFO()
                 si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
                 si.wShowWindow = 6  # SW_MINIMIZE
-                process = subprocess.Popen(
+                return subprocess.Popen(
                     [instance_path, "/portable"],
                     cwd=os.path.dirname(instance_path),
                     startupinfo=si,
                     creationflags=subprocess.HIGH_PRIORITY_CLASS,
                 )
-            else:
-                process = subprocess.Popen(
-                    [instance_path, "/portable"],
-                    cwd=os.path.dirname(instance_path)
-                )
-            with self._state_lock:
-                self.mt5_processes[key] = process
-                self.connected_brokers[key] = True
-            logger.info(f"MT5 iniciado para {key}.")
+            return subprocess.Popen(
+                [instance_path, "/portable"],
+                cwd=os.path.dirname(instance_path),
+            )
 
-            if disable_power_throttling(process.pid):
-                logger.debug(f"Power throttling desligado para {key} (pid={process.pid}).")
-
-            if self.tcp_router:
-                broker_config = self.brokers[key]
-                self._submit_to_engine(
-                    self.tcp_router.connect_broker_sockets(key, broker_config)
-                )
-            self.brokers_updated.emit()
-            return True
+        try:
+            process = await loop.run_in_executor(None, _do_popen)
         except Exception as e:
             logger.error(f"Erro ao iniciar MT5 para {key}: {e}")
-            return False
+            with self._state_lock:
+                self.connected_brokers[key] = False
+            self.brokers_updated.emit()
+            return
+
+        with self._state_lock:
+            self.mt5_processes[key] = process
+        logger.info(f"MT5 iniciado para {key} (pid={process.pid}).")
+
+        if disable_power_throttling(process.pid):
+            logger.debug(f"Power throttling desligado para {key} (pid={process.pid}).")
+
+        if self.tcp_router:
+            try:
+                await self.tcp_router.connect_broker_sockets(key, broker_config)
+            except Exception as e:
+                logger.error(f"Erro ao conectar sockets para {key}: {e}")
+
+        self.brokers_updated.emit()
 
     def disconnect_broker(self, key):
+        """Desliga o MT5 do broker (não-bloqueante).
+
+        A parte pesada (process.terminate() + process.wait(timeout=5)) roda
+        no engine thread via asyncio + run_in_executor — a main thread retorna
+        imediatamente. Antes, "Desconectar Todas" com N brokers podia bloquear
+        a GUI por até N×5s no shutdown.
+        """
         if key not in self.brokers:
             logger.error(f"Corretora {key} não encontrada.")
             return False
 
-        if self.tcp_router:
-            self._submit_to_engine(self.tcp_router.disconnect_broker_sockets(key))
-
         with self._state_lock:
             process = self.mt5_processes.pop(key, None)
-
-        if process is not None:
-            if process.poll() is None:
-                try:
-                    process.terminate()
-                    process.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    process.kill()
-                except Exception as e:
-                    logger.error(f"Erro ao parar MT5 para {key}: {e}")
-                    with self._state_lock:
-                        self.connected_brokers[key] = False
-                    self.brokers_updated.emit()
-                    return False
-
-        with self._state_lock:
             self.connected_brokers[key] = False
+
+        self._submit_to_engine(self._async_stop_mt5_process(key, process))
         self.brokers_updated.emit()
         return True
+
+    async def _async_stop_mt5_process(self, key: str, process):
+        """Roda no engine. Fecha sockets TCP e termina o processo MT5 em
+        executor (sem bloquear o loop nos até 5s do wait())."""
+        if self.tcp_router:
+            try:
+                await self.tcp_router.disconnect_broker_sockets(key)
+            except Exception as e:
+                logger.error(f"Erro ao desconectar sockets para {key}: {e}")
+
+        if process is None or process.poll() is not None:
+            return
+
+        loop = asyncio.get_running_loop()
+
+        def _do_terminate_wait():
+            try:
+                process.terminate()
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                logger.warning(f"MT5 {key} não respondeu ao terminate em 5s; kill.")
+                process.kill()
+            except Exception as e:
+                logger.error(f"Erro ao parar MT5 para {key}: {e}")
+
+        await loop.run_in_executor(None, _do_terminate_wait)
 
     def is_connected(self, key):
         with self._state_lock:

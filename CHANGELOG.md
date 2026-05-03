@@ -17,6 +17,9 @@ Tipos de mudança:
 
 ## [Unreleased]
 
+### Changed
+- **`BrokerManager.connect_broker` / `disconnect_broker` deixaram de bloquear a main thread Qt**: a parte pesada (`subprocess.Popen` no connect — pode levar 100-500ms na chamada `CreateProcessW` do Windows; `process.terminate()` + `process.wait(timeout=5)` no disconnect — até 5s se MT5 ignora o sinal) ia direto na thread Qt e congelava a GUI durante a operação. "Conectar Todas" com 9 brokers chegava a 1-4s, "Desconectar Todas" no shutdown podia chegar a N×5s. Agora os métodos públicos: (1) fazem só validações rápidas, (2) marcam o estado em memória otimisticamente, (3) submetem coroutines ao engine via `engine.submit(...)` que rodam o trabalho síncrono em `loop.run_in_executor(None, ...)`, (4) emitem `brokers_updated` pra UI re-renderizar. Bônus: "Conectar Todas" virou paralelo (todas as N coroutines submetidas concorrem no engine, com Popen em executor threads), em vez de sequencial. Falhas no engine logam erro e revertem o estado pro broker, com nova emissão do signal pra UI atualizar.
+
 ### Added
 - **EA: `SymbolSelect(symbol, true)` defensivo nos handlers de trade**: cenário B3 — operador entra em `WINQ25`, contrato vira `WINV25` no vencimento, slave nunca operou o novo contrato e `OrderSendAsync` falharia com erro genérico. Agora `HandleTradeBuyCommand`, `HandleTradeSellCommand` e `HandleTradePositionCloseSymbolCommand` chamam `SymbolSelect(symbol, true)` no topo: verifica se o símbolo existe no broker e adiciona ao Market Watch automaticamente. Se o broker não tem o símbolo (ainda não disponibilizado, typo, etc.), responde ERROR claro: `"Símbolo X não disponível no broker"`. Custo nulo quando símbolo já está no Market Watch (~µs). Handlers que operam por ticket (`Partial`, `CloseId`) não foram alterados — derivam o símbolo da posição existente.
 
