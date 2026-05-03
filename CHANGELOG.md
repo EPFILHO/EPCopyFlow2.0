@@ -17,7 +17,12 @@ Tipos de mudança:
 
 ## [Unreleased]
 
+### Added
+- **Push periódico de `ACCOUNT_UPDATE` do EA** (a cada ~2s no `OnTimer`): cada EA agora envia automaticamente `STREAM ACCOUNT_UPDATE` com `balance`, `equity`, `margin`, `free_margin`, `currency`, **`profit` (P/L atual — soma de `POSITION_PROFIT` das posições abertas)** e `positions_count`. Substitui o gap de "rotina paralela alimenta GUI com valores das contas" descrito na premissa original — antes os cards ficavam com saldo e P/L desatualizados, só atualizando esporadicamente em resposta a algum evento. Periodicidade controlada por `kAccountUpdateEvery` (constante no EA — 20 ticks × 100ms = 2s). Lado Python: `TcpMessageHandler.account_update_received(dict)` novo; conectado em `MainWindow._connect_signals` para `dashboard_page.update_account_info` e `brokers_page.update_account_info`. Lado UI: `BrokerCard.update_account_info(data)` novo, atualiza os labels existentes (`balance_label`, `positions_label`, `profit_label`); `update_balance` / `update_positions` antigos preservados (ainda servem respostas sob-demanda).
+
 ### Fixed
+- **Defesa contra "cards encolhidos" e janelinhas momentâneas durante refresh**: `BrokerCard` agora é criado com `parent=self` (a page) em `dashboard_page._do_refresh_brokers` e `brokers_page._do_refresh_brokers`. Antes, criar `BrokerCard(...)` sem parent fazia o widget nascer top-level por uma fração de segundo (entre `__init__` e `addWidget` que re-parents), o que combinado com bursts de refresh podia gerar janelinhas Qt piscando e em alguns momentos cards mal-dimensionados.
+
 - **Janelas Qt piscando (cards de broker virando top-level brevemente) durante "Conectar Todas"**: cada `REGISTER` de EA disparava `_handle_tcp_messages` no `MainWindow`, que chamava `dashboard_page.refresh_brokers()` + `brokers_page.refresh_brokers()`. Para 9 brokers conectando = ~18 refreshes em 1-2s. Cada refresh fazia `card.setParent(None) + card.deleteLater()` em todos os cards — entre o unparent e o deleteLater (assíncrono), o widget vira top-level visível por uma fração de segundo, daí as "janelinhas" piscando. Duas correções: (1) **debounce** de 50ms em `refresh_brokers` (mesmo padrão do `refresh_stats`), coalescendo a rajada em 1-2 refreshes reais; (2) `widget.hide()` ANTES de `setParent(None)` em todos os destroys (cards, slaves grid, master placeholder), garantindo que o widget não fique visível durante o ciclo de destruição. Também passa `self.master_placeholder.show()` quando reusado.
 
 ### Changed

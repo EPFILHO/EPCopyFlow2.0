@@ -256,6 +256,9 @@ class MainWindow(QMainWindow):
         self.tcp_message_handler.log_message_received.connect(self._handle_tcp_messages)
         self.tcp_message_handler.positions_received.connect(self.dashboard_page.update_positions)
         self.tcp_message_handler.account_balance_received.connect(self.dashboard_page.update_balance)
+        # Push periódico do EA (a cada ~2s): alimenta os cards sem polling.
+        self.tcp_message_handler.account_update_received.connect(self.dashboard_page.update_account_info)
+        self.tcp_message_handler.account_update_received.connect(self.brokers_page.update_account_info)
         # Atualizar indicadores quando status muda
         self.tcp_message_handler.trade_allowed_update_received.connect(
             lambda _: self._update_all_indicators())

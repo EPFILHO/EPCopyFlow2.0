@@ -169,6 +169,20 @@ class BrokerCard(QFrame):
         equity = data.get("equity", 0)
         self.balance_label.setText(f"Saldo: {balance:,.2f}")
 
+    def update_account_info(self, data):
+        """Atualiza balance / positions_count / profit a partir de um STREAM
+        ACCOUNT_UPDATE do EA (push periódico, ~2s). Mantém compatibilidade com
+        os métodos update_balance/update_positions chamados por respostas
+        sob-demanda."""
+        balance = data.get("balance", 0.0) or 0.0
+        self.balance_label.setText(f"Saldo: {balance:,.2f}")
+
+        positions_count = data.get("positions_count", 0) or 0
+        self.positions_label.setText(f"Posicoes: {positions_count}")
+
+        profit = data.get("profit", 0.0) or 0.0
+        self._set_profit(profit)
+
     def _set_profit(self, value):
         prefix = "+" if value >= 0 else ""
         self.profit_label.setText(f"P/L: {prefix}{value:,.2f}")

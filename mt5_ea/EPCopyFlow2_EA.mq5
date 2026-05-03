@@ -50,6 +50,12 @@ bool g_initial_trade_allowed_sent = false;
 bool g_last_terminal_connected = false;
 bool g_initial_connection_status_sent = false;
 
+//--- Push periódico de account_info (balance/equity/margin/profit/positions_count).
+//--- Disparado a cada kAccountUpdateEvery ticks de OnTimer
+//--- (kAccountUpdateEvery * InpTimerIntervalMs = intervalo efetivo).
+const int kAccountUpdateEvery = 20;  // 20 * 100ms = 2s
+int g_account_update_counter = 0;
+
 //--- Magic number para identificar trades do CopyTrade.
 //--- Fonte única: Python envia SET_MAGIC_NUMBER logo após receber REGISTER do EA.
 //--- Até esse comando chegar, g_magic_number = 0 e a detecção de alien fica DESABILITADA
@@ -515,6 +521,40 @@ bool SendErrorResponse(const string request_id, const string error_message)
    response["status"] = "ERROR";
    response["error_message"] = error_message;
    return SendJsonMessage(response, "Command");
+}
+
+//+------------------------------------------------------------------+
+//| Push periódico: balance, equity, margin, free_margin, P/L atual  |
+//| (soma de POSITION_PROFIT) e contagem de posições abertas.         |
+//+------------------------------------------------------------------+
+bool SendAccountUpdate()
+{
+   if(!g_is_connected) return false;
+
+   double total_profit = 0.0;
+   int positions_count = 0;
+   for(int i = 0; i < PositionsTotal(); i++)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(PositionSelectByTicket(ticket))
+      {
+         total_profit += PositionGetDouble(POSITION_PROFIT);
+         positions_count++;
+      }
+   }
+
+   JSONNode msg;
+   msg["type"]            = "STREAM";
+   msg["event"]           = "ACCOUNT_UPDATE";
+   msg["timestamp_mql"]   = (long)TimeCurrent();
+   msg["balance"]         = AccountInfoDouble(ACCOUNT_BALANCE);
+   msg["equity"]          = AccountInfoDouble(ACCOUNT_EQUITY);
+   msg["margin"]          = AccountInfoDouble(ACCOUNT_MARGIN);
+   msg["free_margin"]     = AccountInfoDouble(ACCOUNT_FREEMARGIN);
+   msg["currency"]        = AccountInfoString(ACCOUNT_CURRENCY);
+   msg["profit"]          = total_profit;
+   msg["positions_count"] = (long)positions_count;
+   return SendJsonMessage(msg, "Event");
 }
 
 //+------------------------------------------------------------------+
@@ -1359,6 +1399,14 @@ void OnTimer()
       g_last_terminal_connected = current_connected;
       if(InpDebugLog)
          PrintFormat("CONNECTION_STATUS: %s", current_connected ? "connected" : "disconnected");
+   }
+
+   // Push periódico de account_info (balance/equity/margin/profit/positions_count)
+   g_account_update_counter++;
+   if(g_account_update_counter >= kAccountUpdateEvery)
+   {
+      g_account_update_counter = 0;
+      SendAccountUpdate();
    }
 
    // Limpar requests assíncronos expirados (timeout 30s)

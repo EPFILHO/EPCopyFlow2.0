@@ -140,7 +140,8 @@ class BrokersPage(QWidget):
         master_key = self.broker_manager.get_master_broker()
         slave_keys = sorted([k for k in brokers if k != master_key])
 
-        # Master card
+        # parent=self garante que o card nunca seja top-level antes de ser
+        # re-parented pelo addWidget — evita "janelinhas piscando".
         if master_key:
             card = BrokerCard(
                 master_key, brokers[master_key],
@@ -148,6 +149,7 @@ class BrokersPage(QWidget):
                 show_connect_btn=True,
                 on_connect=lambda k=master_key: self._connect_broker(k),
                 on_disconnect=lambda k=master_key: self._disconnect_broker(k),
+                parent=self,
             )
             self.broker_cards[master_key] = card
             self.master_area.insertWidget(0, card)
@@ -164,11 +166,20 @@ class BrokersPage(QWidget):
                 show_connect_btn=True,
                 on_connect=lambda k=key: self._connect_broker(k),
                 on_disconnect=lambda k=key: self._disconnect_broker(k),
+                parent=self,
             )
             self.broker_cards[key] = card
             self.slaves_grid.addWidget(card, i // cols, i % cols)
 
         self.update_broker_indicators()
+
+    @Slot(dict)
+    def update_account_info(self, data):
+        """Push periódico do EA (STREAM ACCOUNT_UPDATE) — atualiza balance,
+        positions_count e P/L do card sem precisar pedir."""
+        broker_key = data.get("broker_key")
+        if broker_key and broker_key in self.broker_cards:
+            self.broker_cards[broker_key].update_account_info(data)
 
     @Slot()
     def update_broker_indicators(self):

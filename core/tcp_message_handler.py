@@ -27,6 +27,7 @@ class TcpMessageHandler(QObject):
     trade_event_received = Signal(dict)
     trade_response_received = Signal(dict)
     alien_trade_detected = Signal(dict)
+    account_update_received = Signal(dict)
 
     # ──────────────────────────────────────────────
     # Bloco 1 - Inicialização
@@ -201,6 +202,19 @@ class TcpMessageHandler(QObject):
             if broker_key and broker_key not in self.heartbeat_active:
                 self.heartbeat_active[broker_key] = True
                 logger.debug(f"💓 Primeiro heartbeat de {broker_key} ({role})")
+
+        elif msg_type == "STREAM" and event == "ACCOUNT_UPDATE":
+            self.account_update_received.emit({
+                "broker_key":      identified_broker_key,
+                "timestamp_mql":   message.get("timestamp_mql", 0),
+                "balance":         message.get("balance", 0.0),
+                "equity":          message.get("equity", 0.0),
+                "margin":          message.get("margin", 0.0),
+                "free_margin":     message.get("free_margin", 0.0),
+                "currency":        message.get("currency", ""),
+                "profit":          message.get("profit", 0.0),
+                "positions_count": message.get("positions_count", 0),
+            })
 
         elif msg_type == "STREAM" and event == "SLTP_MODIFIED":
             sltp_data = {
