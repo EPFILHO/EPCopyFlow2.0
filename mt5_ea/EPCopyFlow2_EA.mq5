@@ -20,7 +20,7 @@
 //+------------------------------------------------------------------+
 
 //--- Parâmetros configuráveis
-input int    InpTimerIntervalMs  = 1000;    // Intervalo do timer (ms)
+input int    InpTimerIntervalMs  = 100;     // Intervalo do timer (ms)
 input bool   InpDebugLog         = false;   // Ativar logs de debug
 input string InpTcpHost          = "127.0.0.1"; // Host do servidor Python
 input int    InpConnectTimeoutMs = 1000;    // Timeout de conexão TCP (ms)

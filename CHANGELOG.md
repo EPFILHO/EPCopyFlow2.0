@@ -17,6 +17,9 @@ Tipos de mudança:
 
 ## [Unreleased]
 
+### Changed
+- **EA `InpTimerIntervalMs`: 1000ms → 100ms**: o `OnTimer()` do EA é onde os comandos vindos do Python são lidos do socket TCP (`CheckIncomingCommands` → `TcpPumpReads` → `TcpExtractAndProcessFrames`). Em 1000ms, um comando que chegasse logo após um tick esperaria até 1s para ser processado — causando gap medido de ~1.4s entre execução do trade no master e no slave (master 213ms broker + ~1s timer slave + 258ms broker slave). Em 100ms, latência max do timer cai para 100ms; custo extra é insignificante (conteúdo do `OnTimer` é trivial — checks de flag e drain de socket vazio). **Requer recompilar o EA no MetaEditor (F7) e re-attach nas instâncias.**
+
 ## [0.1.9] — 2026-05-02
 
 ### Fixed
