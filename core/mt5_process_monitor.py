@@ -40,7 +40,22 @@ class MT5ProcessMonitor:
         self._last_alive_at = {}       # key -> timestamp da última vez visto vivo
         self._failed_brokers = set()   # brokers que esgotaram retries
 
+        # Cache de "MT5 process vivo" — fonte única consultada pela GUI.
+        # Evita process.poll() direto da main thread Qt.
+        self._is_running = {}
+        self._is_running_lock = threading.Lock()
+
         logger.info(f"MT5ProcessMonitor inicializado (max_retries={self.max_retries}, backoff_base={self.backoff_base}s, crash_window={self.crash_window}s).")
+
+    def is_running(self, key: str) -> bool:
+        """Thread-safe. Retorna o último estado conhecido do processo MT5 do broker.
+        Atualizado a cada check_interval pelo monitor_loop."""
+        with self._is_running_lock:
+            return self._is_running.get(key, False)
+
+    def _set_is_running(self, key: str, value: bool):
+        with self._is_running_lock:
+            self._is_running[key] = value
 
     def start(self):
         if not self.monitor_thread or not self.monitor_thread.is_alive():
@@ -84,9 +99,11 @@ class MT5ProcessMonitor:
 
         for key in self.broker_manager.get_brokers():
             if not self.broker_manager.is_connected(key):
+                self._set_is_running(key, False)
                 continue
 
             if key in self._failed_brokers:
+                self._set_is_running(key, False)
                 continue
 
             process = self.broker_manager.get_mt5_process(key)
@@ -95,9 +112,11 @@ class MT5ProcessMonitor:
             if not process_dead:
                 # Processo vivo — registrar timestamp
                 self._last_alive_at[key] = now
+                self._set_is_running(key, True)
                 continue
 
             # --- Processo morto ---
+            self._set_is_running(key, False)
 
             # Limpar processo morto do broker_manager (via acessores thread-safe)
             if process is not None:
@@ -193,6 +212,7 @@ class MT5ProcessMonitor:
                 )
             self.broker_manager.set_mt5_process(key, process)
             self.broker_manager.set_connected(key, True)
+            self._set_is_running(key, True)
             logger.info(f"MT5 reiniciado para {key} (PID: {process.pid}).")
 
             if disable_power_throttling(process.pid):

@@ -159,8 +159,7 @@ class BrokersPage(QWidget):
             connection_status = self.tcp_message_handler.get_connection_status_states()
 
         for key, card in self.broker_cards.items():
-            process = self.broker_manager.mt5_processes.get(key)
-            mt5_running = process is not None and process.poll() is None
+            mt5_running = self.mt5_monitor.is_running(key) if self.mt5_monitor else False
 
             if not mt5_running:
                 card.update_status_indicators(mt5=None, ea=None, brk=None, alg=None)

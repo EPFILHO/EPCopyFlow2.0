@@ -118,7 +118,8 @@ class MainWindow(QMainWindow):
         # Create pages
         self.dashboard_page = DashboardPage(
             self.broker_manager, self.copytrade_manager,
-            tcp_message_handler=self.tcp_message_handler
+            tcp_message_handler=self.tcp_message_handler,
+            mt5_monitor=self.mt5_monitor,
         )
         self.dashboard_page.set_broker_status(self.broker_status)
         self.brokers_page = BrokersPage(
