@@ -16,11 +16,12 @@ logger = logging.getLogger(__name__)
 
 class DashboardPage(QWidget):
     def __init__(self, broker_manager, copytrade_manager=None,
-                 tcp_message_handler=None, parent=None):
+                 tcp_message_handler=None, mt5_monitor=None, parent=None):
         super().__init__(parent)
         self.broker_manager = broker_manager
         self.copytrade_manager = copytrade_manager
         self.tcp_message_handler = tcp_message_handler
+        self.mt5_monitor = mt5_monitor
         self._broker_status = {}  # EA registered: {key: True/False}
         self.broker_cards = {}
         # Debounce de refresh_stats: coalesce bursts de copy_trade_executed em
@@ -188,9 +189,7 @@ class DashboardPage(QWidget):
             connection_status = self.tcp_message_handler.get_connection_status_states()
 
         for key, card in self.broker_cards.items():
-            # MT5: processo rodando?
-            process = self.broker_manager.mt5_processes.get(key)
-            mt5_running = process is not None and process.poll() is None
+            mt5_running = self.mt5_monitor.is_running(key) if self.mt5_monitor else False
 
             if not mt5_running:
                 # MT5 fechado: tudo cinza
