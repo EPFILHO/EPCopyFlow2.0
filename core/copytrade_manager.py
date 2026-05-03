@@ -749,6 +749,18 @@ class CopyTradeManager(QObject):
           - TRADE_POSITION_CLOSE_ID → fecha posição inteira por ticket
         """
         symbol_specs = await self._fetch_symbol_specs(slave_key, symbol)
+
+        # Se o GET_SYMBOL_INFO falhou, o símbolo não existe nesse broker
+        # (ex.: forex no slave B3, ou contrato vencido). Pula sem tentar enviar
+        # — o trade falharia com "Símbolo X não disponível" e geraria 3 logs.
+        if symbol_specs is None:
+            logger.info(f"    ⏭️  SKIP {slave_key}: {symbol} não disponível no broker")
+            self._insert_history(master_broker, deal_ticket, symbol, trade_action,
+                                 volume, slave_key, 0, 0, "SKIPPED",
+                                 "símbolo não disponível no broker")
+            self.copy_trade_log.emit(f"SKIP [{slave_key}]: {symbol} indisponível")
+            return
+
         multiplier = self.broker_manager.get_lot_multiplier(slave_key)
 
         pos_info = self._get_slave_position_info(position_id, slave_key)

@@ -29,6 +29,10 @@ class BrokersPage(QWidget):
         self.tcp_message_handler = tcp_message_handler
         self._broker_status = {}
         self.broker_cards = {}
+        # Debounce de refresh_brokers: cada REGISTER/UNREGISTER de EA dispara
+        # refresh; com 9 brokers conectando, isso vira ~18 refreshes em 1-2s.
+        # Coalesce em 50ms evita janelas Qt piscando durante destroy/recreate.
+        self._refresh_brokers_pending = False
         self.setStyleSheet(themes.brokers_page_style())
         self._init_ui()
         self.refresh_brokers()
@@ -100,20 +104,36 @@ class BrokersPage(QWidget):
         self.refresh_brokers()
 
     def refresh_brokers(self):
+        """Coalesce múltiplos refreshes em ~50ms — evita destroy/recreate em
+        rajada quando vários EAs registram em sequência."""
+        if self._refresh_brokers_pending:
+            return
+        self._refresh_brokers_pending = True
+        from PySide6.QtCore import QTimer
+        QTimer.singleShot(50, self._do_refresh_brokers)
+
+    def _do_refresh_brokers(self):
+        self._refresh_brokers_pending = False
+
+        # hide() antes de setParent(None) evita janelas Qt piscando.
         for card in self.broker_cards.values():
+            card.hide()
             card.setParent(None)
             card.deleteLater()
         self.broker_cards.clear()
 
         # Remove master placeholder if present
         if self.master_placeholder.parent():
+            self.master_placeholder.hide()
             self.master_placeholder.setParent(None)
 
         # Clear slaves grid
         while self.slaves_grid.count():
             item = self.slaves_grid.takeAt(0)
-            if item.widget():
-                item.widget().setParent(None)
+            w = item.widget()
+            if w is not None:
+                w.hide()
+                w.setParent(None)
 
         brokers = self.broker_manager.get_brokers()
         connected = self.broker_manager.get_connected_brokers()
@@ -132,6 +152,7 @@ class BrokersPage(QWidget):
             self.broker_cards[master_key] = card
             self.master_area.insertWidget(0, card)
         else:
+            self.master_placeholder.show()
             self.master_area.insertWidget(0, self.master_placeholder)
 
         # Slave cards in grid
