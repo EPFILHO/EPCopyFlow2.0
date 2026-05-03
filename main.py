@@ -255,9 +255,6 @@ def main():
     router_future = engine.submit(tcp_router.run(tcp_message_handler))
     logger.info("TcpRouter.run() submetido ao motor.")
 
-    # ── Detecção de account modes em background ──
-    engine.submit(copytrade_manager.detect_all_account_modes())
-
     # ── Splash + show window ──
     def _after_splash():
         main_window.show()

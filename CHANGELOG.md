@@ -17,6 +17,9 @@ Tipos de mudança:
 
 ## [Unreleased]
 
+### Removed
+- **`GET_ACCOUNT_MODE` command flow**: na inicialização, `detect_all_account_modes` (em `main.py`) percorria os brokers conectados e fazia round-trip ao EA pra perguntar qual o modo da conta, gravando o resultado em `brokers.json`. Como o sistema é **NETTING-only** por design (`validate_broker_for_copytrade` já bloqueia qualquer outra coisa) e o `mode` lido pela `validate_*` vem do `brokers.json` cadastrado pelo usuário (com fallback `"Netting"`), a detecção dinâmica era redundante. Removidos: `CopyTradeManager.detect_and_cache_account_mode`, `CopyTradeManager.detect_all_account_modes`, `BrokerManager.cache_detected_mode`, `HandleGetAccountModeCommand` no EA e o case no dispatcher. -88 linhas, zero referências órfãs. `BrokerManager.get_account_mode` permanece — usado por `validate_broker_for_copytrade`.
+
 ### Changed
 - **EA `InpTimerIntervalMs`: 1000ms → 100ms**: o `OnTimer()` do EA é onde os comandos vindos do Python são lidos do socket TCP (`CheckIncomingCommands` → `TcpPumpReads` → `TcpExtractAndProcessFrames`). Em 1000ms, um comando que chegasse logo após um tick esperaria até 1s para ser processado — causando gap medido de ~1.4s entre execução do trade no master e no slave (master 213ms broker + ~1s timer slave + 258ms broker slave). Em 100ms, latência max do timer cai para 100ms; custo extra é insignificante (conteúdo do `OnTimer` é trivial — checks de flag e drain de socket vazio). **Requer recompilar o EA no MetaEditor (F7) e re-attach nas instâncias.**
 
