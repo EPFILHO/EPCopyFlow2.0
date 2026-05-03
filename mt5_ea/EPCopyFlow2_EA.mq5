@@ -19,11 +19,13 @@
 //| Bloco 1 - Configuração e Conexão TCP                             |
 //+------------------------------------------------------------------+
 
-//--- Parâmetros configuráveis
-input int    InpTimerIntervalMs  = 100;     // Intervalo do timer (ms)
+//--- Parâmetros configuráveis pelo usuário (visíveis na janela de inputs do MT5)
 input bool   InpDebugLog         = false;   // Ativar logs de debug
-input string InpTcpHost          = "127.0.0.1"; // Host do servidor Python
-input int    InpConnectTimeoutMs = 1000;    // Timeout de conexão TCP (ms)
+
+//--- Constantes do código (não configuráveis pelo MT5 — mudar aqui e recompilar)
+const int    InpTimerIntervalMs  = 100;     // Intervalo do timer (ms)
+const string InpTcpHost          = "127.0.0.1"; // Host do servidor Python (sempre localhost)
+const int    InpConnectTimeoutMs = 1000;    // Timeout de conexão TCP (ms)
 
 //--- Variáveis globais
 int     g_socket = INVALID_HANDLE;  // Socket TCP nativo (EA = cliente)
