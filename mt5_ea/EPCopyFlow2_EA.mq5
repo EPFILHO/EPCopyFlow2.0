@@ -20,7 +20,7 @@
 //+------------------------------------------------------------------+
 
 //--- Parâmetros configuráveis
-input int    InpTimerIntervalMs  = 1000;    // Intervalo do timer (ms)
+input int    InpTimerIntervalMs  = 100;     // Intervalo do timer (ms)
 input bool   InpDebugLog         = false;   // Ativar logs de debug
 input string InpTcpHost          = "127.0.0.1"; // Host do servidor Python
 input int    InpConnectTimeoutMs = 1000;    // Timeout de conexão TCP (ms)
@@ -618,32 +618,6 @@ void HandleGetAccountMarginCommand(const string request_id)
    response["margin"] = AccountInfoDouble(ACCOUNT_MARGIN);
    response["free_margin"] = AccountInfoDouble(ACCOUNT_FREEMARGIN);
    response["margin_level"] = AccountInfoDouble(ACCOUNT_MARGIN_LEVEL);
-   SendJsonMessage(response, "Command");
-}
-
-void HandleGetAccountModeCommand(const string request_id)
-{
-   JSONNode response;
-   response["type"] = "RESPONSE";
-   response["request_id"] = request_id;
-   response["status"] = "OK";
-
-   // Verificar modo da conta
-   int margin_mode = (int)AccountInfoInteger(ACCOUNT_MARGIN_MODE);
-   string mode_str;
-
-   if(margin_mode == ACCOUNT_MARGIN_MODE_RETAIL_NETTING)
-      mode_str = "Netting";
-   else if(margin_mode == ACCOUNT_MARGIN_MODE_RETAIL_HEDGING)
-      mode_str = "Hedging";
-   else if(margin_mode == ACCOUNT_MARGIN_MODE_EXCHANGE)
-      mode_str = "Exchange";
-   else
-      mode_str = "Unknown";
-
-   response["account_mode"] = mode_str;
-   response["margin_mode_code"] = (long)margin_mode;
-
    SendJsonMessage(response, "Command");
 }
 
@@ -1417,10 +1391,6 @@ void ProcessCommand(JSONNode &json_command)
    else if(command == "GET_ACCOUNT_MARGIN")
    {
       HandleGetAccountMarginCommand(request_id);
-   }
-   else if(command == "GET_ACCOUNT_MODE")
-   {
-      HandleGetAccountModeCommand(request_id);
    }
    else if(command == "GET_SYMBOL_INFO")
    {
