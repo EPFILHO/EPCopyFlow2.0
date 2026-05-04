@@ -1666,6 +1666,53 @@ void EmitSltpModified(const CachedPosition &old_pos, const CachedPosition &new_p
                old_pos.sl, new_pos.sl, old_pos.tp, new_pos.tp);
 }
 
+//+------------------------------------------------------------------+
+//| Emite TRADE_EVENT sintético de ABERTURA quando posição nova       |
+//| aparece no snapshot. Cobre o cenário B3 (execução assíncrona) em |
+//| que OnTradeTransaction dispara antes de DEAL_POSITION_ID /        |
+//| ORDER_POSITION_ID estarem preenchidos.                            |
+//+------------------------------------------------------------------+
+void EmitSyntheticOpenEvent(const CachedPosition &new_pos)
+{
+   int order_type = (new_pos.pos_type == POSITION_TYPE_BUY) ? 0 : 1;
+
+   JSONNode stream_msg;
+   stream_msg["type"]          = "STREAM";
+   stream_msg["event"]         = "TRADE_EVENT";
+   stream_msg["timestamp_mql"] = (long)TimeCurrent();
+   stream_msg["role"]          = g_role;
+   stream_msg["source"]        = "ONTRADE_OPEN";
+
+   stream_msg["request_action"]       = 1;  // TRADE_ACTION_DEAL
+   stream_msg["request_order"]        = (long)0;
+   stream_msg["request_symbol"]       = new_pos.symbol;
+   stream_msg["request_volume"]       = new_pos.volume;
+   stream_msg["request_price"]        = 0.0;
+   stream_msg["request_sl"]           = new_pos.sl;
+   stream_msg["request_tp"]           = new_pos.tp;
+   stream_msg["request_deviation"]    = (long)0;
+   stream_msg["request_type"]         = order_type;  // 0=BUY, 1=SELL
+   stream_msg["request_type_filling"] = 0;
+   stream_msg["request_comment"]      = "";
+   stream_msg["request_position"]     = (long)0;  // 0 = abertura nova
+
+   stream_msg["result_retcode"] = (long)TRADE_RETCODE_DONE;
+   stream_msg["result_deal"]    = (long)0;
+   stream_msg["result_order"]   = (long)0;
+   stream_msg["result_volume"]  = new_pos.volume;
+   stream_msg["result_price"]   = 0.0;
+   stream_msg["result_comment"] = "open detected by OnTrade";
+
+   stream_msg["position_id"] = new_pos.position_id;
+
+   if(!SendJsonMessage(stream_msg, "Event"))
+      Print("ERROR: Falha ao enviar OPEN TRADE_EVENT via OnTrade");
+
+   PrintFormat("OnTrade: NOVA POSIÇÃO detectada (pos_id=%lld, symbol=%s, %s %.2f)",
+               new_pos.position_id, new_pos.symbol,
+               (new_pos.pos_type == POSITION_TYPE_BUY) ? "BUY" : "SELL", new_pos.volume);
+}
+
 void OnTrade()
 {
    if(g_role != "MASTER" || !g_is_connected || g_magic_number == 0)
@@ -1714,6 +1761,25 @@ void OnTrade()
          // Posição desapareceu → fechamento total (SL/TP hit, SO, mobile close, etc.)
          EmitSyntheticTradeEvent(g_pos_cache[i], g_pos_cache[i].volume, 0.0);
       }
+   }
+
+   // Detecta ABERTURAS NOVAS: posição em new_snap sem match no cache antigo.
+   // Cobre o caso B3 (execução assíncrona) em que OnTradeTransaction não
+   // conseguiu resolver position_id e desistiu de emitir. Aqui o snapshot
+   // já tem a posição confirmada, então POSITION_IDENTIFIER é certeiro.
+   for(int j = 0; j < new_count; j++)
+   {
+      bool was_cached = false;
+      for(int i = 0; i < g_pos_cache_size; i++)
+      {
+         if(g_pos_cache[i].position_id == new_snap[j].position_id)
+         {
+            was_cached = true;
+            break;
+         }
+      }
+      if(!was_cached)
+         EmitSyntheticOpenEvent(new_snap[j]);
    }
 
    // Atualizar cache
@@ -1938,6 +2004,19 @@ void OnTradeTransaction(const MqlTradeTransaction &trans, const MqlTradeRequest 
       }
    }
    stream_msg["position_id"] = position_id;
+
+   // Sem position_id em uma abertura/ADD (action=DEAL, position=0): em B3 com
+   // execução assíncrona, deal/order podem não ter sido confirmados ainda.
+   // Não emite o TRADE_EVENT incompleto — OnTrade vai detectar a posição
+   // nova via snapshot diff e emitir EmitSyntheticOpenEvent com pos_id certo.
+   // O cache NÃO é atualizado nesse caminho de saída — assim OnTrade vê o diff.
+   if(position_id == 0 && request.action == TRADE_ACTION_DEAL && request.position == 0)
+   {
+      if(InpDebugLog)
+         PrintFormat("INFO: position_id=0 em OnTradeTransaction (deal=%lld); OnTrade vai resolver.",
+                     (long)result.deal);
+      return;
+   }
 
    if(!SendJsonMessage(stream_msg, "Event"))
    {
