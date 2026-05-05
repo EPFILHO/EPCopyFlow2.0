@@ -1804,14 +1804,15 @@ void OnTrade()
 void OnTradeTransaction(const MqlTradeTransaction &trans, const MqlTradeRequest &request, const MqlTradeResult &result)
 {
    // ── Caminho 1: DEAL_ADD — detecção de alien trades (SLAVE) ──
-   // TRADE_TRANSACTION_REQUEST só dispara no terminal que enviou a ordem.
-   // Para detectar operações alienígenas feitas em OUTRO MT5 conectado na mesma conta
-   // (ou mobile/webtrader/outro EA), precisamos observar TRADE_TRANSACTION_DEAL_ADD,
-   // que chega em todos os terminais quando um deal entra no histórico da conta.
-   // DEAL_ADD também dispara no próprio terminal que originou o trade, então
-   // esta é a ÚNICA fonte de detecção de alien (evita duplicação).
+   // [TESTE TEMPORÁRIO] Alien check desabilitado pra isolar se DEAL_ADD
+   // frequente em conta B3 real (dividendos, JCP, ajustes diários, eventos
+   // corporativos) está causando o lag/freeze observado. Em forex/crypto
+   // demo o problema não acontece — DEAL_ADD lá só dispara em trades nossos.
+   // Se o lag sumir com isso comentado, voltamos com cache/dedup de deal_id.
+   // Reverter: git revert do commit que aplicou esta mudança.
    if(trans.type == TRADE_TRANSACTION_DEAL_ADD)
    {
+      /*
       if(g_role == "SLAVE" && g_magic_number > 0 && trans.deal > 0
          && HistoryDealSelect(trans.deal))
       {
@@ -1846,6 +1847,7 @@ void OnTradeTransaction(const MqlTradeTransaction &trans, const MqlTradeRequest 
                Print("ERROR: Falha ao enviar ALIEN_TRADE via EventSocket");
          }
       }
+      */
       return;
    }
 
