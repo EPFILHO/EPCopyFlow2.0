@@ -38,9 +38,11 @@ class BrokerCard(QFrame):
         style = themes.broker_card_style(border_color, role_color, role_bg, status_color)
         self.setStyleSheet(style)
         self.setProperty("class", "broker-card")
-        self.setMinimumWidth(280)
-        self.setMaximumWidth(400)
-        self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+        # Tamanho fixo: largura controlada, altura definida pelo conteúdo
+        # (todos os cards têm o mesmo conteúdo → mesma altura). 200px permite
+        # 5 cards por linha numa janela 1200px (sidebar 200 + padding 48).
+        self.setFixedWidth(200)
+        self.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
 
         self._init_ui(broker_key, broker_data, role, is_connected, show_connect_btn)
 
@@ -120,10 +122,15 @@ class BrokerCard(QFrame):
         row5.addWidget(self.positions_label)
         layout.addLayout(row5)
 
-        # Row 6: Total profit
+        # Row 6: P/L atual (operação aberta — POSITION_PROFIT acumulado)
         self.profit_label = QLabel("P/L: --")
         self.profit_label.setProperty("class", "card-profit-positive")
         layout.addWidget(self.profit_label)
+
+        # Row 7: P/L do dia (deals fechados desde meia-noite)
+        self.daily_profit_label = QLabel("P/L Dia: --")
+        self.daily_profit_label.setProperty("class", "card-profit-positive")
+        layout.addWidget(self.daily_profit_label)
 
         # Connect/Disconnect button (only on brokers page)
         if show_connect_btn:
@@ -170,10 +177,10 @@ class BrokerCard(QFrame):
         self.balance_label.setText(f"Saldo: {balance:,.2f}")
 
     def update_account_info(self, data):
-        """Atualiza balance / positions_count / profit a partir de um STREAM
-        ACCOUNT_UPDATE do EA (push periódico, ~2s). Mantém compatibilidade com
-        os métodos update_balance/update_positions chamados por respostas
-        sob-demanda."""
+        """Atualiza balance / positions_count / profit / daily_profit a partir
+        de um STREAM ACCOUNT_UPDATE do EA (push periódico, ~2s). Mantém
+        compatibilidade com update_balance/update_positions chamados por
+        respostas sob-demanda."""
         balance = data.get("balance", 0.0) or 0.0
         self.balance_label.setText(f"Saldo: {balance:,.2f}")
 
@@ -181,12 +188,19 @@ class BrokerCard(QFrame):
         self.positions_label.setText(f"Posicoes: {positions_count}")
 
         profit = data.get("profit", 0.0) or 0.0
-        self._set_profit(profit)
+        self._set_pnl_label(self.profit_label, "P/L", profit)
+
+        daily = data.get("daily_profit", 0.0) or 0.0
+        self._set_pnl_label(self.daily_profit_label, "P/L Dia", daily)
 
     def _set_profit(self, value):
-        prefix = "+" if value >= 0 else ""
-        self.profit_label.setText(f"P/L: {prefix}{value:,.2f}")
+        """Mantido para compatibilidade: update_positions ainda usa."""
+        self._set_pnl_label(self.profit_label, "P/L", value)
+
+    def _set_pnl_label(self, label, prefix_text, value):
+        sign = "+" if value >= 0 else ""
+        label.setText(f"{prefix_text}: {sign}{value:,.2f}")
         prop = "card-profit-positive" if value >= 0 else "card-profit-negative"
-        self.profit_label.setProperty("class", prop)
-        self.profit_label.style().unpolish(self.profit_label)
-        self.profit_label.style().polish(self.profit_label)
+        label.setProperty("class", prop)
+        label.style().unpolish(label)
+        label.style().polish(label)

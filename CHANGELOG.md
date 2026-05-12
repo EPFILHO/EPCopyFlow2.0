@@ -17,7 +17,11 @@ Tipos de mudança:
 
 ## [Unreleased]
 
+### Added
+- **Card de broker mostra P/L do dia** além do P/L da operação atual. O EA inclui `daily_profit` no `ACCOUNT_UPDATE` periódico, somando `DEAL_PROFIT + DEAL_SWAP + DEAL_COMMISSION` dos deals com `DEAL_ENTRY_OUT`/`INOUT` desde meia-noite local (via `HistorySelect(today_start, now)` + loop). `tcp_message_handler` propaga o campo; `BrokerCard.update_account_info` atualiza um label novo (`daily_profit_label`) com formatação verde/vermelha como o P/L atual. Útil pra ver o resultado consolidado de cada conta no dia sem abrir o MT5.
+
 ### Changed
+- **Layout do dashboard: cards em tamanho fixo (200px), 5 por linha**: antes os cards tinham largura `Preferred` entre 280-400px e o grid era 3 colunas. Agora `BrokerCard.setFixedWidth(200) + setSizePolicy(Fixed, Fixed)` — todos os cards têm o mesmo tamanho independente do conteúdo, e o grid em `dashboard_page` / `brokers_page` virou `cols = 5`. Geometria padrão da janela foi de 1200×750 → 1280×800 pra acomodar os 5 cards (200×5 + sidebar 200 + padding 48 = 1248px). Tamanho mínimo continua 900px (com janela menor o scroll vertical aparece, mas o app segue utilizável).
 - **Aba Logs também não recebe mais respostas OK genéricas (catch-all em `_handle_response`)**: o ramo "else" pegava qualquer resposta OK que não casasse com os prefixos de request_id conhecidos (`ping_`, `get_account_*_`, `positions_`, `orders_`, `trade_*` etc.) e emitia `INFO: Resposta de X: {dict gigante}` pro `LogsPage`. O caso típico era a resposta do `SET_MAGIC_NUMBER` no startup — uma linha enorme com o dict da resposta inteira aparecia pra cada broker que conectava, sem trazer informação útil pro operador. Agora só respostas de **erro** chegam à GUI (preserva alerta de falha real). Resposta OK genérica segue para `logger.debug` no arquivo, se ativado.
 
 ### Fixed

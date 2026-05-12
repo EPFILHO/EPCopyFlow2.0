@@ -70,7 +70,9 @@ class MainWindow(QMainWindow):
         themes.set_theme(saved_theme)
 
         self.setWindowTitle("EPCopyFlow 2.0")
-        self.setGeometry(50, 50, 1200, 750)
+        # 1280x800 acomoda 5 cards de 200px por linha no grid (sidebar 200,
+        # padding 48); 900 mínimo ainda permite o app utilizável (~3 cards).
+        self.setGeometry(50, 50, 1280, 800)
         self.setMinimumSize(900, 550)
 
         self._init_ui()

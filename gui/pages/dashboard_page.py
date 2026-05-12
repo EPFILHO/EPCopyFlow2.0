@@ -166,7 +166,7 @@ class DashboardPage(QWidget):
                 w.hide()
                 w.setParent(None)
 
-        cols = 3
+        cols = 5
         for i, key in enumerate(slave_keys):
             card = BrokerCard(key, brokers[key],
                               is_connected=(key in connected), parent=self)

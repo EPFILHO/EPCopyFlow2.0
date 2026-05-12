@@ -221,6 +221,7 @@ class TcpMessageHandler(QObject):
                 "free_margin":     message.get("free_margin", 0.0),
                 "currency":        message.get("currency", ""),
                 "profit":          message.get("profit", 0.0),
+                "daily_profit":    message.get("daily_profit", 0.0),
                 "positions_count": message.get("positions_count", 0),
             })
 

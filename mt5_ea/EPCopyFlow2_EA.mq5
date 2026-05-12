@@ -525,7 +525,8 @@ bool SendErrorResponse(const string request_id, const string error_message)
 
 //+------------------------------------------------------------------+
 //| Push periódico: balance, equity, margin, free_margin, P/L atual  |
-//| (soma de POSITION_PROFIT) e contagem de posições abertas.         |
+//| (POSITION_PROFIT das posições abertas), P/L do dia (deals com    |
+//| DEAL_ENTRY_OUT desde meia-noite local) e contagem de posições.   |
 //+------------------------------------------------------------------+
 bool SendAccountUpdate()
 {
@@ -543,16 +544,40 @@ bool SendAccountUpdate()
       }
    }
 
+   // P/L do dia: soma DEAL_PROFIT + DEAL_SWAP + DEAL_COMMISSION dos deals
+   // cuja entry é OUT ou INOUT (representam realização de lucro/prejuízo)
+   // desde meia-noite do dia atual.
+   datetime now_t = TimeCurrent();
+   datetime today_start = (datetime)((long)now_t - ((long)now_t % 86400));
+   double daily_profit = 0.0;
+   if(HistorySelect(today_start, now_t))
+   {
+      int total_deals = HistoryDealsTotal();
+      for(int i = 0; i < total_deals; i++)
+      {
+         ulong deal_ticket = HistoryDealGetTicket(i);
+         if(deal_ticket == 0) continue;
+         long entry = HistoryDealGetInteger(deal_ticket, DEAL_ENTRY);
+         if(entry == DEAL_ENTRY_OUT || entry == DEAL_ENTRY_INOUT)
+         {
+            daily_profit += HistoryDealGetDouble(deal_ticket, DEAL_PROFIT);
+            daily_profit += HistoryDealGetDouble(deal_ticket, DEAL_SWAP);
+            daily_profit += HistoryDealGetDouble(deal_ticket, DEAL_COMMISSION);
+         }
+      }
+   }
+
    JSONNode msg;
    msg["type"]            = "STREAM";
    msg["event"]           = "ACCOUNT_UPDATE";
-   msg["timestamp_mql"]   = (long)TimeCurrent();
+   msg["timestamp_mql"]   = (long)now_t;
    msg["balance"]         = AccountInfoDouble(ACCOUNT_BALANCE);
    msg["equity"]          = AccountInfoDouble(ACCOUNT_EQUITY);
    msg["margin"]          = AccountInfoDouble(ACCOUNT_MARGIN);
    msg["free_margin"]     = AccountInfoDouble(ACCOUNT_FREEMARGIN);
    msg["currency"]        = AccountInfoString(ACCOUNT_CURRENCY);
    msg["profit"]          = total_profit;
+   msg["daily_profit"]    = daily_profit;
    msg["positions_count"] = (long)positions_count;
    return SendJsonMessage(msg, "Event");
 }

@@ -158,7 +158,7 @@ class BrokersPage(QWidget):
             self.master_area.insertWidget(0, self.master_placeholder)
 
         # Slave cards in grid
-        cols = 3
+        cols = 5
         for i, key in enumerate(slave_keys):
             card = BrokerCard(
                 key, brokers[key],
