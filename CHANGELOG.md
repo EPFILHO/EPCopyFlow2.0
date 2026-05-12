@@ -18,6 +18,12 @@ Tipos de mudança:
 ## [Unreleased]
 
 ### Changed
+- **Aba Logs também não recebe mais respostas OK genéricas (catch-all em `_handle_response`)**: o ramo "else" pegava qualquer resposta OK que não casasse com os prefixos de request_id conhecidos (`ping_`, `get_account_*_`, `positions_`, `orders_`, `trade_*` etc.) e emitia `INFO: Resposta de X: {dict gigante}` pro `LogsPage`. O caso típico era a resposta do `SET_MAGIC_NUMBER` no startup — uma linha enorme com o dict da resposta inteira aparecia pra cada broker que conectava, sem trazer informação útil pro operador. Agora só respostas de **erro** chegam à GUI (preserva alerta de falha real). Resposta OK genérica segue para `logger.debug` no arquivo, se ativado.
+
+### Fixed
+- **Reativar detecção de alien trades**: o teste do `git revert ea0b64c`. Após reproduzir o cenário B3 em conta real, a pesquisa em fóruns e a auditoria do código confirmaram que o lag/freeze do MT5 vem da infra das corretoras do grupo XP sob carga B3, não do alien check. Detecção volta a funcionar normalmente — alien trade em SLAVE é capturado em `OnTradeTransaction` no caminho `DEAL_ADD` como antes da v0.1.9 + commits subsequentes.
+
+### Changed
 - **`LogsPage` da GUI deixa de receber catch-all de toda mensagem TCP**: `tcp_message_handler.handle_tcp_message` chamava `log_message_received.emit(str(message))` para qualquer evento ≠ TICK/HEARTBEAT — incluía `ACCOUNT_UPDATE` (a cada 2s × N brokers), `TRADE_EVENT` master + slaves, `RESPONSE` de PING etc. Em rajada virava poluição visual + custo de `QTextEdit.append`. Agora só vão pra `LogsPage` os eventos relevantes: `REGISTER`/`UNREGISTER` (com prefixo preservado pra `main_window._handle_tcp_messages` continuar detectando), `ALIEN_TRADE`, e respostas de erro. O resto cai no `logger.debug` (arquivo de log se `log_level=DEBUG`). Eventos com signals dedicados (`trade_event_received`, `account_update_received`, `sltp_modified` etc.) seguem chegando normalmente nos consumidores próprios. `CopyTradeManager.copy_trade_log.emit(...)` continua alimentando o `LogsPage` com cada replicação — visão útil pro usuário operar.
 - **`LogsPage.QTextEdit` ganhou `setMaximumBlockCount(1000)`**: evita o widget virar monstro de memória após horas de operação. Linhas mais antigas saem automaticamente quando passa do limite.
 

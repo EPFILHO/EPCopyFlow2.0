@@ -362,9 +362,10 @@ class TcpMessageHandler(QObject):
                 logger.warning(f"Trade falhou para {broker_key}: {message.get('error_message', '?')}")
 
         else:
-            if status == "OK":
-                self.log_message_received.emit(f"INFO: Resposta de {broker_key}: {message}")
-            else:
+            # Só respostas de ERRO viram log visível na GUI. Sucesso OK genérico
+            # (ex.: SET_MAGIC_NUMBER no startup) entrava aqui antes e poluía o
+            # LogsPage sem trazer informação útil pro operador.
+            if status != "OK":
                 self.log_message_received.emit(
                     f"ERROR: {broker_key}: {message.get('error_message', '?')}")
 
