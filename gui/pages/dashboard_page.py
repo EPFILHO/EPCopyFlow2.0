@@ -5,10 +5,11 @@
 import logging
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QScrollArea,
-    QFrame, QGridLayout, QSizePolicy
+    QFrame, QSizePolicy
 )
 from PySide6.QtCore import Slot, Qt, QTimer
 from gui.widgets.broker_card import BrokerCard
+from gui.widgets.flow_layout import FlowLayout
 from gui import themes
 
 logger = logging.getLogger(__name__)
@@ -84,10 +85,7 @@ class DashboardPage(QWidget):
         scroll.setStyleSheet(themes.scroll_area_style())
         scroll_widget = QWidget()
         scroll_widget.setStyleSheet(themes.scroll_widget_style())
-        self.slaves_grid = QGridLayout(scroll_widget)
-        self.slaves_grid.setContentsMargins(0, 0, 0, 0)
-        self.slaves_grid.setSpacing(12)
-        self.slaves_grid.setAlignment(Qt.AlignLeft | Qt.AlignTop)
+        self.slaves_grid = FlowLayout(scroll_widget, margin=0, hspacing=12, vspacing=12)
         scroll.setWidget(scroll_widget)
         layout.addWidget(scroll, 1)
 
@@ -166,12 +164,11 @@ class DashboardPage(QWidget):
                 w.hide()
                 w.setParent(None)
 
-        cols = 5
         for i, key in enumerate(slave_keys):
             card = BrokerCard(key, brokers[key],
                               is_connected=(key in connected), parent=self)
             self.broker_cards[key] = card
-            self.slaves_grid.addWidget(card, i // cols, i % cols)
+            self.slaves_grid.addWidget(card)
 
         # Update stats
         self.stat_brokers._value_label.setText(str(len(brokers)))

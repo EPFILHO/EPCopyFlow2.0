@@ -6,11 +6,12 @@ import logging
 import asyncio
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QScrollArea, QFrame, QGridLayout, QMessageBox
+    QScrollArea, QFrame, QMessageBox
 )
 from PySide6.QtCore import Slot, Qt, Signal
 from gui.brokers_dialog import BrokersDialog
 from gui.widgets.broker_card import BrokerCard
+from gui.widgets.flow_layout import FlowLayout
 from gui import themes
 
 logger = logging.getLogger(__name__)
@@ -58,6 +59,13 @@ class BrokersPage(QWidget):
         self.cadastro_btn.clicked.connect(self._open_broker_dialog)
         header.addWidget(self.cadastro_btn)
 
+        # Atualiza o EA (.ex5) em todas as instâncias cadastradas. Útil depois
+        # de recompilar no MetaEditor — evita ter que copiar à mão.
+        self.update_ea_btn = QPushButton("Atualizar EA")
+        self.update_ea_btn.setProperty("class", "action-btn")
+        self.update_ea_btn.clicked.connect(self._update_ea)
+        header.addWidget(self.update_ea_btn)
+
         self.connect_all_btn = QPushButton("Conectar Todas")
         self.connect_all_btn.setProperty("class", "connect-btn")
         self.connect_all_btn.clicked.connect(self._connect_all)
@@ -92,10 +100,7 @@ class BrokersPage(QWidget):
         scroll.setStyleSheet(themes.scroll_area_style())
         scroll_widget = QWidget()
         scroll_widget.setStyleSheet(themes.scroll_widget_style())
-        self.slaves_grid = QGridLayout(scroll_widget)
-        self.slaves_grid.setContentsMargins(0, 0, 0, 0)
-        self.slaves_grid.setSpacing(12)
-        self.slaves_grid.setAlignment(Qt.AlignLeft | Qt.AlignTop)
+        self.slaves_grid = FlowLayout(scroll_widget, margin=0, hspacing=12, vspacing=12)
         scroll.setWidget(scroll_widget)
         layout.addWidget(scroll, 1)
 
@@ -157,9 +162,8 @@ class BrokersPage(QWidget):
             self.master_placeholder.show()
             self.master_area.insertWidget(0, self.master_placeholder)
 
-        # Slave cards in grid
-        cols = 5
-        for i, key in enumerate(slave_keys):
+        # Slave cards in flow layout (colunas adaptam à largura disponível)
+        for key in slave_keys:
             card = BrokerCard(
                 key, brokers[key],
                 is_connected=(key in connected),
@@ -169,7 +173,7 @@ class BrokersPage(QWidget):
                 parent=self,
             )
             self.broker_cards[key] = card
-            self.slaves_grid.addWidget(card, i // cols, i % cols)
+            self.slaves_grid.addWidget(card)
 
         self.update_broker_indicators()
 
@@ -217,6 +221,20 @@ class BrokersPage(QWidget):
         dialog = BrokersDialog(self.config, self.broker_manager, parent=self)
         dialog.brokers_updated.connect(self.refresh_brokers)
         dialog.exec()
+
+    def _update_ea(self):
+        """Copia o .ex5 recompilado de mt5_ea/ pra cada instância cadastrada."""
+        sucessos, falhas = self.broker_manager.update_ea_in_all_instances()
+        msg = f"EA copiado para {sucessos} instância(s)."
+        if falhas > 0:
+            msg += f"\n{falhas} falha(s) — ver logs."
+        msg += (
+            "\n\nAs instâncias MT5 já em execução ainda usam o .ex5 anterior em "
+            "memória. Para aplicar a versão nova:\n"
+            "• remova o EA do gráfico (botão direito → Remove)\n"
+            "• arraste o EA do Navigator de volta no gráfico"
+        )
+        QMessageBox.information(self, "Atualizar EA", msg)
 
     def _connect_broker(self, key):
         try:

@@ -17,6 +17,10 @@ Tipos de mudança:
 
 ## [Unreleased]
 
+### Added
+- **`FlowLayout` (`gui/widgets/flow_layout.py`)** — substitui `QGridLayout` com `cols=N` fixo nos grids de cards. Distribui os widgets em linhas, quebrando automaticamente conforme a largura disponível: em uma janela maximizada cabem 8+ cards por linha; em uma janela menor o número de colunas diminui. Aplicado em `dashboard_page` e `brokers_page` (slaves). Master continua no `master_area` (HBoxLayout) — só um card.
+- **Botão "Atualizar EA" na página Corretoras**: copia o `.ex5` recompilado de `mt5_ea/` para cada `.mt5_instances/<broker>/MQL5/Experts/`. Chama o novo `BrokerManager.update_ea_in_all_instances() -> (sucessos, falhas)`. Diálogo informa quantas instâncias receberam a cópia e lembra que o operador ainda precisa fazer Remove + drag no chart de cada terminal pra MT5 carregar a versão nova (terminais em execução mantêm o `.ex5` antigo em memória).
+
 ### Changed
 - **`daily_profit` no EA agora filtra por `g_magic_number`**: a soma do P/L do dia considera apenas deals do robô (`deal_magic == g_magic_number` em `DEAL_ENTRY_OUT`/`INOUT`). Em slave isso reflete o P/L das operações copiadas. Em master operando manualmente (magic=0) o valor fica em zero — comportamento intencional, "P/L do dia" agora significa "do robô", não "da conta". Se `g_magic_number == 0` (EA ainda não recebeu `SET_MAGIC_NUMBER` do Python), `daily_profit` também fica em zero — evita falso positivo na inicialização.
 - **Cards do dashboard 200px → 220px (largura fixa)**: ganho de respiração visual, sem perder densidade. Geometria padrão da janela ajustada de 1280×800 → 1400×800 (5 × 220 + sidebar 200 + paddings = ~1450). `setSizePolicy(Fixed, Fixed)` removido — `setFixedWidth(220)` cuida da largura; altura adapta ao conteúdo. Isso também garante que o label novo `P/L Dia` entre no layout sem cropping.

@@ -287,6 +287,35 @@ class BrokerManager(QObject):
         except Exception as e:
             logger.error(f"Erro ao copiar Expert Advisor: {e}")
 
+    def update_ea_in_all_instances(self) -> tuple[int, int]:
+        """Copia o .ex5 atual de mt5_ea/ pra cada instância cadastrada.
+        Retorna (sucessos, falhas). Útil depois de recompilar no MetaEditor.
+
+        NÃO recarrega o EA nos terminais em execução — eles continuam usando
+        o .ex5 antigo cached em memória. O operador precisa fazer Remove +
+        re-attach em cada chart pra MT5 ler a versão nova do disco.
+        """
+        source = os.path.join(self.root_path, "mt5_ea", "EPCopyFlow2_EA.ex5")
+        if not os.path.exists(source):
+            logger.error(f"EA compilado não encontrado: {source}")
+            return (0, len(self.brokers))
+
+        sucessos, falhas = 0, 0
+        for key in self.brokers:
+            instance_path = os.path.join(self.instances_dir, key)
+            if not os.path.isdir(instance_path):
+                logger.warning(f"Instância MT5 ausente para {key}, pulando.")
+                falhas += 1
+                continue
+            try:
+                self.copy_expert(instance_path)
+                logger.info(f"EA atualizado em {key}.")
+                sucessos += 1
+            except Exception as e:
+                logger.error(f"Erro ao atualizar EA em {key}: {e}")
+                falhas += 1
+        return (sucessos, falhas)
+
     def create_mt5_config(self, key):
         """Cria config.ini na pasta do MT5 com BrokerKey, Role e portas TCP.
 
