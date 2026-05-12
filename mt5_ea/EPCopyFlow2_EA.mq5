@@ -544,19 +544,22 @@ bool SendAccountUpdate()
       }
    }
 
-   // P/L do dia: soma DEAL_PROFIT + DEAL_SWAP + DEAL_COMMISSION dos deals
-   // cuja entry é OUT ou INOUT (representam realização de lucro/prejuízo)
-   // desde meia-noite do dia atual.
+   // P/L do dia: soma DEAL_PROFIT + DEAL_SWAP + DEAL_COMMISSION dos deals do
+   // ROBÔ (deal_magic == g_magic_number) com entry OUT/INOUT desde meia-noite.
+   // Filtro por magic: master operando manualmente (magic=0) não conta;
+   // só trades do CopyTrade entram no P/L do dia.
    datetime now_t = TimeCurrent();
    datetime today_start = (datetime)((long)now_t - ((long)now_t % 86400));
    double daily_profit = 0.0;
-   if(HistorySelect(today_start, now_t))
+   if(g_magic_number > 0 && HistorySelect(today_start, now_t))
    {
       int total_deals = HistoryDealsTotal();
       for(int i = 0; i < total_deals; i++)
       {
          ulong deal_ticket = HistoryDealGetTicket(i);
          if(deal_ticket == 0) continue;
+         long deal_magic = HistoryDealGetInteger(deal_ticket, DEAL_MAGIC);
+         if(deal_magic != g_magic_number) continue;
          long entry = HistoryDealGetInteger(deal_ticket, DEAL_ENTRY);
          if(entry == DEAL_ENTRY_OUT || entry == DEAL_ENTRY_INOUT)
          {

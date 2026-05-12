@@ -240,24 +240,9 @@ class DashboardPage(QWidget):
             )
 
     @Slot(dict)
-    def update_positions(self, data):
-        """Update position info on broker cards."""
-        broker_key = data.get("broker_key")
-        if broker_key and broker_key in self.broker_cards:
-            positions = data.get("positions", [])
-            self.broker_cards[broker_key].update_positions(positions)
-
-    @Slot(dict)
-    def update_balance(self, data):
-        """Update balance info on broker cards."""
-        broker_key = data.get("broker_key")
-        if broker_key and broker_key in self.broker_cards:
-            self.broker_cards[broker_key].update_balance(data)
-
-    @Slot(dict)
     def update_account_info(self, data):
         """Push periódico do EA (STREAM ACCOUNT_UPDATE) — atualiza balance,
-        positions_count e P/L do card sem precisar pedir."""
+        positions_count, P/L atual e P/L do dia do card."""
         broker_key = data.get("broker_key")
         if broker_key and broker_key in self.broker_cards:
             self.broker_cards[broker_key].update_account_info(data)

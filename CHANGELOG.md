@@ -17,6 +17,13 @@ Tipos de mudança:
 
 ## [Unreleased]
 
+### Changed
+- **`daily_profit` no EA agora filtra por `g_magic_number`**: a soma do P/L do dia considera apenas deals do robô (`deal_magic == g_magic_number` em `DEAL_ENTRY_OUT`/`INOUT`). Em slave isso reflete o P/L das operações copiadas. Em master operando manualmente (magic=0) o valor fica em zero — comportamento intencional, "P/L do dia" agora significa "do robô", não "da conta". Se `g_magic_number == 0` (EA ainda não recebeu `SET_MAGIC_NUMBER` do Python), `daily_profit` também fica em zero — evita falso positivo na inicialização.
+- **Cards do dashboard 200px → 220px (largura fixa)**: ganho de respiração visual, sem perder densidade. Geometria padrão da janela ajustada de 1280×800 → 1400×800 (5 × 220 + sidebar 200 + paddings = ~1450). `setSizePolicy(Fixed, Fixed)` removido — `setFixedWidth(220)` cuida da largura; altura adapta ao conteúdo. Isso também garante que o label novo `P/L Dia` entre no layout sem cropping.
+
+### Removed
+- **Métodos vestigiais no `BrokerCard` + conexões mortas**: `update_balance(data)`, `update_positions(positions)` e o wrapper `_set_profit(value)` foram eliminados — não tinham caller em runtime (apenas em respostas a `GET_ACCOUNT_BALANCE` / `GET_POSITIONS` que ninguém chamava em loop). A atualização visual dos cards é coberta inteiramente por `update_account_info(data)` via `account_update_received` (push do EA a cada 2s). Conexões mortas `positions_received → dashboard_page.update_positions` e `account_balance_received → dashboard_page.update_balance` removidas do `MainWindow._connect_signals`. Os respectivos signals em `TcpMessageHandler` ficam preservados (consumidos pontualmente por outros caminhos). `dashboard_page.update_positions` e `dashboard_page.update_balance` deletados. -32 linhas, -1 import (`QSizePolicy` sai do `broker_card`).
+
 ### Added
 - **Card de broker mostra P/L do dia** além do P/L da operação atual. O EA inclui `daily_profit` no `ACCOUNT_UPDATE` periódico, somando `DEAL_PROFIT + DEAL_SWAP + DEAL_COMMISSION` dos deals com `DEAL_ENTRY_OUT`/`INOUT` desde meia-noite local (via `HistorySelect(today_start, now)` + loop). `tcp_message_handler` propaga o campo; `BrokerCard.update_account_info` atualiza um label novo (`daily_profit_label`) com formatação verde/vermelha como o P/L atual. Útil pra ver o resultado consolidado de cada conta no dia sem abrir o MT5.
 

@@ -4,7 +4,7 @@
 
 import logging
 from PySide6.QtWidgets import (
-    QFrame, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QSizePolicy
+    QFrame, QVBoxLayout, QHBoxLayout, QLabel, QPushButton
 )
 from PySide6.QtCore import Qt
 from gui import themes
@@ -38,11 +38,9 @@ class BrokerCard(QFrame):
         style = themes.broker_card_style(border_color, role_color, role_bg, status_color)
         self.setStyleSheet(style)
         self.setProperty("class", "broker-card")
-        # Tamanho fixo: largura controlada, altura definida pelo conteúdo
-        # (todos os cards têm o mesmo conteúdo → mesma altura). 200px permite
-        # 5 cards por linha numa janela 1200px (sidebar 200 + padding 48).
-        self.setFixedWidth(200)
-        self.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        # Largura fixa 220px → cabem 5 cards em janela 1400 (sidebar 200 + padding 48).
+        # Altura natural pelo conteúdo — todos os cards mostram os mesmos campos.
+        self.setFixedWidth(220)
 
         self._init_ui(broker_key, broker_data, role, is_connected, show_connect_btn)
 
@@ -165,22 +163,10 @@ class BrokerCard(QFrame):
                     color = _COLOR_GRAY
                 self._indicators[name].setStyleSheet(f"color: {color}; font-size: 18px;")
 
-    def update_positions(self, positions):
-        count = len(positions) if positions else 0
-        self.positions_label.setText(f"Posicoes: {count}")
-        total_profit = sum(p.get("profit", 0) for p in positions) if positions else 0
-        self._set_profit(total_profit)
-
-    def update_balance(self, data):
-        balance = data.get("balance", 0)
-        equity = data.get("equity", 0)
-        self.balance_label.setText(f"Saldo: {balance:,.2f}")
-
     def update_account_info(self, data):
         """Atualiza balance / positions_count / profit / daily_profit a partir
-        de um STREAM ACCOUNT_UPDATE do EA (push periódico, ~2s). Mantém
-        compatibilidade com update_balance/update_positions chamados por
-        respostas sob-demanda."""
+        do STREAM ACCOUNT_UPDATE do EA (push periódico, ~2s). Esta é a única
+        fonte de atualização dos campos do card em runtime."""
         balance = data.get("balance", 0.0) or 0.0
         self.balance_label.setText(f"Saldo: {balance:,.2f}")
 
@@ -192,10 +178,6 @@ class BrokerCard(QFrame):
 
         daily = data.get("daily_profit", 0.0) or 0.0
         self._set_pnl_label(self.daily_profit_label, "P/L Dia", daily)
-
-    def _set_profit(self, value):
-        """Mantido para compatibilidade: update_positions ainda usa."""
-        self._set_pnl_label(self.profit_label, "P/L", value)
 
     def _set_pnl_label(self, label, prefix_text, value):
         sign = "+" if value >= 0 else ""
