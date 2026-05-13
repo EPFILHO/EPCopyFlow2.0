@@ -18,7 +18,7 @@ Tipos de mudança:
 ## [Unreleased]
 
 ### Fixed
-- **`Atualizar EA` falhava com `0 sucessos`**: o método procurava o `.ex5` só em `<repo>/mt5_ea/`. Quando o usuário compila o EA pelo MetaEditor a partir de uma instância (caminho típico no fluxo do projeto), o `.ex5` fica em `.mt5_instances/<broker>/MQL5/Experts/`, não no repo. Agora `update_ea_in_all_instances` chama um helper `_locate_compiled_ea()` que varre `mt5_ea/` + cada instância e pega o `.ex5` **mais recente**, independente da origem. UX previsível: compila em qualquer lugar → "Atualizar EA" propaga.
+- **`Atualizar EA` usa o MT5 base como origem canônica**: o `.ex5` é lido de `<base_mt5_path>/MQL5/Experts/EPCopyFlow2_EA.ex5` (o caminho do MT5 "modelo" configurado em `config.ini → General → base_mt5_path`). É o lugar onde o operador compila uma vez e replica pras instâncias. Antes a tentativa de procurar entre `mt5_ea/` ou instâncias era frágil — agora um caminho único, previsível, com mensagem de erro clara dizendo onde compilar caso o arquivo não exista.
 - **SettingsPage estava esticando os controles**: `QLineEdit` do caminho MT5 com `stretch=1` ocupava toda a largura disponível; spacing default dos `QVBoxLayout` dos grupos era pequeno e fazia as rows colarem visualmente. Agora todos os controles têm largura fixa (`FIELD_WIDTH=220` ou `PATH_WIDTH=360`), cada `QVBoxLayout` interno tem `setSpacing(10)`, e todas as rows terminam com `addStretch()` pra empurrar conteúdo à esquerda. Configurações deixa de ser "responsivo" por design.
 
 ### Added
