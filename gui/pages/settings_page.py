@@ -31,10 +31,15 @@ class SettingsPage(QWidget):
         title.setProperty("class", "page-title")
         layout.addWidget(title)
 
+        # Larguras fixas dos controles — campos NÃO esticam com a janela.
+        FIELD_WIDTH = 220
+        PATH_WIDTH = 360
+
         # ── Aparência ──
         theme_group = QFrame()
         theme_group.setProperty("class", "settings-group")
         theme_layout = QVBoxLayout(theme_group)
+        theme_layout.setSpacing(10)
 
         theme_title = QLabel("Aparencia")
         theme_title.setProperty("class", "section-title")
@@ -44,7 +49,7 @@ class SettingsPage(QWidget):
         row_theme.addWidget(QLabel("Tema:"))
         self.theme_combo = QComboBox()
         self.theme_combo.addItems(themes.get_theme_names())
-        self.theme_combo.setMaximumWidth(200)
+        self.theme_combo.setFixedWidth(FIELD_WIDTH)
         row_theme.addWidget(self.theme_combo)
         row_theme.addStretch()
         theme_layout.addLayout(row_theme)
@@ -55,6 +60,7 @@ class SettingsPage(QWidget):
         mt5_group = QFrame()
         mt5_group.setProperty("class", "settings-group")
         mt5_layout = QVBoxLayout(mt5_group)
+        mt5_layout.setSpacing(10)
 
         mt5_title = QLabel("MetaTrader 5")
         mt5_title.setProperty("class", "section-title")
@@ -63,7 +69,9 @@ class SettingsPage(QWidget):
         row1 = QHBoxLayout()
         row1.addWidget(QLabel("Caminho base MT5:"))
         self.mt5_path_edit = QLineEdit()
-        row1.addWidget(self.mt5_path_edit, 1)
+        self.mt5_path_edit.setFixedWidth(PATH_WIDTH)
+        row1.addWidget(self.mt5_path_edit)
+        row1.addStretch()
         mt5_layout.addLayout(row1)
 
         row2 = QHBoxLayout()
@@ -71,6 +79,7 @@ class SettingsPage(QWidget):
         self.monitor_interval_spin = QSpinBox()
         self.monitor_interval_spin.setRange(5, 120)
         self.monitor_interval_spin.setValue(10)
+        self.monitor_interval_spin.setFixedWidth(FIELD_WIDTH)
         row2.addWidget(self.monitor_interval_spin)
         row2.addStretch()
         mt5_layout.addLayout(row2)
@@ -81,6 +90,7 @@ class SettingsPage(QWidget):
         app_group = QFrame()
         app_group.setProperty("class", "settings-group")
         app_layout = QVBoxLayout(app_group)
+        app_layout.setSpacing(10)
 
         app_title = QLabel("Aplicacao")
         app_title.setProperty("class", "section-title")
@@ -93,7 +103,7 @@ class SettingsPage(QWidget):
         row3.addWidget(QLabel("Nivel de log:"))
         self.log_level_combo = QComboBox()
         self.log_level_combo.addItems(["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"])
-        self.log_level_combo.setMaximumWidth(200)
+        self.log_level_combo.setFixedWidth(FIELD_WIDTH)
         row3.addWidget(self.log_level_combo)
         row3.addStretch()
         app_layout.addLayout(row3)
@@ -104,6 +114,7 @@ class SettingsPage(QWidget):
         ct_group = QFrame()
         ct_group.setProperty("class", "settings-group")
         ct_layout = QVBoxLayout(ct_group)
+        ct_layout.setSpacing(10)
 
         ct_title = QLabel("CopyTrade")
         ct_title.setProperty("class", "section-title")
@@ -114,7 +125,7 @@ class SettingsPage(QWidget):
         self.magic_number_spin = QSpinBox()
         self.magic_number_spin.setRange(1, 2147483647)
         self.magic_number_spin.setValue(123456789)
-        self.magic_number_spin.setMaximumWidth(200)
+        self.magic_number_spin.setFixedWidth(FIELD_WIDTH)
         self.magic_number_spin.setToolTip(
             "Identifica trades do CopyTrade vs manuais.\n"
             "Alterar com posicoes abertas pode afetar o rastreamento."
@@ -128,7 +139,7 @@ class SettingsPage(QWidget):
         self.heartbeat_spin = QSpinBox()
         self.heartbeat_spin.setRange(1, 600)
         self.heartbeat_spin.setValue(5)
-        self.heartbeat_spin.setMaximumWidth(200)
+        self.heartbeat_spin.setFixedWidth(FIELD_WIDTH)
         self.heartbeat_spin.setToolTip(
             "Intervalo de heartbeat do EA (em segundos).\n"
             "Valores menores = deteccao mais rapida, mais trafego."

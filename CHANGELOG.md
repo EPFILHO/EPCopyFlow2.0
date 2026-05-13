@@ -17,6 +17,10 @@ Tipos de mudança:
 
 ## [Unreleased]
 
+### Fixed
+- **`Atualizar EA` falhava com `0 sucessos`**: o método procurava o `.ex5` só em `<repo>/mt5_ea/`. Quando o usuário compila o EA pelo MetaEditor a partir de uma instância (caminho típico no fluxo do projeto), o `.ex5` fica em `.mt5_instances/<broker>/MQL5/Experts/`, não no repo. Agora `update_ea_in_all_instances` chama um helper `_locate_compiled_ea()` que varre `mt5_ea/` + cada instância e pega o `.ex5` **mais recente**, independente da origem. UX previsível: compila em qualquer lugar → "Atualizar EA" propaga.
+- **SettingsPage estava esticando os controles**: `QLineEdit` do caminho MT5 com `stretch=1` ocupava toda a largura disponível; spacing default dos `QVBoxLayout` dos grupos era pequeno e fazia as rows colarem visualmente. Agora todos os controles têm largura fixa (`FIELD_WIDTH=220` ou `PATH_WIDTH=360`), cada `QVBoxLayout` interno tem `setSpacing(10)`, e todas as rows terminam com `addStretch()` pra empurrar conteúdo à esquerda. Configurações deixa de ser "responsivo" por design.
+
 ### Added
 - **`FlowLayout` (`gui/widgets/flow_layout.py`)** — substitui `QGridLayout` com `cols=N` fixo nos grids de cards. Distribui os widgets em linhas, quebrando automaticamente conforme a largura disponível: em uma janela maximizada cabem 8+ cards por linha; em uma janela menor o número de colunas diminui. Aplicado em `dashboard_page` e `brokers_page` (slaves). Master continua no `master_area` (HBoxLayout) — só um card.
 - **Botão "Atualizar EA" na página Corretoras**: copia o `.ex5` recompilado de `mt5_ea/` para cada `.mt5_instances/<broker>/MQL5/Experts/`. Chama o novo `BrokerManager.update_ea_in_all_instances() -> (sucessos, falhas)`. Diálogo informa quantas instâncias receberam a cópia e lembra que o operador ainda precisa fazer Remove + drag no chart de cada terminal pra MT5 carregar a versão nova (terminais em execução mantêm o `.ex5` antigo em memória).

@@ -287,28 +287,49 @@ class BrokerManager(QObject):
         except Exception as e:
             logger.error(f"Erro ao copiar Expert Advisor: {e}")
 
+    def _locate_compiled_ea(self) -> str:
+        """Localiza o .ex5 mais recente entre `mt5_ea/` (repo) e cada instância
+        de MT5. MetaEditor compila o `.ex5` na mesma pasta do `.mq5` aberto —
+        se o usuário compila a partir de uma instância (em `.mt5_instances/.../
+        MQL5/Experts/`), o .ex5 fica lá, não no repo. Pegar o mais recente
+        independente da origem deixa a UX previsível: compila em qualquer
+        lugar → "Atualizar EA" propaga pras outras.
+        Retorna o caminho do arquivo (ou string vazia se nenhum existe).
+        """
+        candidates = [os.path.join(self.root_path, "mt5_ea", "EPCopyFlow2_EA.ex5")]
+        for key in self.brokers:
+            candidates.append(os.path.join(
+                self.instances_dir, key, "MQL5", "Experts", "EPCopyFlow2_EA.ex5"
+            ))
+        existing = [(p, os.path.getmtime(p)) for p in candidates if os.path.exists(p)]
+        if not existing:
+            return ""
+        return max(existing, key=lambda x: x[1])[0]
+
     def update_ea_in_all_instances(self) -> tuple[int, int]:
-        """Copia o .ex5 atual de mt5_ea/ pra cada instância cadastrada.
-        Retorna (sucessos, falhas). Útil depois de recompilar no MetaEditor.
+        """Copia o .ex5 mais recente (de `mt5_ea/` ou de qualquer instância)
+        pra cada instância cadastrada. Retorna (sucessos, falhas).
 
         NÃO recarrega o EA nos terminais em execução — eles continuam usando
         o .ex5 antigo cached em memória. O operador precisa fazer Remove +
         re-attach em cada chart pra MT5 ler a versão nova do disco.
         """
-        source = os.path.join(self.root_path, "mt5_ea", "EPCopyFlow2_EA.ex5")
-        if not os.path.exists(source):
-            logger.error(f"EA compilado não encontrado: {source}")
+        source = self._locate_compiled_ea()
+        if not source:
+            logger.error("EA compilado (.ex5) não encontrado em nenhuma instância nem em mt5_ea/.")
             return (0, len(self.brokers))
 
+        logger.info(f"Origem do .ex5: {source}")
         sucessos, falhas = 0, 0
         for key in self.brokers:
-            instance_path = os.path.join(self.instances_dir, key)
-            if not os.path.isdir(instance_path):
+            dest_dir = os.path.join(self.instances_dir, key, "MQL5", "Experts")
+            if not os.path.isdir(os.path.dirname(dest_dir)):
                 logger.warning(f"Instância MT5 ausente para {key}, pulando.")
                 falhas += 1
                 continue
             try:
-                self.copy_expert(instance_path)
+                os.makedirs(dest_dir, exist_ok=True)
+                shutil.copy2(source, dest_dir)
                 logger.info(f"EA atualizado em {key}.")
                 sucessos += 1
             except Exception as e:
