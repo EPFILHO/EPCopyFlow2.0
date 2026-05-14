@@ -432,7 +432,6 @@ QFrame.settings-group {{
     background-color: {c['card']};
     border: 1px solid {c['border']};
     border-radius: 10px;
-    padding: 16px;
 }}
 QPushButton.save-btn {{
     background-color: {c['success']};

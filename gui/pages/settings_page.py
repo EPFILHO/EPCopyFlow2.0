@@ -44,7 +44,7 @@ class SettingsPage(QWidget):
         theme_group = QFrame()
         theme_group.setProperty("class", "settings-group")
         theme_layout = QVBoxLayout(theme_group)
-        theme_layout.setContentsMargins(0, 0, 0, 0)
+        theme_layout.setContentsMargins(16, 16, 16, 16)
         theme_layout.setSpacing(12)
 
         theme_title = QLabel("Aparencia")
@@ -67,7 +67,7 @@ class SettingsPage(QWidget):
         mt5_group = QFrame()
         mt5_group.setProperty("class", "settings-group")
         mt5_layout = QVBoxLayout(mt5_group)
-        mt5_layout.setContentsMargins(0, 0, 0, 0)
+        mt5_layout.setContentsMargins(16, 16, 16, 16)
         mt5_layout.setSpacing(12)
 
         mt5_title = QLabel("MetaTrader 5")
@@ -103,7 +103,7 @@ class SettingsPage(QWidget):
         app_group = QFrame()
         app_group.setProperty("class", "settings-group")
         app_layout = QVBoxLayout(app_group)
-        app_layout.setContentsMargins(0, 0, 0, 0)
+        app_layout.setContentsMargins(16, 16, 16, 16)
         app_layout.setSpacing(12)
 
         app_title = QLabel("Aplicacao")
@@ -129,7 +129,7 @@ class SettingsPage(QWidget):
         ct_group = QFrame()
         ct_group.setProperty("class", "settings-group")
         ct_layout = QVBoxLayout(ct_group)
-        ct_layout.setContentsMargins(0, 0, 0, 0)
+        ct_layout.setContentsMargins(16, 16, 16, 16)
         ct_layout.setSpacing(12)
 
         ct_title = QLabel("CopyTrade")
