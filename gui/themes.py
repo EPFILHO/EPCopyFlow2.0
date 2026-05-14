@@ -388,6 +388,7 @@ QLineEdit, QSpinBox, QComboBox {{
     border: 1px solid {c['border_hover']};
     border-radius: 4px;
     padding: 6px;
+    min-height: 20px;
 }}
 QSpinBox::up-button {{
     subcontrol-origin: border;
