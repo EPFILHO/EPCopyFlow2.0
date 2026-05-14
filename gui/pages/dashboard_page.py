@@ -5,10 +5,11 @@
 import logging
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QScrollArea,
-    QFrame, QGridLayout, QSizePolicy
+    QFrame, QSizePolicy
 )
 from PySide6.QtCore import Slot, Qt, QTimer
 from gui.widgets.broker_card import BrokerCard
+from gui.widgets.flow_layout import FlowLayout
 from gui import themes
 
 logger = logging.getLogger(__name__)
@@ -27,6 +28,10 @@ class DashboardPage(QWidget):
         # Debounce de refresh_stats: coalesce bursts de copy_trade_executed em
         # uma única query a cada 200ms.
         self._stats_refresh_pending = False
+        # Debounce de refresh_brokers: cada REGISTER/UNREGISTER de EA dispara
+        # refresh; com 9 brokers conectando, isso vira ~18 refreshes em 1-2s.
+        # Coalesce em 50ms evita janelas Qt piscando durante destroy/recreate.
+        self._refresh_brokers_pending = False
         self.setStyleSheet(themes.dashboard_style())
         self._init_ui()
         if self.copytrade_manager is not None:
@@ -80,10 +85,7 @@ class DashboardPage(QWidget):
         scroll.setStyleSheet(themes.scroll_area_style())
         scroll_widget = QWidget()
         scroll_widget.setStyleSheet(themes.scroll_widget_style())
-        self.slaves_grid = QGridLayout(scroll_widget)
-        self.slaves_grid.setContentsMargins(0, 0, 0, 0)
-        self.slaves_grid.setSpacing(12)
-        self.slaves_grid.setAlignment(Qt.AlignLeft | Qt.AlignTop)
+        self.slaves_grid = FlowLayout(scroll_widget, margin=0, hspacing=12, vspacing=12)
         scroll.setWidget(scroll_widget)
         layout.addWidget(scroll, 1)
 
@@ -112,15 +114,29 @@ class DashboardPage(QWidget):
         self.refresh_brokers()
 
     def refresh_brokers(self):
+        """Coalesce múltiplos refreshes em ~50ms — evita destroy/recreate em
+        rajada quando vários EAs registram em sequência."""
+        if self._refresh_brokers_pending:
+            return
+        self._refresh_brokers_pending = True
+        QTimer.singleShot(50, self._do_refresh_brokers)
+
+    def _do_refresh_brokers(self):
         """Rebuild broker cards from broker_manager data."""
-        # Clear existing cards
+        self._refresh_brokers_pending = False
+
+        # Clear existing cards. hide() antes de setParent(None) evita que o
+        # widget fique top-level visível brevemente entre o unparent e o
+        # deleteLater() (causa do "janelinhas Qt piscando").
         for card in self.broker_cards.values():
+            card.hide()
             card.setParent(None)
             card.deleteLater()
         self.broker_cards.clear()
 
         # Remove master placeholder if present
         if self.master_placeholder.parent():
+            self.master_placeholder.hide()
             self.master_placeholder.setParent(None)
 
         brokers = self.broker_manager.get_brokers()
@@ -129,25 +145,30 @@ class DashboardPage(QWidget):
         master_key = self.broker_manager.get_master_broker()
         slave_keys = sorted([k for k in brokers if k != master_key])
 
-        # Master card
+        # Master card. parent=self garante que o card nunca seja top-level
+        # antes de ser re-parented pelo addWidget — evita "janelinhas piscando".
         if master_key:
-            card = BrokerCard(master_key, brokers[master_key], is_connected=(master_key in connected))
+            card = BrokerCard(master_key, brokers[master_key],
+                              is_connected=(master_key in connected), parent=self)
             self.broker_cards[master_key] = card
             self.master_area.insertWidget(0, card)
         else:
+            self.master_placeholder.show()
             self.master_area.insertWidget(0, self.master_placeholder)
 
         # Slave cards in grid
         while self.slaves_grid.count():
             item = self.slaves_grid.takeAt(0)
-            if item.widget():
-                item.widget().setParent(None)
+            w = item.widget()
+            if w is not None:
+                w.hide()
+                w.setParent(None)
 
-        cols = 3
         for i, key in enumerate(slave_keys):
-            card = BrokerCard(key, brokers[key], is_connected=(key in connected))
+            card = BrokerCard(key, brokers[key],
+                              is_connected=(key in connected), parent=self)
             self.broker_cards[key] = card
-            self.slaves_grid.addWidget(card, i // cols, i % cols)
+            self.slaves_grid.addWidget(card)
 
         # Update stats
         self.stat_brokers._value_label.setText(str(len(brokers)))
@@ -216,16 +237,9 @@ class DashboardPage(QWidget):
             )
 
     @Slot(dict)
-    def update_positions(self, data):
-        """Update position info on broker cards."""
+    def update_account_info(self, data):
+        """Push periódico do EA (STREAM ACCOUNT_UPDATE) — atualiza balance,
+        positions_count, P/L atual e P/L do dia do card."""
         broker_key = data.get("broker_key")
         if broker_key and broker_key in self.broker_cards:
-            positions = data.get("positions", [])
-            self.broker_cards[broker_key].update_positions(positions)
-
-    @Slot(dict)
-    def update_balance(self, data):
-        """Update balance info on broker cards."""
-        broker_key = data.get("broker_key")
-        if broker_key and broker_key in self.broker_cards:
-            self.broker_cards[broker_key].update_balance(data)
+            self.broker_cards[broker_key].update_account_info(data)

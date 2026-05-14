@@ -6,11 +6,12 @@ import logging
 import asyncio
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QScrollArea, QFrame, QGridLayout, QMessageBox
+    QScrollArea, QFrame, QMessageBox
 )
 from PySide6.QtCore import Slot, Qt, Signal
 from gui.brokers_dialog import BrokersDialog
 from gui.widgets.broker_card import BrokerCard
+from gui.widgets.flow_layout import FlowLayout
 from gui import themes
 
 logger = logging.getLogger(__name__)
@@ -29,6 +30,10 @@ class BrokersPage(QWidget):
         self.tcp_message_handler = tcp_message_handler
         self._broker_status = {}
         self.broker_cards = {}
+        # Debounce de refresh_brokers: cada REGISTER/UNREGISTER de EA dispara
+        # refresh; com 9 brokers conectando, isso vira ~18 refreshes em 1-2s.
+        # Coalesce em 50ms evita janelas Qt piscando durante destroy/recreate.
+        self._refresh_brokers_pending = False
         self.setStyleSheet(themes.brokers_page_style())
         self._init_ui()
         self.refresh_brokers()
@@ -53,6 +58,13 @@ class BrokersPage(QWidget):
         self.cadastro_btn.setProperty("class", "action-btn")
         self.cadastro_btn.clicked.connect(self._open_broker_dialog)
         header.addWidget(self.cadastro_btn)
+
+        # Atualiza o EA (.ex5) em todas as instâncias cadastradas. Útil depois
+        # de recompilar no MetaEditor — evita ter que copiar à mão.
+        self.update_ea_btn = QPushButton("Atualizar EA")
+        self.update_ea_btn.setProperty("class", "action-btn")
+        self.update_ea_btn.clicked.connect(self._update_ea)
+        header.addWidget(self.update_ea_btn)
 
         self.connect_all_btn = QPushButton("Conectar Todas")
         self.connect_all_btn.setProperty("class", "connect-btn")
@@ -88,10 +100,7 @@ class BrokersPage(QWidget):
         scroll.setStyleSheet(themes.scroll_area_style())
         scroll_widget = QWidget()
         scroll_widget.setStyleSheet(themes.scroll_widget_style())
-        self.slaves_grid = QGridLayout(scroll_widget)
-        self.slaves_grid.setContentsMargins(0, 0, 0, 0)
-        self.slaves_grid.setSpacing(12)
-        self.slaves_grid.setAlignment(Qt.AlignLeft | Qt.AlignTop)
+        self.slaves_grid = FlowLayout(scroll_widget, margin=0, hspacing=12, vspacing=12)
         scroll.setWidget(scroll_widget)
         layout.addWidget(scroll, 1)
 
@@ -100,27 +109,44 @@ class BrokersPage(QWidget):
         self.refresh_brokers()
 
     def refresh_brokers(self):
+        """Coalesce múltiplos refreshes em ~50ms — evita destroy/recreate em
+        rajada quando vários EAs registram em sequência."""
+        if self._refresh_brokers_pending:
+            return
+        self._refresh_brokers_pending = True
+        from PySide6.QtCore import QTimer
+        QTimer.singleShot(50, self._do_refresh_brokers)
+
+    def _do_refresh_brokers(self):
+        self._refresh_brokers_pending = False
+
+        # hide() antes de setParent(None) evita janelas Qt piscando.
         for card in self.broker_cards.values():
+            card.hide()
             card.setParent(None)
             card.deleteLater()
         self.broker_cards.clear()
 
         # Remove master placeholder if present
         if self.master_placeholder.parent():
+            self.master_placeholder.hide()
             self.master_placeholder.setParent(None)
 
         # Clear slaves grid
         while self.slaves_grid.count():
             item = self.slaves_grid.takeAt(0)
-            if item.widget():
-                item.widget().setParent(None)
+            w = item.widget()
+            if w is not None:
+                w.hide()
+                w.setParent(None)
 
         brokers = self.broker_manager.get_brokers()
         connected = self.broker_manager.get_connected_brokers()
         master_key = self.broker_manager.get_master_broker()
         slave_keys = sorted([k for k in brokers if k != master_key])
 
-        # Master card
+        # parent=self garante que o card nunca seja top-level antes de ser
+        # re-parented pelo addWidget — evita "janelinhas piscando".
         if master_key:
             card = BrokerCard(
                 master_key, brokers[master_key],
@@ -128,26 +154,36 @@ class BrokersPage(QWidget):
                 show_connect_btn=True,
                 on_connect=lambda k=master_key: self._connect_broker(k),
                 on_disconnect=lambda k=master_key: self._disconnect_broker(k),
+                parent=self,
             )
             self.broker_cards[master_key] = card
             self.master_area.insertWidget(0, card)
         else:
+            self.master_placeholder.show()
             self.master_area.insertWidget(0, self.master_placeholder)
 
-        # Slave cards in grid
-        cols = 3
-        for i, key in enumerate(slave_keys):
+        # Slave cards in flow layout (colunas adaptam à largura disponível)
+        for key in slave_keys:
             card = BrokerCard(
                 key, brokers[key],
                 is_connected=(key in connected),
                 show_connect_btn=True,
                 on_connect=lambda k=key: self._connect_broker(k),
                 on_disconnect=lambda k=key: self._disconnect_broker(k),
+                parent=self,
             )
             self.broker_cards[key] = card
-            self.slaves_grid.addWidget(card, i // cols, i % cols)
+            self.slaves_grid.addWidget(card)
 
         self.update_broker_indicators()
+
+    @Slot(dict)
+    def update_account_info(self, data):
+        """Push periódico do EA (STREAM ACCOUNT_UPDATE) — atualiza balance,
+        positions_count e P/L do card sem precisar pedir."""
+        broker_key = data.get("broker_key")
+        if broker_key and broker_key in self.broker_cards:
+            self.broker_cards[broker_key].update_account_info(data)
 
     @Slot()
     def update_broker_indicators(self):
@@ -185,6 +221,35 @@ class BrokersPage(QWidget):
         dialog = BrokersDialog(self.config, self.broker_manager, parent=self)
         dialog.brokers_updated.connect(self.refresh_brokers)
         dialog.exec()
+
+    def _update_ea(self):
+        """Copia o .ex5 do MT5 base pra cada instância cadastrada."""
+        sucessos, falhas = self.broker_manager.update_ea_in_all_instances()
+        if sucessos == 0 and falhas > 0:
+            expected = (
+                f"{self.broker_manager.base_mt5_path}\\MQL5\\Experts\\EPCopyFlow2.0_EA.ex5"
+            )
+            QMessageBox.warning(
+                self,
+                "Atualizar EA",
+                f"Nenhuma instância recebeu o EA.\n\n"
+                f"O arquivo esperado é:\n{expected}\n\n"
+                f"Você pode:\n"
+                f"• abrir o .mq5 no MetaEditor do MT5 base e compilar (F7)\n"
+                f"• ou definir o caminho do .ex5 em Configurações → CopyTrade"
+            )
+            return
+
+        msg = f"EA copiado para {sucessos} instância(s)."
+        if falhas > 0:
+            msg += f"\n{falhas} falha(s) — ver logs."
+        msg += (
+            "\n\nAs instâncias MT5 já em execução ainda usam o .ex5 anterior em "
+            "memória. Para aplicar a versão nova:\n"
+            "• remova o EA do gráfico (botão direito → Remove)\n"
+            "• arraste o EA do Navigator de volta no gráfico"
+        )
+        QMessageBox.information(self, "Atualizar EA", msg)
 
     def _connect_broker(self, key):
         try:

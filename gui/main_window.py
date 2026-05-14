@@ -70,7 +70,10 @@ class MainWindow(QMainWindow):
         themes.set_theme(saved_theme)
 
         self.setWindowTitle("EPCopyFlow 2.0")
-        self.setGeometry(50, 50, 1200, 750)
+        # 1400x800 acomoda 5 cards de 220px por linha (sidebar 200 + padding 48
+        # + grid spacing) com folga. 900 mínimo mantém o app utilizável; com
+        # janela menor sobra scroll horizontal mas tudo segue visível.
+        self.setGeometry(50, 50, 1400, 800)
         self.setMinimumSize(900, 550)
 
         self._init_ui()
@@ -254,8 +257,9 @@ class MainWindow(QMainWindow):
     def _connect_signals(self):
         self.tcp_message_handler.log_message_received.connect(self.logs_page.append_log)
         self.tcp_message_handler.log_message_received.connect(self._handle_tcp_messages)
-        self.tcp_message_handler.positions_received.connect(self.dashboard_page.update_positions)
-        self.tcp_message_handler.account_balance_received.connect(self.dashboard_page.update_balance)
+        # Push periódico do EA (a cada ~2s): alimenta os cards sem polling.
+        self.tcp_message_handler.account_update_received.connect(self.dashboard_page.update_account_info)
+        self.tcp_message_handler.account_update_received.connect(self.brokers_page.update_account_info)
         # Atualizar indicadores quando status muda
         self.tcp_message_handler.trade_allowed_update_received.connect(
             lambda _: self._update_all_indicators())

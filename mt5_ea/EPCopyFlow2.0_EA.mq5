@@ -1,6 +1,6 @@
 //+------------------------------------------------------------------+
 //| EPCopyFlow 2.0                                                   |
-//| EPCopyFlow2_EA.mq5                                               |
+//| EPCopyFlow2.0_EA.mq5                                             |
 //| MQL5 <-> Python TCP Bridge para CopyTrade                        |
 //| 1 socket TCP nativo (bidirecional), Python = servidor, EA = cliente.
 //| Framing: 4 bytes big-endian length + UTF-8 JSON payload.         |
@@ -49,6 +49,12 @@ bool g_initial_trade_allowed_sent = false;
 //--- Monitoramento de conexão com o servidor da corretora
 bool g_last_terminal_connected = false;
 bool g_initial_connection_status_sent = false;
+
+//--- Push periódico de account_info (balance/equity/margin/profit/positions_count).
+//--- Disparado a cada kAccountUpdateEvery ticks de OnTimer
+//--- (kAccountUpdateEvery * InpTimerIntervalMs = intervalo efetivo).
+const int kAccountUpdateEvery = 20;  // 20 * 100ms = 2s
+int g_account_update_counter = 0;
 
 //--- Magic number para identificar trades do CopyTrade.
 //--- Fonte única: Python envia SET_MAGIC_NUMBER logo após receber REGISTER do EA.
@@ -518,6 +524,68 @@ bool SendErrorResponse(const string request_id, const string error_message)
 }
 
 //+------------------------------------------------------------------+
+//| Push periódico: balance, equity, margin, free_margin, P/L atual  |
+//| (POSITION_PROFIT das posições abertas), P/L do dia (deals com    |
+//| DEAL_ENTRY_OUT desde meia-noite local) e contagem de posições.   |
+//+------------------------------------------------------------------+
+bool SendAccountUpdate()
+{
+   if(!g_is_connected) return false;
+
+   double total_profit = 0.0;
+   int positions_count = 0;
+   for(int i = 0; i < PositionsTotal(); i++)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(PositionSelectByTicket(ticket))
+      {
+         total_profit += PositionGetDouble(POSITION_PROFIT);
+         positions_count++;
+      }
+   }
+
+   // P/L do dia: soma DEAL_PROFIT + DEAL_SWAP + DEAL_COMMISSION dos deals do
+   // ROBÔ (deal_magic == g_magic_number) com entry OUT/INOUT desde meia-noite.
+   // Filtro por magic: master operando manualmente (magic=0) não conta;
+   // só trades do CopyTrade entram no P/L do dia.
+   datetime now_t = TimeCurrent();
+   datetime today_start = (datetime)((long)now_t - ((long)now_t % 86400));
+   double daily_profit = 0.0;
+   if(g_magic_number > 0 && HistorySelect(today_start, now_t))
+   {
+      int total_deals = HistoryDealsTotal();
+      for(int i = 0; i < total_deals; i++)
+      {
+         ulong deal_ticket = HistoryDealGetTicket(i);
+         if(deal_ticket == 0) continue;
+         long deal_magic = HistoryDealGetInteger(deal_ticket, DEAL_MAGIC);
+         if(deal_magic != g_magic_number) continue;
+         long entry = HistoryDealGetInteger(deal_ticket, DEAL_ENTRY);
+         if(entry == DEAL_ENTRY_OUT || entry == DEAL_ENTRY_INOUT)
+         {
+            daily_profit += HistoryDealGetDouble(deal_ticket, DEAL_PROFIT);
+            daily_profit += HistoryDealGetDouble(deal_ticket, DEAL_SWAP);
+            daily_profit += HistoryDealGetDouble(deal_ticket, DEAL_COMMISSION);
+         }
+      }
+   }
+
+   JSONNode msg;
+   msg["type"]            = "STREAM";
+   msg["event"]           = "ACCOUNT_UPDATE";
+   msg["timestamp_mql"]   = (long)now_t;
+   msg["balance"]         = AccountInfoDouble(ACCOUNT_BALANCE);
+   msg["equity"]          = AccountInfoDouble(ACCOUNT_EQUITY);
+   msg["margin"]          = AccountInfoDouble(ACCOUNT_MARGIN);
+   msg["free_margin"]     = AccountInfoDouble(ACCOUNT_FREEMARGIN);
+   msg["currency"]        = AccountInfoString(ACCOUNT_CURRENCY);
+   msg["profit"]          = total_profit;
+   msg["daily_profit"]    = daily_profit;
+   msg["positions_count"] = (long)positions_count;
+   return SendJsonMessage(msg, "Event");
+}
+
+//+------------------------------------------------------------------+
 //| Bloco 2 - Comandos Administrativos                              |
 //| Respondidos por MASTER e SLAVE igualmente.                       |
 //+------------------------------------------------------------------+
@@ -855,6 +923,16 @@ void HandleTradeBuyCommand(const string request_id, JSONNode &payload)
    }
 
    string symbol = payload["symbol"].ToString();
+
+   // Garante que o símbolo existe no broker e está no Market Watch.
+   // Crítico em B3 ao virar contrato (WINQ25 → WINV25): o slave pode nunca
+   // ter operado o símbolo novo. SymbolSelect também adiciona ao Market Watch.
+   if(!SymbolSelect(symbol, true))
+   {
+      SendErrorResponse(request_id, StringFormat("Símbolo %s não disponível no broker", symbol));
+      return;
+   }
+
    double volume = payload["volume"].ToDouble();
    double price = payload["price"].ToDouble();
    double sl = payload["sl"].ToDouble();
@@ -909,6 +987,13 @@ void HandleTradeSellCommand(const string request_id, JSONNode &payload)
    }
 
    string symbol = payload["symbol"].ToString();
+
+   if(!SymbolSelect(symbol, true))
+   {
+      SendErrorResponse(request_id, StringFormat("Símbolo %s não disponível no broker", symbol));
+      return;
+   }
+
    double volume = payload["volume"].ToDouble();
    double price = payload["price"].ToDouble();
    double sl = payload["sl"].ToDouble();
@@ -1103,6 +1188,13 @@ void HandleTradePositionCloseSymbolCommand(const string request_id, JSONNode &pa
    }
 
    string symbol = payload["symbol"].ToString();
+
+   if(!SymbolSelect(symbol, true))
+   {
+      SendErrorResponse(request_id, StringFormat("Símbolo %s não disponível no broker", symbol));
+      return;
+   }
+
    int submitted = 0;
 
    for(int i = PositionsTotal() - 1; i >= 0; i--)
@@ -1335,6 +1427,14 @@ void OnTimer()
       g_last_terminal_connected = current_connected;
       if(InpDebugLog)
          PrintFormat("CONNECTION_STATUS: %s", current_connected ? "connected" : "disconnected");
+   }
+
+   // Push periódico de account_info (balance/equity/margin/profit/positions_count)
+   g_account_update_counter++;
+   if(g_account_update_counter >= kAccountUpdateEvery)
+   {
+      g_account_update_counter = 0;
+      SendAccountUpdate();
    }
 
    // Limpar requests assíncronos expirados (timeout 30s)
@@ -1594,6 +1694,53 @@ void EmitSltpModified(const CachedPosition &old_pos, const CachedPosition &new_p
                old_pos.sl, new_pos.sl, old_pos.tp, new_pos.tp);
 }
 
+//+------------------------------------------------------------------+
+//| Emite TRADE_EVENT sintético de ABERTURA quando posição nova       |
+//| aparece no snapshot. Cobre o cenário B3 (execução assíncrona) em |
+//| que OnTradeTransaction dispara antes de DEAL_POSITION_ID /        |
+//| ORDER_POSITION_ID estarem preenchidos.                            |
+//+------------------------------------------------------------------+
+void EmitSyntheticOpenEvent(const CachedPosition &new_pos)
+{
+   int order_type = (new_pos.pos_type == POSITION_TYPE_BUY) ? 0 : 1;
+
+   JSONNode stream_msg;
+   stream_msg["type"]          = "STREAM";
+   stream_msg["event"]         = "TRADE_EVENT";
+   stream_msg["timestamp_mql"] = (long)TimeCurrent();
+   stream_msg["role"]          = g_role;
+   stream_msg["source"]        = "ONTRADE_OPEN";
+
+   stream_msg["request_action"]       = 1;  // TRADE_ACTION_DEAL
+   stream_msg["request_order"]        = (long)0;
+   stream_msg["request_symbol"]       = new_pos.symbol;
+   stream_msg["request_volume"]       = new_pos.volume;
+   stream_msg["request_price"]        = 0.0;
+   stream_msg["request_sl"]           = new_pos.sl;
+   stream_msg["request_tp"]           = new_pos.tp;
+   stream_msg["request_deviation"]    = (long)0;
+   stream_msg["request_type"]         = order_type;  // 0=BUY, 1=SELL
+   stream_msg["request_type_filling"] = 0;
+   stream_msg["request_comment"]      = "";
+   stream_msg["request_position"]     = (long)0;  // 0 = abertura nova
+
+   stream_msg["result_retcode"] = (long)TRADE_RETCODE_DONE;
+   stream_msg["result_deal"]    = (long)0;
+   stream_msg["result_order"]   = (long)0;
+   stream_msg["result_volume"]  = new_pos.volume;
+   stream_msg["result_price"]   = 0.0;
+   stream_msg["result_comment"] = "open detected by OnTrade";
+
+   stream_msg["position_id"] = new_pos.position_id;
+
+   if(!SendJsonMessage(stream_msg, "Event"))
+      Print("ERROR: Falha ao enviar OPEN TRADE_EVENT via OnTrade");
+
+   PrintFormat("OnTrade: NOVA POSIÇÃO detectada (pos_id=%lld, symbol=%s, %s %.2f)",
+               new_pos.position_id, new_pos.symbol,
+               (new_pos.pos_type == POSITION_TYPE_BUY) ? "BUY" : "SELL", new_pos.volume);
+}
+
 void OnTrade()
 {
    if(g_role != "MASTER" || !g_is_connected || g_magic_number == 0)
@@ -1642,6 +1789,25 @@ void OnTrade()
          // Posição desapareceu → fechamento total (SL/TP hit, SO, mobile close, etc.)
          EmitSyntheticTradeEvent(g_pos_cache[i], g_pos_cache[i].volume, 0.0);
       }
+   }
+
+   // Detecta ABERTURAS NOVAS: posição em new_snap sem match no cache antigo.
+   // Cobre o caso B3 (execução assíncrona) em que OnTradeTransaction não
+   // conseguiu resolver position_id e desistiu de emitir. Aqui o snapshot
+   // já tem a posição confirmada, então POSITION_IDENTIFIER é certeiro.
+   for(int j = 0; j < new_count; j++)
+   {
+      bool was_cached = false;
+      for(int i = 0; i < g_pos_cache_size; i++)
+      {
+         if(g_pos_cache[i].position_id == new_snap[j].position_id)
+         {
+            was_cached = true;
+            break;
+         }
+      }
+      if(!was_cached)
+         EmitSyntheticOpenEvent(new_snap[j]);
    }
 
    // Atualizar cache
@@ -1866,6 +2032,19 @@ void OnTradeTransaction(const MqlTradeTransaction &trans, const MqlTradeRequest 
       }
    }
    stream_msg["position_id"] = position_id;
+
+   // Sem position_id em uma abertura/ADD (action=DEAL, position=0): em B3 com
+   // execução assíncrona, deal/order podem não ter sido confirmados ainda.
+   // Não emite o TRADE_EVENT incompleto — OnTrade vai detectar a posição
+   // nova via snapshot diff e emitir EmitSyntheticOpenEvent com pos_id certo.
+   // O cache NÃO é atualizado nesse caminho de saída — assim OnTrade vê o diff.
+   if(position_id == 0 && request.action == TRADE_ACTION_DEAL && request.position == 0)
+   {
+      if(InpDebugLog)
+         PrintFormat("INFO: position_id=0 em OnTradeTransaction (deal=%lld); OnTrade vai resolver.",
+                     (long)result.deal);
+      return;
+   }
 
    if(!SendJsonMessage(stream_msg, "Event"))
    {

@@ -388,6 +388,7 @@ QLineEdit, QSpinBox, QComboBox {{
     border: 1px solid {c['border_hover']};
     border-radius: 4px;
     padding: 6px;
+    min-height: 20px;
 }}
 QSpinBox::up-button {{
     subcontrol-origin: border;
@@ -431,7 +432,6 @@ QFrame.settings-group {{
     background-color: {c['card']};
     border: 1px solid {c['border']};
     border-radius: 10px;
-    padding: 16px;
 }}
 QPushButton.save-btn {{
     background-color: {c['success']};

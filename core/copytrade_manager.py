@@ -749,6 +749,18 @@ class CopyTradeManager(QObject):
           - TRADE_POSITION_CLOSE_ID → fecha posição inteira por ticket
         """
         symbol_specs = await self._fetch_symbol_specs(slave_key, symbol)
+
+        # Se o GET_SYMBOL_INFO falhou, o símbolo não existe nesse broker
+        # (ex.: forex no slave B3, ou contrato vencido). Pula sem tentar enviar
+        # — o trade falharia com "Símbolo X não disponível" e geraria 3 logs.
+        if symbol_specs is None:
+            logger.info(f"    ⏭️  SKIP {slave_key}: {symbol} não disponível no broker")
+            self._insert_history(master_broker, deal_ticket, symbol, trade_action,
+                                 volume, slave_key, 0, 0, "SKIPPED",
+                                 "símbolo não disponível no broker")
+            self.copy_trade_log.emit(f"SKIP [{slave_key}]: {symbol} indisponível")
+            return
+
         multiplier = self.broker_manager.get_lot_multiplier(slave_key)
 
         pos_info = self._get_slave_position_info(position_id, slave_key)
@@ -980,6 +992,21 @@ class CopyTradeManager(QObject):
             return
 
         error = response.get("error_message", "") or response.get("message", "Erro desconhecido")
+
+        # Caso B3: master e slaves compartilham cotação do mesmo símbolo, então
+        # o slave pode ter fechado por TP/SL local quase no mesmo instante que
+        # o master — quando o PARTIAL_CLOSE chega aqui, a posição já não existe.
+        # Mesmo fallback usado em _replicate_close: confirma via GET_POSITIONS
+        # antes de marcar FAILED. Só vale quando is_full_close (usa CLOSE_ID por
+        # ticket); partial real envia ordem oposta nova, não tem esse caso.
+        if is_full_close and "não encontrada" in error.lower():
+            resolved = await self._verify_position_closed(slave_key, symbol, position_id)
+            if resolved:
+                self._update_history(record_id, "SUCCESS", 0,
+                                     "Posição já fechada pelo broker (SL/TP/SO)",
+                                     close_reason="BROKER_SLTP")
+                return
+
         self._update_history(record_id, "FAILED", 0, error)
         self.copy_trade_failed.emit({"slave": slave_key, "symbol": symbol,
                                       "action": action_label, "error": error})

@@ -27,6 +27,7 @@ class TcpMessageHandler(QObject):
     trade_event_received = Signal(dict)
     trade_response_received = Signal(dict)
     alien_trade_detected = Signal(dict)
+    account_update_received = Signal(dict)
 
     # ──────────────────────────────────────────────
     # Bloco 1 - Inicialização
@@ -75,12 +76,17 @@ class TcpMessageHandler(QObject):
 
         log_prefix = f"TCP RX [{identified_broker_key or client_id_hex}]:"
 
-        # Log (exceto TICK e HEARTBEAT que são muito frequentes)
+        # File logger (escreve em logs/epcopyflow_*.log se log_level=DEBUG)
         event = message.get("event")
         if event not in ("TICK", "HEARTBEAT"):
-            log_message = f"{log_prefix} {message}"
-            self.log_message_received.emit(log_message)
-            logger.debug(log_message)
+            logger.debug(f"{log_prefix} {message}")
+
+        # IMPORTANTE: NÃO emit catch-all pro LogsPage da GUI aqui.
+        # Eventos que o usuário deve ver são emitidos pontualmente abaixo
+        # (REGISTER, UNREGISTER, ALIEN_TRADE, erros de RESPONSE) e pelo
+        # CopyTradeManager via copy_trade_log.emit. ACCOUNT_UPDATE,
+        # TRADE_EVENT e SLTP_MODIFIED têm signals dedicados; emitir tudo
+        # como string aqui apenas polui a tela e gasta CPU em rajadas.
 
         msg_type = message.get("type")
         status = message.get("status")
@@ -89,7 +95,9 @@ class TcpMessageHandler(QObject):
         if msg_type == "SYSTEM" and event == "REGISTER":
             broker_key = message.get("broker_key")
             if broker_key:
-                self.log_message_received.emit(f"INFO: Corretora {broker_key} registrada.")
+                # Prefixo "REGISTER" preservado: main_window._handle_tcp_messages
+                # usa string match nessa palavra para detectar conexão.
+                self.log_message_received.emit(f"REGISTER: Corretora {broker_key} registrada.")
                 self.ping_button_state_changed.emit(True)
                 self.heartbeat_active[broker_key] = True
 
@@ -109,7 +117,8 @@ class TcpMessageHandler(QObject):
         elif msg_type == "INTERNAL" and event == "CLIENT_UNREGISTERED":
             broker_key = message.get("broker_key")
             if broker_key:
-                self.log_message_received.emit(f"INFO: Corretora {broker_key} desconectada.")
+                # Prefixo "UNREGISTER" preservado para o detector em main_window.
+                self.log_message_received.emit(f"UNREGISTER: Corretora {broker_key} desconectada.")
                 self.ping_button_state_changed.emit(False)
                 self.heartbeat_active.pop(broker_key, None)
                 with self._state_lock:
@@ -201,6 +210,20 @@ class TcpMessageHandler(QObject):
             if broker_key and broker_key not in self.heartbeat_active:
                 self.heartbeat_active[broker_key] = True
                 logger.debug(f"💓 Primeiro heartbeat de {broker_key} ({role})")
+
+        elif msg_type == "STREAM" and event == "ACCOUNT_UPDATE":
+            self.account_update_received.emit({
+                "broker_key":      identified_broker_key,
+                "timestamp_mql":   message.get("timestamp_mql", 0),
+                "balance":         message.get("balance", 0.0),
+                "equity":          message.get("equity", 0.0),
+                "margin":          message.get("margin", 0.0),
+                "free_margin":     message.get("free_margin", 0.0),
+                "currency":        message.get("currency", ""),
+                "profit":          message.get("profit", 0.0),
+                "daily_profit":    message.get("daily_profit", 0.0),
+                "positions_count": message.get("positions_count", 0),
+            })
 
         elif msg_type == "STREAM" and event == "SLTP_MODIFIED":
             sltp_data = {
@@ -340,9 +363,10 @@ class TcpMessageHandler(QObject):
                 logger.warning(f"Trade falhou para {broker_key}: {message.get('error_message', '?')}")
 
         else:
-            if status == "OK":
-                self.log_message_received.emit(f"INFO: Resposta de {broker_key}: {message}")
-            else:
+            # Só respostas de ERRO viram log visível na GUI. Sucesso OK genérico
+            # (ex.: SET_MAGIC_NUMBER no startup) entrava aqui antes e poluía o
+            # LogsPage sem trazer informação útil pro operador.
+            if status != "OK":
                 self.log_message_received.emit(
                     f"ERROR: {broker_key}: {message.get('error_message', '?')}")
 

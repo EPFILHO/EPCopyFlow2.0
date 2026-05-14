@@ -38,6 +38,9 @@ class LogsPage(QWidget):
 
         self.log_text = QTextEdit()
         self.log_text.setReadOnly(True)
+        # Limite de linhas: evita o QTextEdit virar monstro de memória depois
+        # de horas de operação. Linhas mais antigas são descartadas.
+        self.log_text.document().setMaximumBlockCount(1000)
         layout.addWidget(self.log_text, 1)
 
     @Slot(str)
