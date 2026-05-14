@@ -99,34 +99,20 @@ class BrokersDialog(QDialog):
         layout.addWidget(QLabel("Servidor:"))
         layout.addWidget(self.server_edit)
 
-        # Modo + Tipo
-        mode_type_layout = QHBoxLayout()
-        self.mode_combo = QComboBox()
-        self.mode_combo.addItems(["Hedge", "Netting"])
-        self.type_combo = QComboBox()
-        self.type_combo.addItems(["Demo", "Real"])
-        mode_type_layout.addWidget(QLabel("Modo:"))
-        mode_type_layout.addWidget(self.mode_combo)
-        mode_type_layout.addSpacing(20)
-        mode_type_layout.addWidget(QLabel("Tipo:"))
-        mode_type_layout.addWidget(self.type_combo)
-        layout.addLayout(mode_type_layout)
-
-        # Role + Multiplicador de Lote (NOVOS CAMPOS)
-        role_lot_layout = QHBoxLayout()
+        # Role
         self.role_combo = QComboBox()
         self.role_combo.addItems(["Slave", "Master"])
+        layout.addWidget(QLabel("Role:"))
+        layout.addWidget(self.role_combo)
+
+        # Multiplicador de Lote
         self.lot_multiplier_spin = QDoubleSpinBox()
         self.lot_multiplier_spin.setRange(0.01, 10.0)
         self.lot_multiplier_spin.setSingleStep(0.01)
         self.lot_multiplier_spin.setDecimals(2)
         self.lot_multiplier_spin.setValue(1.0)
-        role_lot_layout.addWidget(QLabel("Role:"))
-        role_lot_layout.addWidget(self.role_combo)
-        role_lot_layout.addSpacing(20)
-        role_lot_layout.addWidget(QLabel("Multiplicador de Lote:"))
-        role_lot_layout.addWidget(self.lot_multiplier_spin)
-        layout.addLayout(role_lot_layout)
+        layout.addWidget(QLabel("Multiplicador de Lote:"))
+        layout.addWidget(self.lot_multiplier_spin)
 
         # Botões
         btn_layout = QHBoxLayout()
@@ -156,8 +142,6 @@ class BrokersDialog(QDialog):
         for widget in [self.name_edit, self.client_edit, self.broker_name_edit,
                        self.login_edit, self.password_edit, self.server_edit]:
             widget.textChanged.connect(self._update_buttons)
-        self.mode_combo.currentIndexChanged.connect(self._update_buttons)
-        self.type_combo.currentIndexChanged.connect(self._update_buttons)
 
     def _on_role_changed(self, _idx):
         """Desabilita multiplicador quando é Master."""
@@ -203,11 +187,6 @@ class BrokersDialog(QDialog):
         self.login_edit.setText(broker.get("login", ""))
         self.password_edit.setText(broker.get("password", ""))
         self.server_edit.setText(broker.get("server", ""))
-        mode = broker.get("mode", "Hedge")
-        type_ = broker.get("type", "Demo")
-        self.mode_combo.setCurrentIndex(self.mode_combo.findText(mode) if mode in ["Hedge", "Netting"] else 0)
-        self.type_combo.setCurrentIndex(self.type_combo.findText(type_) if type_ in ["Demo", "Real"] else 0)
-        # Novos campos
         role = broker.get("role", "slave").capitalize()
         self.role_combo.setCurrentIndex(self.role_combo.findText(role) if role in ["Slave", "Master"] else 0)
         self.lot_multiplier_spin.setValue(broker.get("lot_multiplier", 1.0))
@@ -221,8 +200,6 @@ class BrokersDialog(QDialog):
         self.login_edit.clear()
         self.password_edit.clear()
         self.server_edit.clear()
-        self.mode_combo.setCurrentIndex(0)
-        self.type_combo.setCurrentIndex(0)
         self.role_combo.setCurrentIndex(0)  # Slave por padrão
         self.lot_multiplier_spin.setValue(1.0)
         self.combo.setCurrentIndex(-1)
@@ -285,8 +262,6 @@ class BrokersDialog(QDialog):
             server=self.server_edit.text().strip(),
             command_port=command_port,
             event_port=event_port,
-            mode=self.mode_combo.currentText().strip(),
-            type_=self.type_combo.currentText().strip(),
             role=role,
             lot_multiplier=lot_multiplier,
         )
@@ -322,8 +297,6 @@ class BrokersDialog(QDialog):
             server=self.server_edit.text().strip(),
             command_port=broker.get("command_port"),
             event_port=broker.get("event_port"),
-            mode=self.mode_combo.currentText().strip(),
-            type_=self.type_combo.currentText().strip(),
             role=role,
             lot_multiplier=lot_multiplier,
         )

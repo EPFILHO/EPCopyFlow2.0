@@ -102,7 +102,7 @@ class BrokerManager(QObject):
     # ──────────────────────────────────────────────
     def add_broker(self, name, broker_name, login, password, server,
                    command_port, event_port,
-                   client="", mode="", type_="",
+                   client="",
                    role="slave", lot_multiplier=1.0):
         key = f"{broker_name.upper()}-{login}"
         if key in self.brokers:
@@ -124,8 +124,6 @@ class BrokerManager(QObject):
             "login": login,
             "password": password,
             "server": server,
-            "type": type_,
-            "mode": mode,
             "role": role,
             "lot_multiplier": lot_multiplier,
             "command_port": command_port,
@@ -161,7 +159,7 @@ class BrokerManager(QObject):
 
     def modify_broker(self, old_key, name, broker_name, login, password, server,
                       command_port, event_port,
-                      client="", mode="", type_="",
+                      client="",
                       role="slave", lot_multiplier=1.0):
         if old_key not in self.brokers:
             logger.error(f"Corretora {old_key} não encontrada.")
@@ -200,8 +198,6 @@ class BrokerManager(QObject):
             "login": login,
             "password": password,
             "server": server,
-            "type": type_ or old_data.get("type", ""),
-            "mode": mode or old_data.get("mode", ""),
             "role": role,
             "lot_multiplier": lot_multiplier,
             "command_port": command_port,
@@ -242,7 +238,7 @@ class BrokerManager(QObject):
 
     def get_account_mode(self, key):
         """Retorna o modo da conta (Netting ou Hedge)."""
-        return self.brokers.get(key, {}).get("mode", "Netting")
+        return "Netting"
 
     # ──────────────────────────────────────────────
     # Bloco 4 - Instâncias MT5 Portáteis
