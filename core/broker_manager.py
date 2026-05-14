@@ -32,6 +32,7 @@ class BrokerManager(QObject):
         Pode ser None em testes ou em fluxos puramente síncronos.
         """
         super().__init__()
+        self.config = config
         self.brokers_file = config.get('General', 'brokers_file', fallback='brokers.json')
         self.base_mt5_path = base_mt5_path
         self.root_path = root_path

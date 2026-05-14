@@ -224,6 +224,14 @@ class BrokersPage(QWidget):
 
     def _update_ea(self):
         """Copia o .ex5 do MT5 base pra cada instância cadastrada."""
+        if not self.broker_manager.brokers:
+            QMessageBox.information(
+                self,
+                "Atualizar EA",
+                "Nenhuma corretora cadastrada.\n\n"
+                "Cadastre ao menos uma corretora antes de atualizar o EA."
+            )
+            return
         sucessos, falhas = self.broker_manager.update_ea_in_all_instances()
         if sucessos == 0 and falhas > 0:
             expected = (
