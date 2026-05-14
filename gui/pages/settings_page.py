@@ -3,9 +3,11 @@
 # Página de configurações gerais com seletor de tema.
 
 import logging
+import os
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QLineEdit, QSpinBox, QCheckBox, QFrame, QMessageBox, QComboBox
+    QLineEdit, QSpinBox, QCheckBox, QFrame, QMessageBox, QComboBox,
+    QFileDialog
 )
 from PySide6.QtCore import Qt
 from gui import themes
@@ -34,15 +36,20 @@ class SettingsPage(QWidget):
         # Larguras fixas dos controles — campos NÃO esticam com a janela.
         FIELD_WIDTH = 220
         PATH_WIDTH = 360
+        # Altura mínima do section-title evita que ele "cole" visualmente nas
+        # rows abaixo (problema visto em prints quando padding CSS não basta).
+        SECTION_TITLE_MIN_H = 28
 
         # ── Aparência ──
         theme_group = QFrame()
         theme_group.setProperty("class", "settings-group")
         theme_layout = QVBoxLayout(theme_group)
-        theme_layout.setSpacing(10)
+        theme_layout.setContentsMargins(0, 0, 0, 0)
+        theme_layout.setSpacing(12)
 
         theme_title = QLabel("Aparencia")
         theme_title.setProperty("class", "section-title")
+        theme_title.setMinimumHeight(SECTION_TITLE_MIN_H)
         theme_layout.addWidget(theme_title)
 
         row_theme = QHBoxLayout()
@@ -60,10 +67,12 @@ class SettingsPage(QWidget):
         mt5_group = QFrame()
         mt5_group.setProperty("class", "settings-group")
         mt5_layout = QVBoxLayout(mt5_group)
-        mt5_layout.setSpacing(10)
+        mt5_layout.setContentsMargins(0, 0, 0, 0)
+        mt5_layout.setSpacing(12)
 
         mt5_title = QLabel("MetaTrader 5")
         mt5_title.setProperty("class", "section-title")
+        mt5_title.setMinimumHeight(SECTION_TITLE_MIN_H)
         mt5_layout.addWidget(mt5_title)
 
         row1 = QHBoxLayout()
@@ -71,6 +80,10 @@ class SettingsPage(QWidget):
         self.mt5_path_edit = QLineEdit()
         self.mt5_path_edit.setFixedWidth(PATH_WIDTH)
         row1.addWidget(self.mt5_path_edit)
+        self.mt5_path_browse = QPushButton("...")
+        self.mt5_path_browse.setFixedWidth(36)
+        self.mt5_path_browse.clicked.connect(self._browse_mt5_path)
+        row1.addWidget(self.mt5_path_browse)
         row1.addStretch()
         mt5_layout.addLayout(row1)
 
@@ -90,10 +103,12 @@ class SettingsPage(QWidget):
         app_group = QFrame()
         app_group.setProperty("class", "settings-group")
         app_layout = QVBoxLayout(app_group)
-        app_layout.setSpacing(10)
+        app_layout.setContentsMargins(0, 0, 0, 0)
+        app_layout.setSpacing(12)
 
         app_title = QLabel("Aplicacao")
         app_title.setProperty("class", "section-title")
+        app_title.setMinimumHeight(SECTION_TITLE_MIN_H)
         app_layout.addWidget(app_title)
 
         self.splash_check = QCheckBox("Exibir Splash Screen ao iniciar")
@@ -114,10 +129,12 @@ class SettingsPage(QWidget):
         ct_group = QFrame()
         ct_group.setProperty("class", "settings-group")
         ct_layout = QVBoxLayout(ct_group)
-        ct_layout.setSpacing(10)
+        ct_layout.setContentsMargins(0, 0, 0, 0)
+        ct_layout.setSpacing(12)
 
         ct_title = QLabel("CopyTrade")
         ct_title.setProperty("class", "section-title")
+        ct_title.setMinimumHeight(SECTION_TITLE_MIN_H)
         ct_layout.addWidget(ct_title)
 
         row_magic = QHBoxLayout()
@@ -148,6 +165,19 @@ class SettingsPage(QWidget):
         row_hb.addStretch()
         ct_layout.addLayout(row_hb)
 
+        row_ea = QHBoxLayout()
+        row_ea.addWidget(QLabel("Caminho do EA (.ex5):"))
+        self.ea_path_edit = QLineEdit()
+        self.ea_path_edit.setFixedWidth(PATH_WIDTH)
+        self.ea_path_edit.setPlaceholderText("(padrão: <base MT5>\\MQL5\\Experts\\EPCopyFlow2.0_EA.ex5)")
+        row_ea.addWidget(self.ea_path_edit)
+        self.ea_path_browse = QPushButton("...")
+        self.ea_path_browse.setFixedWidth(36)
+        self.ea_path_browse.clicked.connect(self._browse_ea_path)
+        row_ea.addWidget(self.ea_path_browse)
+        row_ea.addStretch()
+        ct_layout.addLayout(row_ea)
+
         layout.addWidget(ct_group)
 
         layout.addStretch()
@@ -158,6 +188,32 @@ class SettingsPage(QWidget):
         save_btn.setMaximumWidth(200)
         save_btn.clicked.connect(self._save_settings)
         layout.addWidget(save_btn, alignment=Qt.AlignRight)
+
+    def _browse_mt5_path(self):
+        current = self.mt5_path_edit.text().strip() or os.path.expanduser("~")
+        if not os.path.isdir(current):
+            current = os.path.expanduser("~")
+        directory = QFileDialog.getExistingDirectory(
+            self, "Selecionar pasta base do MT5", current
+        )
+        if directory:
+            self.mt5_path_edit.setText(directory)
+
+    def _browse_ea_path(self):
+        current = self.ea_path_edit.text().strip()
+        if current and os.path.isfile(current):
+            start = os.path.dirname(current)
+        else:
+            base = self.mt5_path_edit.text().strip()
+            start = os.path.join(base, "MQL5", "Experts") if base else os.path.expanduser("~")
+            if not os.path.isdir(start):
+                start = os.path.expanduser("~")
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Selecionar arquivo do EA (.ex5)", start,
+            "Expert Advisor compilado (*.ex5)"
+        )
+        if path:
+            self.ea_path_edit.setText(path)
 
     def _load_settings(self):
         self.mt5_path_edit.setText(
@@ -185,6 +241,9 @@ class SettingsPage(QWidget):
         self.heartbeat_spin.setValue(
             self.config.getint('CopyTrade', 'heartbeat_interval', fallback=5)
         )
+        self.ea_path_edit.setText(
+            self.config.get('CopyTrade', 'ea_path', fallback='')
+        )
 
     def apply_theme(self):
         self.setStyleSheet(themes.settings_page_style())
@@ -206,6 +265,7 @@ class SettingsPage(QWidget):
             # CopyTrade
             self.config.set('CopyTrade', 'magic_number', str(self.magic_number_spin.value()))
             self.config.set('CopyTrade', 'heartbeat_interval', str(self.heartbeat_spin.value()))
+            self.config.set('CopyTrade', 'ea_path', self.ea_path_edit.text().strip())
 
             self.config.save_config()
             QMessageBox.information(self, "Sucesso", "Configuracoes salvas.\n\nAlteracoes de CopyTrade serao aplicadas na proxima conexao dos EAs.")

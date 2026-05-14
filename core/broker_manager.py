@@ -279,7 +279,7 @@ class BrokerManager(QObject):
             logger.error(f"Erro ao copiar DLLs: {e}")
 
     def copy_expert(self, instance_path):
-        source = os.path.join(self.root_path, "mt5_ea", "EPCopyFlow2_EA.ex5")
+        source = os.path.join(self.root_path, "mt5_ea", "EPCopyFlow2.0_EA.ex5")
         dest_dir = os.path.join(instance_path, "MQL5", "Experts")
         os.makedirs(dest_dir, exist_ok=True)
         try:
@@ -288,21 +288,25 @@ class BrokerManager(QObject):
             logger.error(f"Erro ao copiar Expert Advisor: {e}")
 
     def _locate_compiled_ea(self) -> str:
-        """Origem canônica do .ex5: `<base_mt5_path>/MQL5/Experts/EPCopyFlow2_EA.ex5`.
+        """Origem do .ex5 a ser propagado pras instâncias.
 
-        O `base_mt5_path` (config.ini → General → base_mt5_path) é o MT5 "modelo"
-        do qual cada instância foi copiada. O fluxo recomendado é abrir o `.mq5`
-        no MetaEditor desse MT5 e compilar — o `.ex5` resultante fica nesse
-        caminho, e o botão Atualizar EA propaga pras instâncias filhas.
+        Ordem de preferência:
+        1. `[CopyTrade] ea_path` em `config.ini` (caminho completo, se setado
+           pelo usuário na página Configurações);
+        2. `<base_mt5_path>/MQL5/Experts/EPCopyFlow2.0_EA.ex5` (caminho canônico
+           do MT5 modelo).
 
-        Retorna o caminho do arquivo, ou string vazia se não existir.
+        Retorna o caminho do arquivo, ou string vazia se nada existir.
         """
-        source = os.path.join(self.base_mt5_path, "MQL5", "Experts", "EPCopyFlow2_EA.ex5")
+        custom = self.config.get('CopyTrade', 'ea_path', fallback='').strip()
+        if custom and os.path.exists(custom):
+            return custom
+        source = os.path.join(self.base_mt5_path, "MQL5", "Experts", "EPCopyFlow2.0_EA.ex5")
         return source if os.path.exists(source) else ""
 
     def update_ea_in_all_instances(self) -> tuple[int, int]:
-        """Copia o .ex5 do MT5 base (`base_mt5_path/MQL5/Experts/`) pra cada
-        instância cadastrada. Retorna (sucessos, falhas).
+        """Copia o .ex5 do MT5 base (ou caminho customizado em config.ini)
+        pra cada instância cadastrada. Retorna (sucessos, falhas).
 
         NÃO recarrega o EA nos terminais em execução — eles continuam usando
         o .ex5 antigo cached em memória. O operador precisa fazer Remove +
@@ -310,7 +314,7 @@ class BrokerManager(QObject):
         """
         source = self._locate_compiled_ea()
         if not source:
-            expected = os.path.join(self.base_mt5_path, "MQL5", "Experts", "EPCopyFlow2_EA.ex5")
+            expected = os.path.join(self.base_mt5_path, "MQL5", "Experts", "EPCopyFlow2.0_EA.ex5")
             logger.error(f"EA compilado (.ex5) não encontrado em: {expected}")
             return (0, len(self.brokers))
 

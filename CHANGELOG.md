@@ -18,7 +18,12 @@ Tipos de mudança:
 ## [Unreleased]
 
 ### Fixed
-- **`Atualizar EA` usa o MT5 base como origem canônica**: o `.ex5` é lido de `<base_mt5_path>/MQL5/Experts/EPCopyFlow2_EA.ex5` (o caminho do MT5 "modelo" configurado em `config.ini → General → base_mt5_path`). É o lugar onde o operador compila uma vez e replica pras instâncias. Antes a tentativa de procurar entre `mt5_ea/` ou instâncias era frágil — agora um caminho único, previsível, com mensagem de erro clara dizendo onde compilar caso o arquivo não exista.
+- **SettingsPage: títulos de seção colando nas rows abaixo**: o problema visual ("Aparencia", "MetaTrader 5", "Aplicacao", "CopyTrade" colados em cima dos primeiros controles) vinha de padding CSS insuficiente nas `QLabel.section-title`. Tornado robusto com `setMinimumHeight(28)` em cada title, `setSpacing(12)` (era 10) e `setContentsMargins(0, 0, 0, 0)` nos `QVBoxLayout` internos pra o padding ficar só com o `QFrame.settings-group`.
+- **EA renomeado para `EPCopyFlow2.0_EA`**: nome real do EA no MT5 do usuário é `EPCopyFlow2.0_EA` (com ponto), não `EPCopyFlow2_EA`. Arquivo renomeado via `git mv`, header atualizado, todas as referências em `core/broker_manager.py`, `gui/pages/brokers_page.py` e `gui/pages/settings_page.py` apontam para `EPCopyFlow2.0_EA.ex5` agora.
+- **`Atualizar EA` usa o MT5 base como origem canônica**: o `.ex5` é lido de `<base_mt5_path>/MQL5/Experts/EPCopyFlow2.0_EA.ex5` (ou de um caminho explícito em `[CopyTrade] ea_path` do `config.ini`, configurável agora via Configurações).
+
+### Added
+- **Botões "..." em Configurações pra abrir QFileDialog**: campo "Caminho base MT5" ganhou botão que abre seletor de diretório (`QFileDialog.getExistingDirectory`); nova row "Caminho do EA (.ex5)" com botão que abre seletor de arquivo (`QFileDialog.getOpenFileName`, filtro `*.ex5`). O caminho do EA, se preenchido, sobrepõe o default `<base>/MQL5/Experts/EPCopyFlow2.0_EA.ex5` — útil quando o operador mantém o `.ex5` em outro lugar. Persistido em `[CopyTrade] ea_path`.
 - **SettingsPage estava esticando os controles**: `QLineEdit` do caminho MT5 com `stretch=1` ocupava toda a largura disponível; spacing default dos `QVBoxLayout` dos grupos era pequeno e fazia as rows colarem visualmente. Agora todos os controles têm largura fixa (`FIELD_WIDTH=220` ou `PATH_WIDTH=360`), cada `QVBoxLayout` interno tem `setSpacing(10)`, e todas as rows terminam com `addStretch()` pra empurrar conteúdo à esquerda. Configurações deixa de ser "responsivo" por design.
 
 ### Added

@@ -227,16 +227,16 @@ class BrokersPage(QWidget):
         sucessos, falhas = self.broker_manager.update_ea_in_all_instances()
         if sucessos == 0 and falhas > 0:
             expected = (
-                f"{self.broker_manager.base_mt5_path}\\MQL5\\Experts\\EPCopyFlow2_EA.ex5"
+                f"{self.broker_manager.base_mt5_path}\\MQL5\\Experts\\EPCopyFlow2.0_EA.ex5"
             )
             QMessageBox.warning(
                 self,
                 "Atualizar EA",
                 f"Nenhuma instância recebeu o EA.\n\n"
                 f"O arquivo esperado é:\n{expected}\n\n"
-                f"Abra esse .mq5 no MetaEditor do MT5 base e compile (F7) "
-                f"pra gerar o .ex5 nesse caminho. Depois clique Atualizar EA "
-                f"de novo."
+                f"Você pode:\n"
+                f"• abrir o .mq5 no MetaEditor do MT5 base e compilar (F7)\n"
+                f"• ou definir o caminho do .ex5 em Configurações → CopyTrade"
             )
             return
 
