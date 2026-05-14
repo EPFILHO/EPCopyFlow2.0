@@ -7,7 +7,7 @@ import os
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QLineEdit, QSpinBox, QCheckBox, QFrame, QMessageBox, QComboBox,
-    QFileDialog
+    QFileDialog, QScrollArea
 )
 from PySide6.QtCore import Qt
 from gui import themes
@@ -25,7 +25,19 @@ class SettingsPage(QWidget):
         self._load_settings()
 
     def _init_ui(self):
-        layout = QVBoxLayout(self)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        outer.addWidget(scroll)
+
+        content = QWidget()
+        scroll.setWidget(content)
+
+        layout = QVBoxLayout(content)
         layout.setContentsMargins(24, 16, 24, 16)
         layout.setSpacing(16)
 
