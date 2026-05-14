@@ -1,6 +1,6 @@
 //+------------------------------------------------------------------+
 //| EPCopyFlow 2.0                                                   |
-//| EPCopyFlow2_EA.mq5                                               |
+//| EPCopyFlow2.0_EA.mq5                                             |
 //| MQL5 <-> Python TCP Bridge para CopyTrade                        |
 //| 1 socket TCP nativo (bidirecional), Python = servidor, EA = cliente.
 //| Framing: 4 bytes big-endian length + UTF-8 JSON payload.         |
