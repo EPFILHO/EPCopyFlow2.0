@@ -164,24 +164,10 @@ class CopyTradeManager(QObject):
         Valida se um broker pode usar CopyTrade.
         Retorna (sucesso: bool, mensagem: str)
 
-        Chamado quando usuário tenta ATIVAR CopyTrade para um broker.
+        Como o app só suporta NETTING, a validação sempre passa — mantida apenas
+        como ponto de extensão para futuras checagens (ex.: trade enabled,
+        margin level, etc.).
         """
-        account_mode = self.broker_manager.get_account_mode(broker_key)
-        mode_normalized = account_mode.lower()
-
-        if mode_normalized not in ("netting", "netting account"):
-            error_msg = (
-                f"❌ {broker_key} está em modo '{account_mode}'\n\n"
-                f"CopyTrade requer modo NETTING.\n\n"
-                f"Por favor, altere no painel de configuração (Admin):\n"
-                f"• Vá para: Configurações → Corretoras\n"
-                f"• Mude o modo de '{account_mode}' para 'Netting'\n"
-                f"• Salve as alterações"
-            )
-            logger.error(f"Validação falhou para {broker_key}: {error_msg}")
-            return False, error_msg
-
-        logger.info(f"✅ {broker_key} validado para CopyTrade (modo NETTING)")
         return True, "OK"
 
     # ──────────────────────────────────────────────

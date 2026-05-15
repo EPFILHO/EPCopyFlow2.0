@@ -427,11 +427,18 @@ QSpinBox::down-arrow {{
 QCheckBox {{
     color: {c['text']};
     font-size: 13px;
+    background: transparent;
 }}
 QFrame.settings-group {{
     background-color: {c['card']};
     border: 1px solid {c['border']};
     border-radius: 10px;
+}}
+QFrame.settings-group QLabel {{
+    background: transparent;
+}}
+QScrollArea, QScrollArea > QWidget > QWidget {{
+    background: transparent;
 }}
 QPushButton.save-btn {{
     background-color: {c['success']};
