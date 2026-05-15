@@ -48,10 +48,12 @@ class BrokerManager(QObject):
         # outros que já seguram o lock (ex.: modify_broker → disconnect_broker).
         self._state_lock = threading.RLock()
 
-        # Sessão: master sempre = "M"; slaves recebem "1", "2", ... na ordem
-        # em que conectam pela primeira vez nesta sessão. Reseta no restart.
-        self._session_labels: dict[str, str] = {}
-        self._session_slave_counter = 0
+        # Sessão: rastreia a ordem de primeira conexão de cada broker. O label
+        # exibido (M / 1 / 2 / ...) é derivado dinamicamente do role atual + dessa
+        # ordem — assim mudar role (master ↔ slave) reatribui os labels na hora.
+        # Reseta no restart do app.
+        self._session_first_connect: dict[str, int] = {}
+        self._session_connect_counter = 0
 
         logger.debug("BrokerManager inicializado.")
 
@@ -159,6 +161,9 @@ class BrokerManager(QObject):
         if os.path.exists(instance_path):
             shutil.rmtree(instance_path, ignore_errors=True)
             logger.info(f"Diretório MT5 de {key} excluído.")
+        # Remove da ordem de sessão e re-renumera slaves restantes.
+        if self._session_first_connect.pop(key, None) is not None:
+            self._refresh_all_session_icons()
         logger.info(f"Corretora {key} removida.")
         self.brokers_updated.emit()
         return True
@@ -182,6 +187,7 @@ class BrokerManager(QObject):
                 return None
 
         old_data = self.brokers.pop(old_key)
+        old_role = old_data.get("role", "slave")
         if broker_name is None:
             broker_name = old_data.get("broker_name", old_key.split("-")[0])
         new_key = f"{broker_name.upper()}-{login}"
@@ -216,6 +222,14 @@ class BrokerManager(QObject):
             else:
                 self.connected_brokers[new_key] = False
         self.create_mt5_config(new_key)
+
+        # Migra a ordem de primeira conexão se a key mudou e regenera todos
+        # os ícones se o role mudou (labels dos slaves podem ter se reorganizado).
+        if new_key != old_key and old_key in self._session_first_connect:
+            self._session_first_connect[new_key] = self._session_first_connect.pop(old_key)
+        if role != old_role:
+            self._refresh_all_session_icons()
+
         logger.info(f"Corretora {old_key} modificada para {new_key} (role={role}).")
         self.brokers_updated.emit()
         return new_key
@@ -372,26 +386,38 @@ class BrokerManager(QObject):
     def get_brokers(self):
         return self.brokers
 
-    def _assign_session_label(self, key: str) -> str:
-        """Atribui (ou retorna) o label de sessão de um broker.
-        Master → 'M'; slaves → '1', '2', ... na ordem de primeira conexão.
-        Idempotente: chamadas repetidas retornam o mesmo valor.
+    def _mark_first_connect(self, key: str):
+        """Marca o broker como tendo conectado pela primeira vez nesta sessão.
+        Idempotente: chamadas repetidas não alteram a ordem registrada."""
+        if key not in self._session_first_connect:
+            self._session_connect_counter += 1
+            self._session_first_connect[key] = self._session_connect_counter
+
+    def get_session_label(self, key: str) -> str | None:
+        """Retorna o label dinâmico do broker:
+        - None se nunca conectou nesta sessão
+        - 'M' se hoje é master
+        - '1', '2', ... pela posição entre os slaves que já conectaram,
+          ordenados por sua ordem de primeira conexão
         """
-        if key in self._session_labels:
-            return self._session_labels[key]
-        is_master = self.brokers.get(key, {}).get("role") == "master"
-        if is_master:
-            label = "M"
-        else:
-            self._session_slave_counter += 1
-            label = str(self._session_slave_counter)
-        self._session_labels[key] = label
-        return label
+        if key not in self._session_first_connect:
+            return None
+        role = self.brokers.get(key, {}).get("role", "slave")
+        if role == "master":
+            return "M"
+        slaves_in_order = sorted(
+            (k for k in self._session_first_connect
+             if self.brokers.get(k, {}).get("role", "slave") == "slave"),
+            key=lambda k: self._session_first_connect[k],
+        )
+        try:
+            return str(slaves_in_order.index(key) + 1)
+        except ValueError:
+            return None
 
     def _write_instance_icon(self, key: str, label: str):
         """Gera Terminal.ico no diretório da instância MT5.
-        Falha silenciosamente — não é crítico se o ícone não for criado.
-        """
+        Falha silenciosamente — não é crítico se o ícone não for criado."""
         is_master = self.brokers.get(key, {}).get("role") == "master"
         icon_path = os.path.join(self.instances_dir, key, "Terminal.ico")
         try:
@@ -399,10 +425,15 @@ class BrokerManager(QObject):
         except Exception as e:
             logger.warning(f"Falha ao gerar Terminal.ico para {key}: {e}")
 
-    def get_session_label(self, key: str) -> str | None:
-        """Retorna o label da sessão atual para o broker, ou None se ainda
-        não foi atribuído (broker nunca conectou nesta sessão)."""
-        return self._session_labels.get(key)
+    def _refresh_all_session_icons(self):
+        """Regera Terminal.ico para todo broker que já conectou nesta sessão.
+        Chamado quando um role muda, pra refletir o novo label imediatamente."""
+        for key in list(self._session_first_connect.keys()):
+            if key not in self.brokers:
+                continue
+            label = self.get_session_label(key)
+            if label:
+                self._write_instance_icon(key, label)
 
     def connect_broker(self, key):
         """Inicia o MT5 do broker (não-bloqueante).
@@ -438,10 +469,12 @@ class BrokerManager(QObject):
             logger.error(f"Instância MT5 não encontrada para {key}.")
             return False
 
-        # Atribui label de sessão (M / 1 / 2 / ...) e gera Terminal.ico antes
-        # de iniciar o terminal, pra que o ícone esteja disponível desde o boot.
-        label = self._assign_session_label(key)
-        self._write_instance_icon(key, label)
+        # Registra ordem de primeira conexão e gera Terminal.ico antes do
+        # terminal iniciar, pra que o ícone esteja disponível desde o boot.
+        self._mark_first_connect(key)
+        label = self.get_session_label(key)
+        if label:
+            self._write_instance_icon(key, label)
 
         # Estado otimista: marca como conectado pra UI atualizar imediatamente.
         with self._state_lock:
