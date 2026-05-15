@@ -159,8 +159,8 @@ class MT5ProcessMonitor:
                 if last_restart and (now - last_restart) < backoff:
                     remaining = backoff - (now - last_restart)
                     logger.debug(f"MT5 {key} — backoff: {remaining:.0f}s antes do retry #{retries + 1}.")
-                    # Re-adicionar processo como None para não perder o tracking
-                    return
+                    # Em backoff: pula este broker, mas continua checando os demais.
+                    continue
                 logger.warning(f"MT5 {key} morreu (exit={exit_code}). Retry {retries + 1}/{self.max_retries} (backoff={backoff}s)...")
             else:
                 logger.warning(f"MT5 {key} morreu (exit={exit_code}). Reiniciando imediatamente...")

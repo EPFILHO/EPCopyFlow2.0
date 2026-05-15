@@ -356,7 +356,7 @@ class TcpRouter:
         if conn is None:
             return {"status": "ERROR", "message": f"Corretora {broker_key} não conectada."}
 
-        request_id = request_id or f"{command.lower()}_{broker_key}_{int(time.time())}"
+        request_id = request_id or f"{command.lower()}_{broker_key}_{time.time_ns()}"
         message = {
             "type": "REQUEST",
             "command": command,
@@ -410,7 +410,7 @@ class TcpRouter:
                 broker_key,
                 "SET_MAGIC_NUMBER",
                 {"magic_number": magic},
-                f"set_magic_{broker_key}_{int(time.time())}",
+                f"set_magic_{broker_key}_{time.time_ns()}",
             )
             if response.get("status") == "OK":
                 logger.info(f"Magic number configurado em {broker_key}: {magic}")

@@ -273,7 +273,7 @@ class CopyTradeManager(QObject):
             return self.symbol_specs_cache[cache_key]
 
         try:
-            request_id = f"symbol_info_{broker_key}_{symbol}_{int(time.time())}"
+            request_id = f"symbol_info_{broker_key}_{symbol}_{time.time_ns()}"
             response = await self.tcp_router.send_command_to_broker(
                 broker_key, "GET_SYMBOL_INFO", {"symbol": symbol}, request_id
             )
@@ -573,7 +573,7 @@ class CopyTradeManager(QObject):
         """Envia TRADE_POSITION_MODIFY para um slave."""
         logger.info(f"  SLTP -> {slave_key}: ticket={slave_ticket}, sl={sl}, tp={tp}")
 
-        request_id = f"sltp_{slave_key}_{position_id}_{int(time.time())}"
+        request_id = f"sltp_{slave_key}_{position_id}_{time.time_ns()}"
         response = await self.tcp_router.send_command_to_broker(
             slave_key, "TRADE_POSITION_MODIFY",
             {"ticket": slave_ticket, "sl": sl, "tp": tp},
@@ -902,7 +902,7 @@ class CopyTradeManager(QObject):
         self.copy_trade_log.emit(log_msg)
         logger.info(f"    {log_msg} → TRADE_POSITION_CLOSE_ID (ticket={slave_ticket})")
 
-        request_id = f"trade_{slave_key}_{int(time.time())}"
+        request_id = f"trade_{slave_key}_{time.time_ns()}"
         response = await self.tcp_router.send_command_to_broker(
             slave_key, "TRADE_POSITION_CLOSE_ID", {"ticket": slave_ticket}, request_id
         )
@@ -961,7 +961,7 @@ class CopyTradeManager(QObject):
         self.copy_trade_log.emit(log_msg)
         logger.info(f"    {log_msg} → {command}")
 
-        request_id = f"trade_{slave_key}_{int(time.time())}"
+        request_id = f"trade_{slave_key}_{time.time_ns()}"
         response = await self.tcp_router.send_command_to_broker(
             slave_key, command, payload, request_id
         )
@@ -1012,7 +1012,7 @@ class CopyTradeManager(QObject):
         self.copy_trade_log.emit(log_msg)
         logger.info(f"    {log_msg} → {command}")
 
-        request_id = f"trade_{slave_key}_{int(time.time())}"
+        request_id = f"trade_{slave_key}_{time.time_ns()}"
         response = await self.tcp_router.send_command_to_broker(
             slave_key, command, payload, request_id
         )
@@ -1045,7 +1045,7 @@ class CopyTradeManager(QObject):
         self.copy_trade_log.emit(log_msg)
         logger.info(f"    {log_msg} → {command}")
 
-        request_id = f"trade_{slave_key}_{int(time.time())}"
+        request_id = f"trade_{slave_key}_{time.time_ns()}"
         response = await self.tcp_router.send_command_to_broker(
             slave_key, command, payload, request_id
         )
@@ -1091,7 +1091,7 @@ class CopyTradeManager(QObject):
 
         close_record = self._insert_history(master_broker, deal_ticket, symbol, "REVERSAL_CLOSE",
                                              master_volume, slave_key, 0, existing_slave_vol, "PENDING")
-        close_request_id = f"trade_{slave_key}_{int(time.time())}"
+        close_request_id = f"trade_{slave_key}_{time.time_ns()}"
         close_response = await self.tcp_router.send_command_to_broker(
             slave_key, "TRADE_POSITION_CLOSE_ID", {"ticket": slave_ticket}, close_request_id
         )
@@ -1120,7 +1120,7 @@ class CopyTradeManager(QObject):
 
         open_record = self._insert_history(master_broker, deal_ticket, symbol, f"REVERSAL_{new_direction}",
                                             master_excess, slave_key, 0, reverse_lot, "PENDING")
-        open_request_id = f"trade_{slave_key}_{int(time.time())}_rev"
+        open_request_id = f"trade_{slave_key}_{time.time_ns()}_rev"
         command = f"TRADE_ORDER_TYPE_{new_direction}"
         payload = {"symbol": symbol, "volume": float(reverse_lot),
                    "price": 0.0, "sl": sl, "tp": tp,
@@ -1160,7 +1160,7 @@ class CopyTradeManager(QObject):
         se a posição realmente não existe mais (SL/TP/SO do broker fechou antes).
         Retorna True se resolvido (posição confirmada fechada), False se é erro real.
         """
-        req_id = f"verify_{slave_key}_{position_id}_{int(time.time())}"
+        req_id = f"verify_{slave_key}_{position_id}_{time.time_ns()}"
         pos_response = await self.tcp_router.send_command_to_broker(
             slave_key, "GET_POSITIONS", {}, req_id
         )
@@ -1368,7 +1368,7 @@ class CopyTradeManager(QObject):
     async def _emergency_reconcile(self, broker_key: str,
                                     master_key: str) -> tuple[int, list[str]]:
         """Fase 2: GET_POSITIONS para fechar posições órfãs não cobertas pelo DB."""
-        request_id = f"positions_recon_{broker_key}_{int(time.time() * 1000)}"
+        request_id = f"positions_recon_{broker_key}_{time.time_ns()}"
         response = await self.tcp_router.send_command_to_broker(
             broker_key, "POSITIONS", {}, request_id
         )
@@ -1416,7 +1416,7 @@ class CopyTradeManager(QObject):
         symbol = pos["symbol"]
         volume = pos["volume"]
 
-        close_id = f"close_{broker_key}_{ticket}_{int(time.time() * 1000)}"
+        close_id = f"close_{broker_key}_{ticket}_{time.time_ns()}"
         close_response = await self.tcp_router.send_command_to_broker(
             broker_key, "TRADE_POSITION_CLOSE_ID",
             {"ticket": ticket, "emergency": True}, close_id,

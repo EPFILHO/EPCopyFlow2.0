@@ -131,11 +131,14 @@ class HistoryPage(QWidget):
             "Data/Hora", "Master", "Ticket M", "Simbolo", "Acao",
             "Lote M", "Slave", "Ticket S", "Lote S", "Status", "Motivo"
         ])
-        # ResizeToContents + sem stretch da última seção: as colunas mantêm
-        # sua largura natural e a tabela exibe barra de rolagem horizontal
-        # quando não cabe na largura disponível (monitores menores).
-        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
+        # Larguras fixas e confortáveis por coluna (Interactive permite ao
+        # usuário redimensionar). A tabela mantém ~1280px no total: cabe
+        # inteira em telas largas (centralizada) e rola em telas estreitas.
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
         self.table.horizontalHeader().setStretchLastSection(False)
+        col_widths = [155, 150, 110, 95, 90, 90, 160, 120, 90, 110, 150]
+        for i, w in enumerate(col_widths):
+            self.table.setColumnWidth(i, w)
         self.table.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self.table.setAlternatingRowColors(True)
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
