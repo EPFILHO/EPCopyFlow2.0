@@ -71,11 +71,14 @@ def generate_label_ico(label: str, output_path: str, is_master: bool = False) ->
 
     try:
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
-        images[0].save(
+        # A imagem-base do save tem que ser a MAIOR: o encoder ICO do PIL
+        # descarta qualquer `size` maior que a imagem-base. Salvar com a de
+        # 256x256 como base garante que todos os frames (16→256) entrem no .ico.
+        images[-1].save(
             output_path,
             format="ICO",
             sizes=[(s, s) for s in sizes],
-            append_images=images[1:],
+            append_images=images[:-1],
         )
         logger.debug(f"Ícone '{label}' salvo em {output_path}")
         return True

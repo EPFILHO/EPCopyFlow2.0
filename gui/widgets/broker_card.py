@@ -92,7 +92,9 @@ class BrokerCard(QFrame):
         self._indicators = {}
         for name in ("MT5", "EA", "BRK", "ALG"):
             dot = QLabel("\u25CF")  # ● character
-            dot.setStyleSheet(f"color: {_COLOR_GRAY}; font-size: 18px;")
+            dot.setStyleSheet(
+                f"color: {_COLOR_GRAY}; font-size: 18px; background-color: transparent;"
+            )
             dot.setAlignment(Qt.AlignCenter)
             lbl = QLabel(name)
             lbl.setProperty("class", "card-info")
@@ -173,7 +175,9 @@ class BrokerCard(QFrame):
                     color = _COLOR_RED
                 else:
                     color = _COLOR_GRAY
-                self._indicators[name].setStyleSheet(f"color: {color}; font-size: 18px;")
+                self._indicators[name].setStyleSheet(
+                    f"color: {color}; font-size: 18px; background-color: transparent;"
+                )
 
     def update_account_info(self, data):
         """Atualiza balance / positions_count / profit / daily_profit a partir

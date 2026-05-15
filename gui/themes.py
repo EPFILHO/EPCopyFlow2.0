@@ -480,6 +480,7 @@ QLabel.card-title {{
     color: {c['text']};
     font-size: 14px;
     font-weight: bold;
+    background-color: transparent;
 }}
 QLabel.card-role {{
     color: {role_color};
@@ -492,21 +493,25 @@ QLabel.card-role {{
 QLabel.card-info {{
     color: {c['text_secondary']};
     font-size: 12px;
+    background-color: transparent;
 }}
 QLabel.card-status {{
     color: {status_color};
     font-size: 12px;
     font-weight: bold;
+    background-color: transparent;
 }}
 QLabel.card-profit-positive {{
     color: {c['success']};
     font-size: 13px;
     font-weight: bold;
+    background-color: transparent;
 }}
 QLabel.card-profit-negative {{
     color: {c['error']};
     font-size: 13px;
     font-weight: bold;
+    background-color: transparent;
 }}
 QPushButton.card-connect {{
     background-color: {c['success']};
