@@ -154,6 +154,7 @@ class BrokersPage(QWidget):
                 show_connect_btn=True,
                 on_connect=lambda k=master_key: self._connect_broker(k),
                 on_disconnect=lambda k=master_key: self._disconnect_broker(k),
+                session_label=self.broker_manager.get_session_label(master_key),
                 parent=self,
             )
             self.broker_cards[master_key] = card
@@ -170,6 +171,7 @@ class BrokersPage(QWidget):
                 show_connect_btn=True,
                 on_connect=lambda k=key: self._connect_broker(k),
                 on_disconnect=lambda k=key: self._disconnect_broker(k),
+                session_label=self.broker_manager.get_session_label(key),
                 parent=self,
             )
             self.broker_cards[key] = card

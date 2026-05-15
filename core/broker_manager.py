@@ -14,6 +14,7 @@ import threading
 from PySide6.QtCore import QObject, Signal
 
 from core.win_process import disable_power_throttling
+from core.icon_generator import generate_label_ico
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +47,11 @@ class BrokerManager(QObject):
         # Reentrant lock: alguns fluxos chamam métodos públicos a partir de
         # outros que já seguram o lock (ex.: modify_broker → disconnect_broker).
         self._state_lock = threading.RLock()
+
+        # Sessão: master sempre = "M"; slaves recebem "1", "2", ... na ordem
+        # em que conectam pela primeira vez nesta sessão. Reseta no restart.
+        self._session_labels: dict[str, str] = {}
+        self._session_slave_counter = 0
 
         logger.debug("BrokerManager inicializado.")
 
@@ -366,6 +372,38 @@ class BrokerManager(QObject):
     def get_brokers(self):
         return self.brokers
 
+    def _assign_session_label(self, key: str) -> str:
+        """Atribui (ou retorna) o label de sessão de um broker.
+        Master → 'M'; slaves → '1', '2', ... na ordem de primeira conexão.
+        Idempotente: chamadas repetidas retornam o mesmo valor.
+        """
+        if key in self._session_labels:
+            return self._session_labels[key]
+        is_master = self.brokers.get(key, {}).get("role") == "master"
+        if is_master:
+            label = "M"
+        else:
+            self._session_slave_counter += 1
+            label = str(self._session_slave_counter)
+        self._session_labels[key] = label
+        return label
+
+    def _write_instance_icon(self, key: str, label: str):
+        """Gera Terminal.ico no diretório da instância MT5.
+        Falha silenciosamente — não é crítico se o ícone não for criado.
+        """
+        is_master = self.brokers.get(key, {}).get("role") == "master"
+        icon_path = os.path.join(self.instances_dir, key, "Terminal.ico")
+        try:
+            generate_label_ico(label, icon_path, is_master=is_master)
+        except Exception as e:
+            logger.warning(f"Falha ao gerar Terminal.ico para {key}: {e}")
+
+    def get_session_label(self, key: str) -> str | None:
+        """Retorna o label da sessão atual para o broker, ou None se ainda
+        não foi atribuído (broker nunca conectou nesta sessão)."""
+        return self._session_labels.get(key)
+
     def connect_broker(self, key):
         """Inicia o MT5 do broker (não-bloqueante).
 
@@ -399,6 +437,11 @@ class BrokerManager(QObject):
         if not os.path.exists(instance_path):
             logger.error(f"Instância MT5 não encontrada para {key}.")
             return False
+
+        # Atribui label de sessão (M / 1 / 2 / ...) e gera Terminal.ico antes
+        # de iniciar o terminal, pra que o ícone esteja disponível desde o boot.
+        label = self._assign_session_label(key)
+        self._write_instance_icon(key, label)
 
         # Estado otimista: marca como conectado pra UI atualizar imediatamente.
         with self._state_lock:

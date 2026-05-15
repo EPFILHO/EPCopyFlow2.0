@@ -149,7 +149,9 @@ class DashboardPage(QWidget):
         # antes de ser re-parented pelo addWidget — evita "janelinhas piscando".
         if master_key:
             card = BrokerCard(master_key, brokers[master_key],
-                              is_connected=(master_key in connected), parent=self)
+                              is_connected=(master_key in connected),
+                              session_label=self.broker_manager.get_session_label(master_key),
+                              parent=self)
             self.broker_cards[master_key] = card
             self.master_area.insertWidget(0, card)
         else:
@@ -166,7 +168,9 @@ class DashboardPage(QWidget):
 
         for i, key in enumerate(slave_keys):
             card = BrokerCard(key, brokers[key],
-                              is_connected=(key in connected), parent=self)
+                              is_connected=(key in connected),
+                              session_label=self.broker_manager.get_session_label(key),
+                              parent=self)
             self.broker_cards[key] = card
             self.slaves_grid.addWidget(card)
 
