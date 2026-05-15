@@ -80,12 +80,12 @@ int g_pos_cache_size = 0;
 bool g_register_sent = false;          // true quando REGISTER foi enviado com sucesso
 int  g_register_retries = 0;           // Contador de tentativas
 
-//--- OrderSendAsync: mapa de requests pendentes (request_id MQL5 → zmq_request_id)
-//    Quando o broker responde, OnTradeTransaction recebe o resultado e envia a resposta ZMQ.
+//--- OrderSendAsync: mapa de requests pendentes (request_id MQL5 → tcp_request_id)
+//    Quando o broker responde, OnTradeTransaction recebe o resultado e envia a resposta TCP.
 #define MAX_PENDING_REQUESTS 64
 struct PendingTradeRequest {
    ulong  mql_request_id;     // request_id retornado por OrderSendAsync
-   string zmq_request_id;     // request_id do Python (para enviar resposta via ZMQ)
+   string tcp_request_id;     // request_id do Python (para enviar resposta via TCP)
    ulong  created_at;         // GetTickCount64() — para timeout/cleanup
    bool   is_used;            // slot ativo?
 };
@@ -423,14 +423,14 @@ void InitPendingRequests()
       g_pending_requests[i].is_used = false;
 }
 
-bool AddPendingRequest(ulong mql_request_id, string zmq_request_id)
+bool AddPendingRequest(ulong mql_request_id, string tcp_request_id)
 {
    for(int i = 0; i < MAX_PENDING_REQUESTS; i++)
    {
       if(!g_pending_requests[i].is_used)
       {
          g_pending_requests[i].mql_request_id = mql_request_id;
-         g_pending_requests[i].zmq_request_id = zmq_request_id;
+         g_pending_requests[i].tcp_request_id = tcp_request_id;
          g_pending_requests[i].created_at = GetTickCount64();
          g_pending_requests[i].is_used = true;
          return true;
@@ -446,9 +446,9 @@ string FindAndRemovePendingRequest(ulong mql_request_id)
    {
       if(g_pending_requests[i].is_used && g_pending_requests[i].mql_request_id == mql_request_id)
       {
-         string zmq_id = g_pending_requests[i].zmq_request_id;
+         string tcp_id = g_pending_requests[i].tcp_request_id;
          g_pending_requests[i].is_used = false;
-         return zmq_id;
+         return tcp_id;
       }
    }
    return "";
@@ -462,10 +462,10 @@ void CleanupStalePendingRequests()
    {
       if(g_pending_requests[i].is_used && (now - g_pending_requests[i].created_at) > 30000)
       {
-         PrintFormat("WARN: Pending request expirado: zmq_id=%s, mql_id=%llu",
-                     g_pending_requests[i].zmq_request_id, g_pending_requests[i].mql_request_id);
+         PrintFormat("WARN: Pending request expirado: tcp_id=%s, mql_id=%llu",
+                     g_pending_requests[i].tcp_request_id, g_pending_requests[i].mql_request_id);
          // Envia timeout para o Python
-         SendErrorResponse(g_pending_requests[i].zmq_request_id, "Trade timeout (30s) no EA");
+         SendErrorResponse(g_pending_requests[i].tcp_request_id, "Trade timeout (30s) no EA");
          g_pending_requests[i].is_used = false;
       }
    }
@@ -974,7 +974,7 @@ void HandleTradeBuyCommand(const string request_id, JSONNode &payload)
    }
 
    if(InpDebugLog)
-      PrintFormat("OrderSendAsync BUY: symbol=%s, vol=%.2f, mql_req=%u, zmq_req=%s",
+      PrintFormat("OrderSendAsync BUY: symbol=%s, vol=%.2f, mql_req=%u, tcp_req=%s",
                   symbol, volume, res.request_id, request_id);
 }
 
@@ -1035,7 +1035,7 @@ void HandleTradeSellCommand(const string request_id, JSONNode &payload)
    }
 
    if(InpDebugLog)
-      PrintFormat("OrderSendAsync SELL: symbol=%s, vol=%.2f, mql_req=%u, zmq_req=%s",
+      PrintFormat("OrderSendAsync SELL: symbol=%s, vol=%.2f, mql_req=%u, tcp_req=%s",
                   symbol, volume, res.request_id, request_id);
 }
 
@@ -1116,7 +1116,7 @@ void HandleTradePositionPartialCommand(const string request_id, JSONNode &payloa
    }
 
    if(InpDebugLog)
-      PrintFormat("OrderSendAsync PARTIAL: ticket=%lld, vol=%.2f, mql_req=%u, zmq_req=%s",
+      PrintFormat("OrderSendAsync PARTIAL: ticket=%lld, vol=%.2f, mql_req=%u, tcp_req=%s",
                   ticket, volume, res.request_id, request_id);
 }
 
@@ -1175,7 +1175,7 @@ void HandleTradePositionCloseIdCommand(const string request_id, JSONNode &payloa
    }
 
    if(InpDebugLog)
-      PrintFormat("OrderSendAsync CLOSE: ticket=%lld, symbol=%s, mql_req=%u, zmq_req=%s",
+      PrintFormat("OrderSendAsync CLOSE: ticket=%lld, symbol=%s, mql_req=%u, tcp_req=%s",
                   ticket, symbol, res.request_id, request_id);
 }
 
@@ -1899,12 +1899,12 @@ void OnTradeTransaction(const MqlTradeTransaction &trans, const MqlTradeRequest 
    // ao Python para qualquer retcode (sucesso ou erro).
    if(result.request_id > 0)
    {
-      string zmq_id = FindAndRemovePendingRequest((ulong)result.request_id);
-      if(zmq_id != "")
+      string tcp_id = FindAndRemovePendingRequest((ulong)result.request_id);
+      if(tcp_id != "")
       {
          JSONNode async_response;
          async_response["type"] = "RESPONSE";
-         async_response["request_id"] = zmq_id;
+         async_response["request_id"] = tcp_id;
 
          if(result.retcode == TRADE_RETCODE_DONE || result.retcode == TRADE_RETCODE_PLACED
             || result.retcode == TRADE_RETCODE_DONE_PARTIAL)
@@ -1933,8 +1933,8 @@ void OnTradeTransaction(const MqlTradeTransaction &trans, const MqlTradeRequest 
          SendJsonMessage(async_response, "Command");
 
          if(InpDebugLog)
-            PrintFormat("Async RESPONSE enviado: zmq_req=%s, retcode=%d, deal=%lld",
-                        zmq_id, result.retcode, result.deal);
+            PrintFormat("Async RESPONSE enviado: tcp_req=%s, retcode=%d, deal=%lld",
+                        tcp_id, result.retcode, result.deal);
       }
    }
 
