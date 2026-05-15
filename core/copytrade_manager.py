@@ -470,7 +470,9 @@ class CopyTradeManager(QObject):
         if is_reversal_event:
             opposite = 0 if order_type == 1 else 1
             self._master_event_dedup[(position_id, timestamp_mql, opposite)] = now
-        self._master_event_dedup = {k: v for k, v in self._master_event_dedup.items() if now - v < 10}
+        # Evict expired entries only when dict grows large (amortized O(1)).
+        if len(self._master_event_dedup) > 200:
+            self._master_event_dedup = {k: v for k, v in self._master_event_dedup.items() if now - v < 10}
 
         # ── Serializar por position_id ──
         # Garante que BUY completa antes de CLOSE para o mesmo position_id.
@@ -1434,7 +1436,7 @@ class CopyTradeManager(QObject):
                 f"EMERGÊNCIA: Fechado {symbol} ticket={ticket} em {broker_key}")
             return True, ""
 
-        error = close_response.get("message", "erro")
+        error = close_response.get("error_message", "") or close_response.get("message", "erro")
         self._insert_history(
             master_broker or broker_key, ticket, symbol,
             "EMERGENCY_CLOSE", volume,

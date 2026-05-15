@@ -131,9 +131,6 @@ class HistoryPage(QWidget):
             "Data/Hora", "Master", "Ticket M", "Simbolo", "Acao",
             "Lote M", "Slave", "Ticket S", "Lote S", "Status", "Motivo"
         ])
-        # Larguras fixas e confortáveis por coluna (Interactive permite ao
-        # usuário redimensionar). A tabela mantém ~1280px no total: cabe
-        # inteira em telas largas (centralizada) e rola em telas estreitas.
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
         self.table.horizontalHeader().setStretchLastSection(False)
         col_widths = [155, 150, 110, 95, 90, 90, 160, 120, 90, 110, 150]
@@ -143,23 +140,7 @@ class HistoryPage(QWidget):
         self.table.setAlternatingRowColors(True)
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
-        # Tabela centralizada: stretches dos lados a empurram pro meio quando
-        # o conteúdo cabe; quando não cabe, os stretches colapsam e a tabela
-        # usa toda a largura (com barra de rolagem horizontal).
-        table_row = QHBoxLayout()
-        table_row.addStretch()
-        table_row.addWidget(self.table)
-        table_row.addStretch()
-        layout.addLayout(table_row, 1)
-
-    def _adjust_table_width(self):
-        """Limita a largura máxima da tabela ao tamanho real do conteúdo,
-        pra que os stretches laterais a centralizem."""
-        width = self.table.verticalHeader().width() + self.table.frameWidth() * 2
-        for i in range(self.table.columnCount()):
-            width += self.table.columnWidth(i)
-        width += self.table.verticalScrollBar().sizeHint().width()
-        self.table.setMaximumWidth(width)
+        layout.addWidget(self.table, 1)
 
     def _on_clear_clicked(self):
         dialog = ClearHistoryDialog(self)
@@ -240,5 +221,3 @@ class HistoryPage(QWidget):
                     elif val == "FAILED":
                         item.setForeground(QColor(c['error']))
                 self.table.setItem(i, j, item)
-
-        self._adjust_table_width()
