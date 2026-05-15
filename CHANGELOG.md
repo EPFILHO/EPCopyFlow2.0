@@ -17,6 +17,12 @@ Tipos de mudança:
 
 ## [Unreleased]
 
+### Added
+- **Limpar histórico de copytrades**: botão "Limpar Historico" na página Histórico abre um diálogo (`ClearHistoryDialog`) com opção de apagar tudo ou apagar por intervalo de datas (De/Até). Backend: `CopyTradeManager.clear_trade_history(start_ts, end_ts)` + signal `history_cleared`, executando o `DELETE` no engine thread.
+
+### Changed
+- **Tabela do Histórico com rolagem horizontal**: as colunas usavam `QHeaderView.Stretch` e encolhiam pra caber na largura — em monitores menores ficava ilegível. Trocado para `ResizeToContents` + `setStretchLastSection(False)`: as colunas mantêm a largura natural e surge barra de rolagem horizontal quando necessário.
+
 ### Removed
 - **`copy_dlls` (resquício do ZMQ)**: o método copiava `.dll` de uma pasta `dlls/` que não existe mais — desde a migração ZMQ→TCP nenhuma DLL é necessária. Gerava `ERROR - Erro ao copiar DLLs: [WinError 3]` a cada nova instância criada. Método e a chamada em `setup_portable_instance` removidos.
 

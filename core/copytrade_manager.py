@@ -27,6 +27,7 @@ class CopyTradeManager(QObject):
     # cross-thread; slot na main thread atualiza UI.
     trade_history_ready = Signal(list, str)   # (rows, broker_key_filter)
     today_stats_ready = Signal(dict)          # {"total", "success", "failed"}
+    history_cleared = Signal(int)             # nº de registros removidos
 
     # ──────────────────────────────────────────────
     # Bloco 1 - Inicialização e Banco de Dados
@@ -1508,6 +1509,42 @@ class CopyTradeManager(QObject):
             logger.warning("request_today_stats: engine não wired — ignorado.")
             return
         self.engine.submit(self._fetch_today_stats())
+
+    def clear_trade_history(self, start_ts=None, end_ts=None):
+        """Apaga registros de `copytrade_history`. Fire-and-forget.
+
+        - start_ts e end_ts None → apaga tudo
+        - ambos definidos → apaga o intervalo [start_ts, end_ts]
+        - só start_ts → apaga timestamp >= start_ts
+        - só end_ts → apaga timestamp <= end_ts
+        Resposta via signal `history_cleared`.
+        """
+        if self.engine is None:
+            logger.warning("clear_trade_history: engine não wired — ignorado.")
+            return
+        self.engine.submit(self._clear_trade_history(start_ts, end_ts))
+
+    async def _clear_trade_history(self, start_ts, end_ts):
+        try:
+            if start_ts is None and end_ts is None:
+                cur = self.db.execute("DELETE FROM copytrade_history")
+            elif start_ts is not None and end_ts is not None:
+                cur = self.db.execute(
+                    "DELETE FROM copytrade_history WHERE timestamp BETWEEN ? AND ?",
+                    (start_ts, end_ts))
+            elif start_ts is not None:
+                cur = self.db.execute(
+                    "DELETE FROM copytrade_history WHERE timestamp >= ?", (start_ts,))
+            else:
+                cur = self.db.execute(
+                    "DELETE FROM copytrade_history WHERE timestamp <= ?", (end_ts,))
+            deleted = cur.rowcount
+            self.db.commit()
+            logger.info(f"Histórico limpo: {deleted} registro(s) removido(s).")
+        except Exception as e:
+            logger.error(f"_clear_trade_history falhou: {e}")
+            deleted = 0
+        self.history_cleared.emit(deleted)
 
     async def _fetch_today_stats(self):
         today_start = datetime.datetime.now().replace(
