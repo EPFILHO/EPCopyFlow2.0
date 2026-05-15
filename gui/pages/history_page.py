@@ -140,7 +140,23 @@ class HistoryPage(QWidget):
         self.table.setAlternatingRowColors(True)
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
-        layout.addWidget(self.table, 1)
+        # Tabela centralizada: stretches dos lados a empurram pro meio quando
+        # o conteúdo cabe; quando não cabe, os stretches colapsam e a tabela
+        # usa toda a largura (com barra de rolagem horizontal).
+        table_row = QHBoxLayout()
+        table_row.addStretch()
+        table_row.addWidget(self.table)
+        table_row.addStretch()
+        layout.addLayout(table_row, 1)
+
+    def _adjust_table_width(self):
+        """Limita a largura máxima da tabela ao tamanho real do conteúdo,
+        pra que os stretches laterais a centralizem."""
+        width = self.table.verticalHeader().width() + self.table.frameWidth() * 2
+        for i in range(self.table.columnCount()):
+            width += self.table.columnWidth(i)
+        width += self.table.verticalScrollBar().sizeHint().width()
+        self.table.setMaximumWidth(width)
 
     def _on_clear_clicked(self):
         dialog = ClearHistoryDialog(self)
@@ -221,3 +237,5 @@ class HistoryPage(QWidget):
                     elif val == "FAILED":
                         item.setForeground(QColor(c['error']))
                 self.table.setItem(i, j, item)
+
+        self._adjust_table_width()

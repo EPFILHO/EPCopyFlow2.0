@@ -562,8 +562,28 @@ QDialog {{
 }}
 QLabel {{
     color: {c['text']};
+    background-color: transparent;
 }}
-QLineEdit, QComboBox, QDoubleSpinBox {{
+QRadioButton {{
+    color: {c['text']};
+    background-color: transparent;
+    spacing: 8px;
+}}
+QRadioButton::indicator {{
+    width: 16px;
+    height: 16px;
+    border-radius: 9px;
+    border: 2px solid {c['border_hover']};
+    background-color: {c['input']};
+}}
+QRadioButton::indicator:hover {{
+    border: 2px solid {c['accent']};
+}}
+QRadioButton::indicator:checked {{
+    border: 2px solid {c['accent']};
+    background-color: {c['accent']};
+}}
+QLineEdit, QComboBox, QDoubleSpinBox, QDateEdit {{
     color: {c['text']};
     background-color: {c['input']};
     border: 1px solid {c['border_hover']};
