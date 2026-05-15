@@ -1372,7 +1372,7 @@ class CopyTradeManager(QObject):
         """Fase 2: GET_POSITIONS para fechar posições órfãs não cobertas pelo DB."""
         request_id = f"positions_recon_{broker_key}_{time.time_ns()}"
         response = await self.tcp_router.send_command_to_broker(
-            broker_key, "POSITIONS", {}, request_id
+            broker_key, "GET_POSITIONS", {}, request_id
         )
         if response.get("status") != "OK":
             logger.warning(f"Reconciliação: falha ao obter posições de {broker_key}")
