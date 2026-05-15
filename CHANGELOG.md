@@ -17,6 +17,12 @@ Tipos de mudança:
 
 ## [Unreleased]
 
+### Removed
+- **`copy_dlls` (resquício do ZMQ)**: o método copiava `.dll` de uma pasta `dlls/` que não existe mais — desde a migração ZMQ→TCP nenhuma DLL é necessária. Gerava `ERROR - Erro ao copiar DLLs: [WinError 3]` a cada nova instância criada. Método e a chamada em `setup_portable_instance` removidos.
+
+### Fixed
+- **Linhas espúrias atrás dos QLabels (Dashboard, cards)**: a regra global `QWidget { background-color: surface }` pintava o fundo de todo `QLabel`, fazendo eles aparecerem como retângulos da cor `surface` sobre fundos de cor diferente (cards, stat-cards). Adicionada regra global `QLabel { background-color: transparent }` em `global_app_style()` — restaura a transparência natural do `QLabel`; widgets que precisam de fundo (badge, `card-role`) sobrescrevem por especificidade.
+
 ## [0.2.0] — 2026-05-15
 
 ### Added

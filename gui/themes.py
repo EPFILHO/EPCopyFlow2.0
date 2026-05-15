@@ -661,6 +661,9 @@ QWidget {{
     background-color: {c['surface']};
     color: {c['text']};
 }}
+QLabel {{
+    background-color: transparent;
+}}
 QComboBox {{
     background-color: {c['input']};
     color: {c['text']};

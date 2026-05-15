@@ -256,7 +256,6 @@ class BrokerManager(QObject):
             try:
                 os.makedirs(self.instances_dir, exist_ok=True)
                 shutil.copytree(self.base_mt5_path, instance_path)
-                self.copy_dlls(instance_path)
                 self.copy_expert(instance_path)
                 if sys.platform.startswith("win"):
                     import win32api, win32con
@@ -266,20 +265,6 @@ class BrokerManager(QObject):
                 logger.error(f"Erro ao criar instância para {key}: {e}")
                 return None
         return executable
-
-    def copy_dlls(self, instance_path):
-        source_dll_path = os.path.join(self.root_path, "dlls")
-        dest_dll_path = os.path.join(instance_path, "MQL5", "Libraries")
-        os.makedirs(dest_dll_path, exist_ok=True)
-        try:
-            for filename in os.listdir(source_dll_path):
-                if filename.endswith(".dll"):
-                    shutil.copy2(
-                        os.path.join(source_dll_path, filename),
-                        os.path.join(dest_dll_path, filename)
-                    )
-        except Exception as e:
-            logger.error(f"Erro ao copiar DLLs: {e}")
 
     def copy_expert(self, instance_path):
         source = self._locate_compiled_ea()
