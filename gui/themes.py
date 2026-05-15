@@ -200,21 +200,25 @@ QLabel.page-title {{
     font-size: 20px;
     font-weight: bold;
     padding: 8px 0px;
+    background-color: transparent;
 }}
 QLabel.section-title {{
     color: {c['text_secondary']};
     font-size: 14px;
     font-weight: bold;
     padding: 4px 0px;
+    background-color: transparent;
 }}
 QLabel.stat-value {{
     color: {c['accent']};
     font-size: 24px;
     font-weight: bold;
+    background-color: transparent;
 }}
 QLabel.stat-label {{
     color: {c['text_disabled']};
     font-size: 12px;
+    background-color: transparent;
 }}
 QFrame.stat-card {{
     background-color: {c['card']};

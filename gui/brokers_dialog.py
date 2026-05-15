@@ -142,6 +142,20 @@ class BrokersDialog(QDialog):
         for widget in [self.name_edit, self.client_edit, self.broker_name_edit,
                        self.login_edit, self.password_edit, self.server_edit]:
             widget.textChanged.connect(self._update_buttons)
+        # Nome do titular e nome da corretora: força caixa alta ao digitar.
+        for field in (self.name_edit, self.broker_name_edit):
+            field.textEdited.connect(
+                lambda text, f=field: self._force_upper(f, text)
+            )
+
+    @staticmethod
+    def _force_upper(field, text):
+        """Reescreve o conteúdo do campo em caixa alta, preservando o cursor."""
+        upper = text.upper()
+        if text != upper:
+            pos = field.cursorPosition()
+            field.setText(upper)
+            field.setCursorPosition(pos)
 
     def _on_role_changed(self, _idx):
         """Desabilita multiplicador quando é Master."""
@@ -181,9 +195,11 @@ class BrokersDialog(QDialog):
             return
         key = self._broker_keys[idx]
         broker = self.broker_manager.get_brokers().get(key, {})
-        self.name_edit.setText(broker.get("name", ""))
+        self.name_edit.setText(broker.get("name", "").upper())
         self.client_edit.setText(broker.get("client", ""))
-        self.broker_name_edit.setText(broker.get("broker_name", key.split("-")[0]))
+        self.broker_name_edit.setText(
+            broker.get("broker_name", key.split("-")[0]).upper()
+        )
         self.login_edit.setText(broker.get("login", ""))
         self.password_edit.setText(broker.get("password", ""))
         self.server_edit.setText(broker.get("server", ""))
@@ -254,9 +270,9 @@ class BrokersDialog(QDialog):
             return
 
         key = self.broker_manager.add_broker(
-            name=self.name_edit.text().strip(),
+            name=self.name_edit.text().strip().upper(),
             client=self.client_edit.text().strip(),
-            broker_name=self.broker_name_edit.text().strip(),
+            broker_name=self.broker_name_edit.text().strip().upper(),
             login=self.login_edit.text().strip(),
             password=self.password_edit.text().strip(),
             server=self.server_edit.text().strip(),
@@ -289,9 +305,9 @@ class BrokersDialog(QDialog):
         broker = self.broker_manager.get_brokers().get(old_key, {})
         new_key = self.broker_manager.modify_broker(
             old_key=old_key,
-            name=self.name_edit.text().strip(),
+            name=self.name_edit.text().strip().upper(),
             client=self.client_edit.text().strip(),
-            broker_name=self.broker_name_edit.text().strip(),
+            broker_name=self.broker_name_edit.text().strip().upper(),
             login=self.login_edit.text().strip(),
             password=self.password_edit.text().strip(),
             server=self.server_edit.text().strip(),
