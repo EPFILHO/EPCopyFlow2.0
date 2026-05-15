@@ -142,6 +142,10 @@ QFrame#header {{
     border-bottom: 1px solid {c['border']};
     padding: 4px 16px;
 }}
+QFrame#header QLabel {{
+    background-color: transparent;
+    border: none;
+}}
 QLabel.header-title {{
     color: {c['accent']};
     font-size: 16px;

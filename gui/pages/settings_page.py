@@ -9,7 +9,6 @@ from PySide6.QtWidgets import (
     QLineEdit, QSpinBox, QCheckBox, QFrame, QMessageBox, QComboBox,
     QFileDialog, QScrollArea
 )
-from PySide6.QtCore import Qt
 from gui import themes
 
 logger = logging.getLogger(__name__)
@@ -29,6 +28,23 @@ class SettingsPage(QWidget):
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
 
+        # Barra fixa: título à esquerda + botão Salvar à direita. Fica fora
+        # do QScrollArea, então não rola junto com o conteúdo.
+        header_bar = QHBoxLayout()
+        header_bar.setContentsMargins(24, 16, 24, 8)
+
+        title = QLabel("Configuracoes")
+        title.setProperty("class", "page-title")
+        header_bar.addWidget(title)
+        header_bar.addStretch()
+
+        save_btn = QPushButton("Salvar")
+        save_btn.setProperty("class", "save-btn")
+        save_btn.setMaximumWidth(200)
+        save_btn.clicked.connect(self._save_settings)
+        header_bar.addWidget(save_btn)
+        outer.addLayout(header_bar)
+
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.NoFrame)
@@ -38,12 +54,8 @@ class SettingsPage(QWidget):
         scroll.setWidget(content)
 
         layout = QVBoxLayout(content)
-        layout.setContentsMargins(24, 16, 24, 16)
+        layout.setContentsMargins(24, 8, 24, 16)
         layout.setSpacing(16)
-
-        title = QLabel("Configuracoes")
-        title.setProperty("class", "page-title")
-        layout.addWidget(title)
 
         # Larguras fixas dos controles — campos NÃO esticam com a janela.
         FIELD_WIDTH = 220
@@ -193,13 +205,6 @@ class SettingsPage(QWidget):
         layout.addWidget(ct_group)
 
         layout.addStretch()
-
-        # Save button
-        save_btn = QPushButton("Salvar")
-        save_btn.setProperty("class", "save-btn")
-        save_btn.setMaximumWidth(200)
-        save_btn.clicked.connect(self._save_settings)
-        layout.addWidget(save_btn, alignment=Qt.AlignRight)
 
     def _browse_mt5_path(self):
         current = self.mt5_path_edit.text().strip() or os.path.expanduser("~")

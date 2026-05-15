@@ -48,13 +48,6 @@ class BrokerManager(QObject):
         # outros que já seguram o lock (ex.: modify_broker → disconnect_broker).
         self._state_lock = threading.RLock()
 
-        # Sessão: rastreia a ordem de primeira conexão de cada broker. O label
-        # exibido (M / 1 / 2 / ...) é derivado dinamicamente do role atual + dessa
-        # ordem — assim mudar role (master ↔ slave) reatribui os labels na hora.
-        # Reseta no restart do app.
-        self._session_first_connect: dict[str, int] = {}
-        self._session_connect_counter = 0
-
         logger.debug("BrokerManager inicializado.")
 
     # ──────────────────────────────────────────────
@@ -141,6 +134,8 @@ class BrokerManager(QObject):
         with self._state_lock:
             self.connected_brokers[key] = False
         self.create_mt5_config(key)
+        # Adicionar um slave reordena os números — regera todos os ícones.
+        self._refresh_all_icons()
         logger.info(f"Corretora {key} adicionada (role={role}).")
         self.brokers_updated.emit()
         return key
@@ -161,9 +156,8 @@ class BrokerManager(QObject):
         if os.path.exists(instance_path):
             shutil.rmtree(instance_path, ignore_errors=True)
             logger.info(f"Diretório MT5 de {key} excluído.")
-        # Remove da ordem de sessão e re-renumera slaves restantes.
-        if self._session_first_connect.pop(key, None) is not None:
-            self._refresh_all_session_icons()
+        # Remover um broker re-renumera os slaves restantes.
+        self._refresh_all_icons()
         logger.info(f"Corretora {key} removida.")
         self.brokers_updated.emit()
         return True
@@ -187,7 +181,6 @@ class BrokerManager(QObject):
                 return None
 
         old_data = self.brokers.pop(old_key)
-        old_role = old_data.get("role", "slave")
         if broker_name is None:
             broker_name = old_data.get("broker_name", old_key.split("-")[0])
         new_key = f"{broker_name.upper()}-{login}"
@@ -222,14 +215,8 @@ class BrokerManager(QObject):
             else:
                 self.connected_brokers[new_key] = False
         self.create_mt5_config(new_key)
-
-        # Migra a ordem de primeira conexão se a key mudou e regenera todos
-        # os ícones se o role mudou (labels dos slaves podem ter se reorganizado).
-        if new_key != old_key and old_key in self._session_first_connect:
-            self._session_first_connect[new_key] = self._session_first_connect.pop(old_key)
-        if role != old_role:
-            self._refresh_all_session_icons()
-
+        # Mudança de role/nome reordena os labels — regera todos os ícones.
+        self._refresh_all_icons()
         logger.info(f"Corretora {old_key} modificada para {new_key} (role={role}).")
         self.brokers_updated.emit()
         return new_key
@@ -292,7 +279,11 @@ class BrokerManager(QObject):
             logger.error(f"Erro ao copiar DLLs: {e}")
 
     def copy_expert(self, instance_path):
-        source = os.path.join(self.root_path, "mt5_ea", "EPCopyFlow2.0_EA.ex5")
+        source = self._locate_compiled_ea()
+        if not source:
+            logger.error("EA compilado (.ex5) não encontrado — verifique o "
+                         "'Caminho do EA' em Configurações ou o MT5 base.")
+            return
         dest_dir = os.path.join(instance_path, "MQL5", "Experts")
         os.makedirs(dest_dir, exist_ok=True)
         try:
@@ -307,15 +298,21 @@ class BrokerManager(QObject):
         1. `[CopyTrade] ea_path` em `config.ini` (caminho completo, se setado
            pelo usuário na página Configurações);
         2. `<base_mt5_path>/MQL5/Experts/EPCopyFlow2.0_EA.ex5` (caminho canônico
-           do MT5 modelo).
+           do MT5 modelo);
+        3. `<root_path>/mt5_ea/EPCopyFlow2.0_EA.ex5` (.ex5 que vem junto do app).
 
         Retorna o caminho do arquivo, ou string vazia se nada existir.
         """
         custom = self.config.get('CopyTrade', 'ea_path', fallback='').strip()
         if custom and os.path.exists(custom):
             return custom
-        source = os.path.join(self.base_mt5_path, "MQL5", "Experts", "EPCopyFlow2.0_EA.ex5")
-        return source if os.path.exists(source) else ""
+        for source in (
+            os.path.join(self.base_mt5_path, "MQL5", "Experts", "EPCopyFlow2.0_EA.ex5"),
+            os.path.join(self.root_path, "mt5_ea", "EPCopyFlow2.0_EA.ex5"),
+        ):
+            if os.path.exists(source):
+                return source
+        return ""
 
     def update_ea_in_all_instances(self) -> tuple[int, int]:
         """Copia o .ex5 do MT5 base (ou caminho customizado em config.ini)
@@ -386,32 +383,22 @@ class BrokerManager(QObject):
     def get_brokers(self):
         return self.brokers
 
-    def _mark_first_connect(self, key: str):
-        """Marca o broker como tendo conectado pela primeira vez nesta sessão.
-        Idempotente: chamadas repetidas não alteram a ordem registrada."""
-        if key not in self._session_first_connect:
-            self._session_connect_counter += 1
-            self._session_first_connect[key] = self._session_connect_counter
-
     def get_session_label(self, key: str) -> str | None:
-        """Retorna o label dinâmico do broker:
-        - None se nunca conectou nesta sessão
-        - 'M' se hoje é master
-        - '1', '2', ... pela posição entre os slaves que já conectaram,
-          ordenados por sua ordem de primeira conexão
+        """Retorna o label do broker, derivado do estado atual:
+        - 'M' se é master
+        - '1', '2', ... pela posição em ordem alfabética entre os slaves
+        - None se a key não existe
         """
-        if key not in self._session_first_connect:
+        if key not in self.brokers:
             return None
-        role = self.brokers.get(key, {}).get("role", "slave")
-        if role == "master":
+        if self.brokers[key].get("role", "slave") == "master":
             return "M"
-        slaves_in_order = sorted(
-            (k for k in self._session_first_connect
-             if self.brokers.get(k, {}).get("role", "slave") == "slave"),
-            key=lambda k: self._session_first_connect[k],
+        slave_keys = sorted(
+            k for k, d in self.brokers.items()
+            if d.get("role", "slave") == "slave"
         )
         try:
-            return str(slaves_in_order.index(key) + 1)
+            return str(slave_keys.index(key) + 1)
         except ValueError:
             return None
 
@@ -425,11 +412,11 @@ class BrokerManager(QObject):
         except Exception as e:
             logger.warning(f"Falha ao gerar Terminal.ico para {key}: {e}")
 
-    def _refresh_all_session_icons(self):
-        """Regera Terminal.ico para todo broker que já conectou nesta sessão.
-        Chamado quando um role muda, pra refletir o novo label imediatamente."""
-        for key in list(self._session_first_connect.keys()):
-            if key not in self.brokers:
+    def _refresh_all_icons(self):
+        """Regera Terminal.ico de todo broker cuja instância já existe em disco.
+        Chamado quando a lista/roles mudam, pra manter os labels em sincronia."""
+        for key in list(self.brokers.keys()):
+            if not os.path.isdir(os.path.join(self.instances_dir, key)):
                 continue
             label = self.get_session_label(key)
             if label:
@@ -469,9 +456,8 @@ class BrokerManager(QObject):
             logger.error(f"Instância MT5 não encontrada para {key}.")
             return False
 
-        # Registra ordem de primeira conexão e gera Terminal.ico antes do
-        # terminal iniciar, pra que o ícone esteja disponível desde o boot.
-        self._mark_first_connect(key)
+        # Gera Terminal.ico antes do terminal iniciar, pra que o ícone esteja
+        # disponível desde o boot.
         label = self.get_session_label(key)
         if label:
             self._write_instance_icon(key, label)
