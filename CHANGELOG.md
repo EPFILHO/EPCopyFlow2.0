@@ -17,6 +17,20 @@ Tipos de mudança:
 
 ## [Unreleased]
 
+## [0.2.0] — 2026-05-15
+
+### Added
+- **Ícone por instância MT5 (`Terminal.ico`)**: ao conectar um broker, o app gera um `Terminal.ico` na pasta da instância (`.mt5_instances/<KEY>/`), que o MT5 usa como ícone da janela. Master recebe um círculo laranja com "M"; slaves recebem círculos azuis numerados. Novo módulo `core/icon_generator.py` (gera o `.ico` com Pillow). `requirements.txt` adicionado com `PySide6`/`psutil`/`Pillow`.
+- **Badge de identificação no card do broker**: cada `BrokerCard` exibe um badge (M / 1 / 2 / ...) no canto superior esquerdo, na mesma cor do ícone da instância.
+
+### Changed
+- **Label do broker derivado da ordem alfabética**: o número de cada slave segue a ordem alfabética da chave do broker; master é sempre "M". Recalculado a cada add/modify/remove, mantendo a numeração consistente.
+
+### Fixed
+- **Header: caixas espúrias atrás de Internet/CPU/RAM**: `QLabel`s dentro do `QFrame#header` renderizavam com fundo/borda visíveis em todos os temas. Forçado `background-color: transparent` e `border: none`.
+- **SettingsPage: título e botão Salvar fixos**: "Configuracoes" e "Salvar" foram movidos pra uma barra fixa no topo, fora do `QScrollArea` — não rolam mais junto com o conteúdo.
+- **`copy_expert` não usa mais caminho hardcoded**: a origem do `.ex5` é resolvida por `_locate_compiled_ea()` (caminho configurado em `[CopyTrade] ea_path`, ou `<base MT5>/MQL5/Experts/EPCopyFlow2.0_EA.ex5`). Quando o EA não é encontrado, o app emite o signal `ea_not_found` e exibe uma notificação instruindo o usuário a copiar o arquivo pra pasta correta.
+
 ### Fixed
 - **SettingsPage: títulos de seção colando nas rows abaixo**: o problema visual ("Aparencia", "MetaTrader 5", "Aplicacao", "CopyTrade" colados em cima dos primeiros controles) vinha de padding CSS insuficiente nas `QLabel.section-title`. Tornado robusto com `setMinimumHeight(28)` em cada title, `setSpacing(12)` (era 10) e `setContentsMargins(0, 0, 0, 0)` nos `QVBoxLayout` internos pra o padding ficar só com o `QFrame.settings-group`.
 - **EA renomeado para `EPCopyFlow2.0_EA`**: nome real do EA no MT5 do usuário é `EPCopyFlow2.0_EA` (com ponto), não `EPCopyFlow2_EA`. Arquivo renomeado via `git mv`, header atualizado, todas as referências em `core/broker_manager.py`, `gui/pages/brokers_page.py` e `gui/pages/settings_page.py` apontam para `EPCopyFlow2.0_EA.ex5` agora.
@@ -261,7 +275,8 @@ Tipos de mudança:
 - Monitor de processo MT5 (detecta crash e reinicia)
 - Monitor de internet (detecta queda de conexão)
 
-[Unreleased]: https://github.com/EPFILHO/EPCopyFlow2.0/compare/v0.1.9...HEAD
+[Unreleased]: https://github.com/EPFILHO/EPCopyFlow2.0/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/EPFILHO/EPCopyFlow2.0/compare/v0.1.9...v0.2.0
 [0.1.9]: https://github.com/EPFILHO/EPCopyFlow2.0/compare/v0.1.8...v0.1.9
 [0.1.8]: https://github.com/EPFILHO/EPCopyFlow2.0/compare/v0.1.7...v0.1.8
 [0.1.7]: https://github.com/EPFILHO/EPCopyFlow2.0/compare/v0.1.6...v0.1.7

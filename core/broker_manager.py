@@ -21,6 +21,9 @@ logger = logging.getLogger(__name__)
 
 class BrokerManager(QObject):
     brokers_updated = Signal()
+    # Emitido quando o .ex5 do EA não é encontrado. Carrega o caminho onde
+    # o arquivo é esperado, pra GUI instruir o usuário a copiá-lo pra lá.
+    ea_not_found = Signal(str)
 
     # ──────────────────────────────────────────────
     # Bloco 1 - Inicialização
@@ -281,8 +284,11 @@ class BrokerManager(QObject):
     def copy_expert(self, instance_path):
         source = self._locate_compiled_ea()
         if not source:
-            logger.error("EA compilado (.ex5) não encontrado — verifique o "
-                         "'Caminho do EA' em Configurações ou o MT5 base.")
+            expected = os.path.join(self.base_mt5_path, "MQL5", "Experts",
+                                    "EPCopyFlow2.0_EA.ex5")
+            logger.error(f"EA compilado (.ex5) não encontrado. Copie o arquivo "
+                         f"para: {expected}")
+            self.ea_not_found.emit(expected)
             return
         dest_dir = os.path.join(instance_path, "MQL5", "Experts")
         os.makedirs(dest_dir, exist_ok=True)
@@ -298,21 +304,16 @@ class BrokerManager(QObject):
         1. `[CopyTrade] ea_path` em `config.ini` (caminho completo, se setado
            pelo usuário na página Configurações);
         2. `<base_mt5_path>/MQL5/Experts/EPCopyFlow2.0_EA.ex5` (caminho canônico
-           do MT5 modelo);
-        3. `<root_path>/mt5_ea/EPCopyFlow2.0_EA.ex5` (.ex5 que vem junto do app).
+           do MT5 modelo).
 
-        Retorna o caminho do arquivo, ou string vazia se nada existir.
+        Retorna o caminho do arquivo, ou string vazia se nada existir — nesse
+        caso o usuário precisa copiar o .ex5 manualmente pra pasta esperada.
         """
         custom = self.config.get('CopyTrade', 'ea_path', fallback='').strip()
         if custom and os.path.exists(custom):
             return custom
-        for source in (
-            os.path.join(self.base_mt5_path, "MQL5", "Experts", "EPCopyFlow2.0_EA.ex5"),
-            os.path.join(self.root_path, "mt5_ea", "EPCopyFlow2.0_EA.ex5"),
-        ):
-            if os.path.exists(source):
-                return source
-        return ""
+        source = os.path.join(self.base_mt5_path, "MQL5", "Experts", "EPCopyFlow2.0_EA.ex5")
+        return source if os.path.exists(source) else ""
 
     def update_ea_in_all_instances(self) -> tuple[int, int]:
         """Copia o .ex5 do MT5 base (ou caminho customizado em config.ini)

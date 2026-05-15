@@ -275,6 +275,8 @@ class MainWindow(QMainWindow):
             self.copytrade_manager.copy_trade_failed.connect(self.dashboard_page.refresh_stats)
         # Alien trade detection
         self.tcp_message_handler.alien_trade_detected.connect(self._on_alien_trade_detected)
+        # EA (.ex5) ausente — instrui o usuário a copiá-lo pra pasta correta
+        self.broker_manager.ea_not_found.connect(self._on_ea_not_found)
 
     @Slot(str)
     def _handle_tcp_messages(self, message: str):
@@ -316,6 +318,16 @@ class MainWindow(QMainWindow):
         detail = f"{broker}: {deal_type} {symbol} {volume} lote(s)"
         self.notification_center.push(
             NotificationLevel.ERROR, "Alien Trade detectado", detail
+        )
+
+    @Slot(str)
+    def _on_ea_not_found(self, expected_path: str):
+        """O .ex5 do EA não foi localizado — avisa o usuário onde colocá-lo."""
+        self.notification_center.push(
+            NotificationLevel.ERROR,
+            "EA nao encontrado",
+            f"Copie o arquivo do EA (.ex5) para:\n{expected_path}\n\n"
+            f"Ou defina o caminho do EA em Configuracoes.",
         )
 
     def _update_all_indicators(self):
