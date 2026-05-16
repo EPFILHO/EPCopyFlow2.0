@@ -410,7 +410,6 @@ class CopyTradeManager(QObject):
         # Extrair informações do trade
         symbol = request_data.get("symbol", "")
         volume = request_data.get("volume", 0)
-        price = request_data.get("price", 0)
         sl = request_data.get("sl", 0)
         tp = request_data.get("tp", 0)
         order_type = request_data.get("type", 0)
@@ -511,7 +510,7 @@ class CopyTradeManager(QObject):
 
                 tasks.append(self._replicate_to_slave(
                     slave_key, master_broker, deal_ticket, position_id,
-                    trade_action, symbol, volume, order_type, price, sl, tp,
+                    trade_action, symbol, volume, order_type, sl, tp,
                     reversal_new_direction=new_direction if is_reversal_event else None,
                     reversal_new_volume=new_volume if is_reversal_event else None,
                     master_info_before=master_info_before,
@@ -717,7 +716,7 @@ class CopyTradeManager(QObject):
     async def _replicate_to_slave(self, slave_key: str, master_broker: str,
                                    deal_ticket: int, position_id: int,
                                    trade_action: str, symbol: str, volume: float,
-                                   order_type: int, price: float, sl: float, tp: float,
+                                   order_type: int, sl: float, tp: float,
                                    reversal_new_direction: str = None,
                                    reversal_new_volume: float = None,
                                    master_info_before: dict = None):
@@ -784,7 +783,7 @@ class CopyTradeManager(QObject):
             logger.info(f"    🔄 REVERSAL sem posição: abrindo {new_dir} {slave_lot} direto")
             await self._send_open_command(
                 slave_key, master_broker, deal_ticket, position_id, symbol,
-                new_vol, slave_lot, new_dir, 0.0, sl, tp
+                new_vol, slave_lot, new_dir, sl, tp
             )
             return
 
@@ -837,7 +836,7 @@ class CopyTradeManager(QObject):
                 return
             await self._send_open_command(
                 slave_key, master_broker, deal_ticket, position_id, symbol,
-                volume, slave_lot, trade_action, price, sl, tp
+                volume, slave_lot, trade_action, sl, tp
             )
             return
 
@@ -853,7 +852,7 @@ class CopyTradeManager(QObject):
             logger.info(f"    📊 ADD: slave {existing_slave_vol} {existing_direction} += {slave_lot} (master +{volume})")
             await self._send_add_command(
                 slave_key, master_broker, deal_ticket, position_id, symbol,
-                volume, slave_lot, trade_action, existing_slave_vol, price, sl, tp
+                volume, slave_lot, trade_action, existing_slave_vol, sl, tp
             )
             return
 
@@ -1003,10 +1002,13 @@ class CopyTradeManager(QObject):
 
     async def _send_open_command(self, slave_key, master_broker, deal_ticket, position_id,
                                   symbol, master_volume, slave_lot, direction,
-                                  price, sl, tp):
+                                  sl, tp):
         command = f"TRADE_ORDER_TYPE_{direction}"
+        # price=0.0: o slave é outra corretora, com cotação própria. O EA usa
+        # o ask/bid local quando price<=0. Encaminhar o preço do master causa
+        # rejeição por desvio quando as cotações divergem entre brokers.
         payload = {"symbol": symbol, "volume": float(slave_lot),
-                   "price": price, "sl": sl, "tp": tp,
+                   "price": 0.0, "sl": sl, "tp": tp,
                    "deviation": 10, "comment": f"CT:{position_id}"}
         record_id = self._insert_history(master_broker, deal_ticket, symbol, direction,
                                           master_volume, slave_key, 0, slave_lot, "PENDING")
@@ -1036,10 +1038,11 @@ class CopyTradeManager(QObject):
 
     async def _send_add_command(self, slave_key, master_broker, deal_ticket, position_id,
                                  symbol, master_volume, slave_lot, direction,
-                                 existing_slave_vol, price, sl, tp):
+                                 existing_slave_vol, sl, tp):
         command = f"TRADE_ORDER_TYPE_{direction}"
+        # price=0.0: ver _send_open_command — o slave usa a cotação local.
         payload = {"symbol": symbol, "volume": float(slave_lot),
-                   "price": price, "sl": sl, "tp": tp,
+                   "price": 0.0, "sl": sl, "tp": tp,
                    "deviation": 10, "comment": f"CT:{position_id}"}
         record_id = self._insert_history(master_broker, deal_ticket, symbol, direction,
                                           master_volume, slave_key, 0, slave_lot, "PENDING")
