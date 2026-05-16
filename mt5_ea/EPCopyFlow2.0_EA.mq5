@@ -88,6 +88,12 @@ struct PendingTradeRequest {
    string tcp_request_id;     // request_id do Python (para enviar resposta via TCP)
    ulong  created_at;         // GetTickCount64() — para timeout/cleanup
    bool   is_used;            // slot ativo?
+   // Contexto para verificação no timeout (#4): se a resposta async se perder
+   // (result.request_id pode chegar 0 em execução assíncrona de bolsa), o EA
+   // checa o estado real antes de reportar erro ao Python.
+   string symbol;             // símbolo da ordem
+   ulong  position_ticket;    // ticket alvo (close/partial); 0 numa abertura
+   int    verify_kind;        // 0=abertura, 1=close total, 2=close parcial
 };
 PendingTradeRequest g_pending_requests[MAX_PENDING_REQUESTS];
 
@@ -423,16 +429,20 @@ void InitPendingRequests()
       g_pending_requests[i].is_used = false;
 }
 
-bool AddPendingRequest(ulong mql_request_id, string tcp_request_id)
+bool AddPendingRequest(ulong mql_request_id, string tcp_request_id,
+                       string symbol, ulong position_ticket, int verify_kind)
 {
    for(int i = 0; i < MAX_PENDING_REQUESTS; i++)
    {
       if(!g_pending_requests[i].is_used)
       {
-         g_pending_requests[i].mql_request_id = mql_request_id;
-         g_pending_requests[i].tcp_request_id = tcp_request_id;
-         g_pending_requests[i].created_at = GetTickCount64();
-         g_pending_requests[i].is_used = true;
+         g_pending_requests[i].mql_request_id  = mql_request_id;
+         g_pending_requests[i].tcp_request_id  = tcp_request_id;
+         g_pending_requests[i].created_at      = GetTickCount64();
+         g_pending_requests[i].is_used         = true;
+         g_pending_requests[i].symbol          = symbol;
+         g_pending_requests[i].position_ticket = position_ticket;
+         g_pending_requests[i].verify_kind     = verify_kind;
          return true;
       }
    }
@@ -454,6 +464,56 @@ string FindAndRemovePendingRequest(ulong mql_request_id)
    return "";
 }
 
+// #4: ao expirar um pending request a resposta async se perdeu. Antes de
+// reportar erro ao Python, confirma o estado real — o trade pode ter
+// executado mesmo sem a resposta ter casado. Retorna true se já respondeu OK.
+bool VerifyPendingOutcome(string tcp_id, string symbol, ulong position_ticket, int verify_kind)
+{
+   if(verify_kind == 1)  // close total: a posição sumir == fechou
+   {
+      if(position_ticket > 0 && !PositionSelectByTicket(position_ticket))
+      {
+         JSONNode resp;
+         resp["type"]       = "RESPONSE";
+         resp["request_id"] = tcp_id;
+         resp["status"]     = "OK";
+         resp["retcode"]    = (long)TRADE_RETCODE_DONE;
+         resp["result"]     = "Confirmado pos-timeout: posicao ja fechada";
+         resp["ticket"]     = (long)position_ticket;
+         SendJsonMessage(resp, "Command");
+         PrintFormat("INFO: timeout resolvido — posicao %llu confirmada fechada (tcp_id=%s)",
+                     position_ticket, tcp_id);
+         return true;
+      }
+      return false;
+   }
+
+   if(verify_kind == 0)  // abertura: posição no símbolo com nosso magic == abriu
+   {
+      if(symbol != "" && PositionSelect(symbol)
+         && PositionGetInteger(POSITION_MAGIC) == g_magic_number)
+      {
+         JSONNode resp;
+         resp["type"]       = "RESPONSE";
+         resp["request_id"] = tcp_id;
+         resp["status"]     = "OK";
+         resp["retcode"]    = (long)TRADE_RETCODE_DONE;
+         resp["result"]     = "Confirmado pos-timeout: posicao aberta";
+         resp["ticket"]     = (long)PositionGetInteger(POSITION_TICKET);
+         resp["volume"]     = PositionGetDouble(POSITION_VOLUME);
+         SendJsonMessage(resp, "Command");
+         PrintFormat("INFO: timeout resolvido — posicao aberta em %s (tcp_id=%s)",
+                     symbol, tcp_id);
+         return true;
+      }
+      return false;
+   }
+
+   // verify_kind == 2 (close parcial): sem o estado pré-trade não dá pra
+   // confirmar o volume — mantém o erro de timeout.
+   return false;
+}
+
 void CleanupStalePendingRequests()
 {
    // Remove requests com mais de 30 segundos (timeout de segurança)
@@ -462,11 +522,19 @@ void CleanupStalePendingRequests()
    {
       if(g_pending_requests[i].is_used && (now - g_pending_requests[i].created_at) > 30000)
       {
-         PrintFormat("WARN: Pending request expirado: tcp_id=%s, mql_id=%llu",
-                     g_pending_requests[i].tcp_request_id, g_pending_requests[i].mql_request_id);
-         // Envia timeout para o Python
-         SendErrorResponse(g_pending_requests[i].tcp_request_id, "Trade timeout (30s) no EA");
+         string tcp_id      = g_pending_requests[i].tcp_request_id;
+         string symbol      = g_pending_requests[i].symbol;
+         ulong  pos_ticket  = g_pending_requests[i].position_ticket;
+         int    verify_kind = g_pending_requests[i].verify_kind;
          g_pending_requests[i].is_used = false;
+
+         // #4: confirma o estado real antes de declarar falha.
+         if(VerifyPendingOutcome(tcp_id, symbol, pos_ticket, verify_kind))
+            continue;
+
+         PrintFormat("WARN: Pending request expirado sem confirmacao: tcp_id=%s, symbol=%s",
+                     tcp_id, symbol);
+         SendErrorResponse(tcp_id, "Trade timeout (30s) no EA — estado nao confirmado");
       }
    }
 }
@@ -967,7 +1035,7 @@ void HandleTradeBuyCommand(const string request_id, JSONNode &payload)
       return;
    }
 
-   if(!AddPendingRequest((ulong)res.request_id, request_id))
+   if(!AddPendingRequest((ulong)res.request_id, request_id, symbol, 0, 0))
    {
       SendErrorResponse(request_id, "Pending requests table full");
       return;
@@ -1028,7 +1096,7 @@ void HandleTradeSellCommand(const string request_id, JSONNode &payload)
       return;
    }
 
-   if(!AddPendingRequest((ulong)res.request_id, request_id))
+   if(!AddPendingRequest((ulong)res.request_id, request_id, symbol, 0, 0))
    {
       SendErrorResponse(request_id, "Pending requests table full");
       return;
@@ -1109,7 +1177,7 @@ void HandleTradePositionPartialCommand(const string request_id, JSONNode &payloa
       return;
    }
 
-   if(!AddPendingRequest((ulong)res.request_id, request_id))
+   if(!AddPendingRequest((ulong)res.request_id, request_id, symbol, (ulong)ticket, 2))
    {
       SendErrorResponse(request_id, "Pending requests table full");
       return;
@@ -1168,7 +1236,7 @@ void HandleTradePositionCloseIdCommand(const string request_id, JSONNode &payloa
       return;
    }
 
-   if(!AddPendingRequest((ulong)res.request_id, request_id))
+   if(!AddPendingRequest((ulong)res.request_id, request_id, symbol, (ulong)ticket, 1))
    {
       SendErrorResponse(request_id, "Pending requests table full");
       return;
@@ -1741,6 +1809,54 @@ void EmitSyntheticOpenEvent(const CachedPosition &new_pos)
                (new_pos.pos_type == POSITION_TYPE_BUY) ? "BUY" : "SELL", new_pos.volume);
 }
 
+//+------------------------------------------------------------------+
+//| Emite TRADE_EVENT sintético de ADD quando o volume de uma posição |
+//| existente aumenta sem que OnTradeTransaction tenha emitido (ex.:  |
+//| position_id veio 0 na execução assíncrona). request_volume é o    |
+//| INCREMENTO; o Python classifica como BUY/SELL e, como o slave já  |
+//| tem a posição, segue o caminho de ADD.                            |
+//+------------------------------------------------------------------+
+void EmitSyntheticAddEvent(const CachedPosition &pos, double added_volume)
+{
+   int order_type = (pos.pos_type == POSITION_TYPE_BUY) ? 0 : 1;
+
+   JSONNode stream_msg;
+   stream_msg["type"]          = "STREAM";
+   stream_msg["event"]         = "TRADE_EVENT";
+   stream_msg["timestamp_mql"] = (long)TimeCurrent();
+   stream_msg["role"]          = g_role;
+   stream_msg["source"]        = "ONTRADE_ADD";
+
+   stream_msg["request_action"]       = 1;  // TRADE_ACTION_DEAL
+   stream_msg["request_order"]        = (long)0;
+   stream_msg["request_symbol"]       = pos.symbol;
+   stream_msg["request_volume"]       = added_volume;
+   stream_msg["request_price"]        = 0.0;
+   stream_msg["request_sl"]           = pos.sl;
+   stream_msg["request_tp"]           = pos.tp;
+   stream_msg["request_deviation"]    = (long)0;
+   stream_msg["request_type"]         = order_type;  // 0=BUY, 1=SELL
+   stream_msg["request_type_filling"] = 0;
+   stream_msg["request_comment"]      = "";
+   stream_msg["request_position"]     = (long)0;  // 0 → Python classifica como BUY/SELL
+
+   stream_msg["result_retcode"] = (long)TRADE_RETCODE_DONE;
+   stream_msg["result_deal"]    = (long)0;
+   stream_msg["result_order"]   = (long)0;
+   stream_msg["result_volume"]  = added_volume;
+   stream_msg["result_price"]   = 0.0;
+   stream_msg["result_comment"] = "add detected by OnTrade";
+
+   stream_msg["position_id"] = pos.position_id;
+
+   if(!SendJsonMessage(stream_msg, "Event"))
+      Print("ERROR: Falha ao enviar ADD TRADE_EVENT via OnTrade");
+
+   PrintFormat("OnTrade: ADD detectado (pos_id=%lld, symbol=%s, %s +%.2f)",
+               pos.position_id, pos.symbol,
+               (pos.pos_type == POSITION_TYPE_BUY) ? "BUY" : "SELL", added_volume);
+}
+
 void OnTrade()
 {
    if(g_role != "MASTER" || !g_is_connected || g_magic_number == 0)
@@ -1773,6 +1889,14 @@ void OnTrade()
          {
             double closed_vol = g_pos_cache[i].volume - new_snap[j].volume;
             EmitSyntheticTradeEvent(g_pos_cache[i], closed_vol, new_snap[j].volume);
+         }
+         // Volume aumentou → ADD externo na mesma direção que OnTradeTransaction
+         // não emitiu (position_id veio 0 na execução assíncrona). Sem este
+         // ramo o ADD do master nunca chegava aos slaves.
+         else if(new_snap[j].volume > g_pos_cache[i].volume + 0.000001)
+         {
+            double added_vol = new_snap[j].volume - g_pos_cache[i].volume;
+            EmitSyntheticAddEvent(new_snap[j], added_vol);
          }
 
          // SL ou TP mudou
