@@ -367,12 +367,27 @@ class TcpRouter:
             message["payload"] = payload
 
         loop = asyncio.get_running_loop()
+        if self._main_loop is not None and loop is not self._main_loop:
+            # O Future é resolvido por _process_message via call_soon_threadsafe
+            # no _main_loop. Se este coroutine rodar em outro loop, set_result
+            # cairia no loop errado — comportamento indefinido. Abortar.
+            logger.error(
+                f"send_command_to_broker({command}) chamado fora do engine loop. "
+                f"Abortando para não resolver Future em loop incorreto."
+            )
+            return {"status": "ERROR", "message": "Loop de execução incorreto."}
         future = loop.create_future()
         self._response_futures[request_id] = future
 
         try:
             frame = self._encode_frame(message)
-            lock = self._conn_locks.get(broker_key, threading.Lock())
+            lock = self._conn_locks.get(broker_key)
+            if lock is None:
+                # _conn_sockets e _conn_locks dessincronizados (janela transitória
+                # no _accept_loop). Abortar é mais seguro do que enviar sem
+                # serializar contra outros sendall na mesma conexão.
+                return {"status": "ERROR",
+                        "message": f"Conexão de {broker_key} em estado inconsistente."}
 
             def do_send():
                 with lock:
