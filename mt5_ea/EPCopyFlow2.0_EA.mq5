@@ -630,9 +630,15 @@ bool SendAccountUpdate()
    }
 
    // P/L do dia: resultado realizado dos deals de saída desde a meia-noite
-   // do servidor. % 86400 sobre TimeCurrent() dá a meia-noite no fuso do
-   // servidor (datetime do MQL é o relógio de parede codificado).
-   datetime now_t = TimeCurrent();
+   // do servidor.
+   // TimeTradeServer() devolve a hora ATUAL calculada do servidor — avança
+   // mesmo sem ticks novos. TimeCurrent() devolve a hora do ÚLTIMO tick, que
+   // fica "presa" em ontem com o mercado fechado/pré-abertura, fazendo o P/L
+   // do dia somar os deals de ONTEM. Fallback p/ TimeCurrent() se o offset do
+   // servidor ainda não for conhecido (TimeTradeServer() == 0 logo no boot).
+   datetime now_t = TimeTradeServer();
+   if(now_t <= 0)
+      now_t = TimeCurrent();
    datetime today_start = (datetime)((long)now_t - ((long)now_t % 86400));
    double daily_profit = 0.0;
    if(HistorySelect(today_start, now_t))
