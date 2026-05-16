@@ -121,21 +121,21 @@ class BrokerManager(QObject):
         if not instance_path:
             return None
 
-        self.brokers[key] = {
-            "name": name,
-            "client": client,
-            "broker_name": broker_name,
-            "login": login,
-            "password": password,
-            "server": server,
-            "role": role,
-            "lot_multiplier": lot_multiplier,
-            "command_port": command_port,
-            "event_port": event_port,
-        }
-        self.save_brokers()
         with self._state_lock:
+            self.brokers[key] = {
+                "name": name,
+                "client": client,
+                "broker_name": broker_name,
+                "login": login,
+                "password": password,
+                "server": server,
+                "role": role,
+                "lot_multiplier": lot_multiplier,
+                "command_port": command_port,
+                "event_port": event_port,
+            }
             self.connected_brokers[key] = False
+        self.save_brokers()
         self.create_mt5_config(key)
         # Adicionar um slave reordena os números — regera todos os ícones.
         self._refresh_all_icons()
@@ -151,10 +151,10 @@ class BrokerManager(QObject):
         if self.is_connected(key):
             self.disconnect_broker(key)
 
-        del self.brokers[key]
-        self.save_brokers()
         with self._state_lock:
+            del self.brokers[key]
             self.connected_brokers.pop(key, None)
+        self.save_brokers()
         instance_path = os.path.join(self.instances_dir, key)
         if os.path.exists(instance_path):
             shutil.rmtree(instance_path, ignore_errors=True)
@@ -183,14 +183,16 @@ class BrokerManager(QObject):
                 logger.error(f"Já existe um master ({current_master}). Só é permitido um.")
                 return None
 
-        old_data = self.brokers.pop(old_key)
+        with self._state_lock:
+            old_data = self.brokers.pop(old_key)
         if broker_name is None:
             broker_name = old_data.get("broker_name", old_key.split("-")[0])
         new_key = f"{broker_name.upper()}-{login}"
 
         if new_key != old_key and new_key in self.brokers:
             logger.error(f"Já existe corretora com chave {new_key}.")
-            self.brokers[old_key] = old_data
+            with self._state_lock:
+                self.brokers[old_key] = old_data
             return None
 
         if new_key != old_key:
@@ -199,24 +201,24 @@ class BrokerManager(QObject):
                 shutil.rmtree(old_instance_path, ignore_errors=True)
             self.setup_portable_instance(new_key)
 
-        self.brokers[new_key] = {
-            "name": name,
-            "client": client or old_data.get("client", ""),
-            "broker_name": broker_name,
-            "login": login,
-            "password": password,
-            "server": server,
-            "role": role,
-            "lot_multiplier": lot_multiplier,
-            "command_port": command_port,
-            "event_port": event_port,
-        }
-        self.save_brokers()
         with self._state_lock:
+            self.brokers[new_key] = {
+                "name": name,
+                "client": client or old_data.get("client", ""),
+                "broker_name": broker_name,
+                "login": login,
+                "password": password,
+                "server": server,
+                "role": role,
+                "lot_multiplier": lot_multiplier,
+                "command_port": command_port,
+                "event_port": event_port,
+            }
             if old_key in self.connected_brokers:
                 self.connected_brokers[new_key] = self.connected_brokers.pop(old_key)
             else:
                 self.connected_brokers[new_key] = False
+        self.save_brokers()
         self.create_mt5_config(new_key)
         # Mudança de role/nome reordena os labels — regera todos os ícones.
         self._refresh_all_icons()
@@ -229,14 +231,24 @@ class BrokerManager(QObject):
     # ──────────────────────────────────────────────
     def get_master_broker(self):
         """Retorna a broker_key do master, ou None se não houver."""
-        for key, data in self.brokers.items():
-            if data.get("role") == "master":
-                return key
+        with self._state_lock:
+            for key, data in self.brokers.items():
+                if data.get("role") == "master":
+                    return key
         return None
 
     def get_slave_brokers(self):
         """Retorna lista de broker_keys dos slaves."""
-        return [key for key, data in self.brokers.items() if data.get("role") == "slave"]
+        with self._state_lock:
+            return [key for key, data in self.brokers.items()
+                    if data.get("role") == "slave"]
+
+    def get_broker_config(self, key):
+        """Retorna uma cópia rasa da config de um broker (thread-safe), ou
+        None se não existir. Usado por threads fora da GUI (ex.: o watchdog)."""
+        with self._state_lock:
+            data = self.brokers.get(key)
+            return dict(data) if data is not None else None
 
     def get_broker_role(self, key):
         """Retorna o role de um broker (master/slave)."""
@@ -367,7 +379,10 @@ class BrokerManager(QObject):
     # Bloco 5 - Conexão / Desconexão
     # ──────────────────────────────────────────────
     def get_brokers(self):
-        return self.brokers
+        """Retorna uma cópia rasa do cadastro. Segura para iterar de outras
+        threads (watchdog, engine) enquanto o CRUD da GUI muta o original."""
+        with self._state_lock:
+            return dict(self.brokers)
 
     def get_session_label(self, key: str) -> str | None:
         """Retorna o label do broker, derivado do estado atual:
@@ -375,14 +390,15 @@ class BrokerManager(QObject):
         - '1', '2', ... pela posição em ordem alfabética entre os slaves
         - None se a key não existe
         """
-        if key not in self.brokers:
-            return None
-        if self.brokers[key].get("role", "slave") == "master":
-            return "M"
-        slave_keys = sorted(
-            k for k, d in self.brokers.items()
-            if d.get("role", "slave") == "slave"
-        )
+        with self._state_lock:
+            if key not in self.brokers:
+                return None
+            if self.brokers[key].get("role", "slave") == "master":
+                return "M"
+            slave_keys = sorted(
+                k for k, d in self.brokers.items()
+                if d.get("role", "slave") == "slave"
+            )
         try:
             return str(slave_keys.index(key) + 1)
         except ValueError:
@@ -401,7 +417,9 @@ class BrokerManager(QObject):
     def _refresh_all_icons(self):
         """Regera Terminal.ico de todo broker cuja instância já existe em disco.
         Chamado quando a lista/roles mudam, pra manter os labels em sincronia."""
-        for key in list(self.brokers.keys()):
+        with self._state_lock:
+            keys = list(self.brokers.keys())
+        for key in keys:
             if not os.path.isdir(os.path.join(self.instances_dir, key)):
                 continue
             label = self.get_session_label(key)
@@ -590,7 +608,9 @@ class BrokerManager(QObject):
         base_port = 15555
         step = 2
         used_ports = set()
-        for data in self.brokers.values():
+        with self._state_lock:
+            broker_list = list(self.brokers.values())
+        for data in broker_list:
             used_ports.add(data.get("command_port", 0))
             used_ports.add(data.get("event_port", 0))
 

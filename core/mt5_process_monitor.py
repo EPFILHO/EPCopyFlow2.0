@@ -182,7 +182,10 @@ class MT5ProcessMonitor:
             return False
 
         try:
-            broker_config = self.broker_manager.brokers[key]
+            broker_config = self.broker_manager.get_broker_config(key)
+            if broker_config is None:
+                logger.error(f"Broker {key} não está mais cadastrado — restart abortado.")
+                return False
             if os.name == 'nt':
                 si = subprocess.STARTUPINFO()
                 si.dwFlags |= subprocess.STARTF_USESHOWWINDOW

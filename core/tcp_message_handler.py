@@ -64,15 +64,13 @@ class TcpMessageHandler(QObject):
     # ──────────────────────────────────────────────
     @Slot(bytes, object)
     async def handle_tcp_message(self, client_id_bytes: bytes, message: dict):
-        # Identifica broker
+        # client_id_bytes é a broker_key da conexão TCP (utf-8), passada pelo
+        # TcpRouter — fonte autoritativa da identidade do broker. Antes havia
+        # uma varredura de tcp_router._clients que comparava str com bytes
+        # (nunca casava) e ainda corria risco de RuntimeError ao iterar um
+        # dict mutado por outras threads.
         client_id_hex = client_id_bytes.hex()
-        identified_broker_key = None
-        for key, client_id in self.tcp_router._clients.items():
-            if client_id == client_id_bytes:
-                identified_broker_key = key
-                break
-        if not identified_broker_key:
-            identified_broker_key = message.get("broker_key")
+        identified_broker_key = client_id_bytes.decode('utf-8', errors='replace')
 
         log_prefix = f"TCP RX [{identified_broker_key or client_id_hex}]:"
 
