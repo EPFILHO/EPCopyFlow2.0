@@ -389,7 +389,8 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event: QCloseEvent):
         """
-        Sequência de shutdown ordenada (issue #111):
+        Confirma a saída (alertando sobre operações abertas) e então executa
+        a sequência de shutdown ordenada (issue #111):
         1. Para timers e monitores da GUI (main thread).
         2. Desconecta todos os brokers — isso submete coroutines ao motor
            para fechar sockets do TcpRouter; aceitamos a latência e prosseguimos.
@@ -399,6 +400,38 @@ class MainWindow(QMainWindow):
         6. Para EngineThread (cancela tasks pendentes, join na thread).
         7. event.accept() — Qt fecha a janela; app.exec() retorna.
         """
+        # ── Confirmação de saída (com alerta de operações abertas) ──
+        open_count = 0
+        if self.copytrade_manager is not None:
+            try:
+                open_count = self.copytrade_manager.count_open_positions()
+            except Exception as e:
+                logger.warning(f"Falha ao contar operações abertas: {e}")
+
+        if open_count > 0:
+            msg1 = ("Deseja encerrar o EPCopyFlow 2.0?\n\n"
+                    f"ATENCAO: ha {open_count} operacao(oes) aberta(s).")
+        else:
+            msg1 = "Deseja encerrar o EPCopyFlow 2.0?"
+        reply1 = QMessageBox.question(
+            self, "Encerrar EPCopyFlow 2.0", msg1,
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        if reply1 != QMessageBox.Yes:
+            event.ignore()
+            return
+
+        if open_count > 0:
+            reply2 = QMessageBox.warning(
+                self, "Operacoes abertas",
+                f"Ainda ha {open_count} operacao(oes) aberta(s).\n\n"
+                "Recomendamos fechar as operacoes (ou usar o botao "
+                "EMERGENCIA) antes de encerrar o programa.\n\n"
+                "Encerrar mesmo assim?",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+            if reply2 != QMessageBox.Yes:
+                event.ignore()
+                return
+
         logger.info("Fechando MainWindow — iniciando shutdown ordenado...")
         self.indicators_timer.stop()
         self.internet_monitor.stop()

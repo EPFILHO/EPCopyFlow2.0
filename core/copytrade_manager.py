@@ -1478,10 +1478,16 @@ class CopyTradeManager(QObject):
             )
         self.db.commit()
 
+    def _engine_ready(self) -> bool:
+        """True se o motor existe e ainda está rodando. Durante o shutdown a
+        GUI pode disparar requests (timers/sinais enfileirados) depois do
+        engine.stop() — submeter aí levantaria RuntimeError."""
+        return self.engine is not None and self.engine.is_running
+
     def request_trade_history(self, broker_key=None, limit=100):
         """Fire-and-forget. Resposta via signal `trade_history_ready`."""
-        if self.engine is None:
-            logger.warning("request_trade_history: engine não wired — ignorado.")
+        if not self._engine_ready():
+            logger.debug("request_trade_history: motor indisponível — ignorado.")
             return
         self.engine.submit(self._fetch_trade_history(broker_key, limit))
 
@@ -1510,8 +1516,8 @@ class CopyTradeManager(QObject):
 
     def request_today_stats(self):
         """Fire-and-forget. Resposta via signal `today_stats_ready`."""
-        if self.engine is None:
-            logger.warning("request_today_stats: engine não wired — ignorado.")
+        if not self._engine_ready():
+            logger.debug("request_today_stats: motor indisponível — ignorado.")
             return
         self.engine.submit(self._fetch_today_stats())
 
@@ -1524,8 +1530,8 @@ class CopyTradeManager(QObject):
         - só end_ts → apaga timestamp <= end_ts
         Resposta via signal `history_cleared`.
         """
-        if self.engine is None:
-            logger.warning("clear_trade_history: engine não wired — ignorado.")
+        if not self._engine_ready():
+            logger.debug("clear_trade_history: motor indisponível — ignorado.")
             return
         self.engine.submit(self._clear_trade_history(start_ts, end_ts))
 
@@ -1572,6 +1578,37 @@ class CopyTradeManager(QObject):
     # ──────────────────────────────────────────────
     # Bloco 6 - Shutdown
     # ──────────────────────────────────────────────
+    def count_open_positions(self) -> int:
+        """Conta operações abertas conhecidas. Síncrono — bloqueia até o motor
+        responder (até 2s). Usado pelo closeEvent para alertar antes de sair.
+        Retorna 0 se o motor estiver indisponível."""
+        if not self._engine_ready():
+            return 0
+        try:
+            fut = self.engine.submit(self._count_open_positions())
+            return fut.result(timeout=2.0)
+        except Exception as e:
+            logger.warning(f"count_open_positions falhou: {e}")
+            return 0
+
+    async def _count_open_positions(self) -> int:
+        try:
+            row = self.db.execute(
+                "SELECT COUNT(*) FROM master_positions WHERE status = 'OPEN'"
+            ).fetchone()
+            master_open = row[0] if row else 0
+            if master_open > 0:
+                return master_open
+            # Sem master rastreado — conta posições de slave ainda abertas.
+            row = self.db.execute(
+                "SELECT COUNT(*) FROM open_positions "
+                "WHERE status IN ('OPEN', 'SYNCING', 'CLOSING')"
+            ).fetchone()
+            return row[0] if row else 0
+        except Exception as e:
+            logger.error(f"_count_open_positions falhou: {e}")
+            return 0
+
     def close(self):
         """Fecha a conexão SQLite. No Windows, conexão aberta mantém o
         arquivo locked. Submete ao motor (single-threaded asyncio) e
