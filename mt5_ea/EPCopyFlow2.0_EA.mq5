@@ -593,47 +593,73 @@ bool SendErrorResponse(const string request_id, const string error_message)
 
 //+------------------------------------------------------------------+
 //| Push periódico: balance, equity, margin, free_margin, P/L atual  |
-//| (POSITION_PROFIT das posições abertas), P/L do dia (deals com    |
-//| DEAL_ENTRY_OUT desde meia-noite local) e contagem de posições.   |
+//| e P/L do dia.                                                    |
+//|                                                                  |
+//| Atribuição por role:                                             |
+//|  - SLAVE: só conta posições/deals do CopyTrade (POSITION_MAGIC /  |
+//|    DEAL_MAGIC == g_magic_number). Operações manuais/alien do      |
+//|    titular não entram no P/L exibido pelo app.                    |
+//|  - MASTER: conta tudo. O master só é usado para replicar, então   |
+//|    toda posição/deal da conta é considerada do CopyTrade.          |
+//|                                                                  |
+//| P/L atual  = POSITION_PROFIT + POSITION_SWAP das posições abertas.|
+//| P/L do dia = DEAL_PROFIT + DEAL_SWAP + DEAL_COMMISSION + DEAL_FEE |
+//|   dos deals de saída (DEAL_ENTRY_OUT/INOUT/OUT_BY) desde a        |
+//|   meia-noite do servidor.                                         |
 //+------------------------------------------------------------------+
 bool SendAccountUpdate()
 {
    if(!g_is_connected) return false;
 
+   // SLAVE com magic configurado filtra por magic; MASTER conta tudo.
+   bool is_master      = (g_role == "MASTER");
+   bool filter_by_magic = (!is_master && g_magic_number > 0);
+
    double total_profit = 0.0;
-   int positions_count = 0;
+   int    positions_count = 0;
    for(int i = 0; i < PositionsTotal(); i++)
    {
       ulong ticket = PositionGetTicket(i);
-      if(PositionSelectByTicket(ticket))
-      {
-         total_profit += PositionGetDouble(POSITION_PROFIT);
-         positions_count++;
-      }
+      if(!PositionSelectByTicket(ticket))
+         continue;
+      if(filter_by_magic && PositionGetInteger(POSITION_MAGIC) != g_magic_number)
+         continue;
+      total_profit += PositionGetDouble(POSITION_PROFIT);
+      total_profit += PositionGetDouble(POSITION_SWAP);
+      positions_count++;
    }
 
-   // P/L do dia: soma DEAL_PROFIT + DEAL_SWAP + DEAL_COMMISSION dos deals do
-   // ROBÔ (deal_magic == g_magic_number) com entry OUT/INOUT desde meia-noite.
-   // Filtro por magic: master operando manualmente (magic=0) não conta;
-   // só trades do CopyTrade entram no P/L do dia.
+   // P/L do dia: resultado realizado dos deals de saída desde a meia-noite
+   // do servidor. % 86400 sobre TimeCurrent() dá a meia-noite no fuso do
+   // servidor (datetime do MQL é o relógio de parede codificado).
    datetime now_t = TimeCurrent();
    datetime today_start = (datetime)((long)now_t - ((long)now_t % 86400));
    double daily_profit = 0.0;
-   if(g_magic_number > 0 && HistorySelect(today_start, now_t))
+   if(HistorySelect(today_start, now_t))
    {
       int total_deals = HistoryDealsTotal();
       for(int i = 0; i < total_deals; i++)
       {
          ulong deal_ticket = HistoryDealGetTicket(i);
          if(deal_ticket == 0) continue;
-         long deal_magic = HistoryDealGetInteger(deal_ticket, DEAL_MAGIC);
-         if(deal_magic != g_magic_number) continue;
+
+         // Só deals de trade (ignora BALANCE, CREDIT, CORRECTION, etc.)
+         long deal_type = HistoryDealGetInteger(deal_ticket, DEAL_TYPE);
+         if(deal_type != DEAL_TYPE_BUY && deal_type != DEAL_TYPE_SELL)
+            continue;
+
+         if(filter_by_magic
+            && HistoryDealGetInteger(deal_ticket, DEAL_MAGIC) != g_magic_number)
+            continue;
+
          long entry = HistoryDealGetInteger(deal_ticket, DEAL_ENTRY);
-         if(entry == DEAL_ENTRY_OUT || entry == DEAL_ENTRY_INOUT)
+         if(entry == DEAL_ENTRY_OUT || entry == DEAL_ENTRY_INOUT
+            || entry == DEAL_ENTRY_OUT_BY)
          {
             daily_profit += HistoryDealGetDouble(deal_ticket, DEAL_PROFIT);
             daily_profit += HistoryDealGetDouble(deal_ticket, DEAL_SWAP);
             daily_profit += HistoryDealGetDouble(deal_ticket, DEAL_COMMISSION);
+            daily_profit += HistoryDealGetDouble(deal_ticket, DEAL_FEE);
          }
       }
    }
