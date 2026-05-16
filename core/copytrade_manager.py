@@ -1579,35 +1579,19 @@ class CopyTradeManager(QObject):
     # Bloco 6 - Shutdown
     # ──────────────────────────────────────────────
     def count_open_positions(self) -> int:
-        """Conta operações abertas conhecidas. Síncrono — bloqueia até o motor
-        responder (até 2s). Usado pelo closeEvent para alertar antes de sair.
-        Retorna 0 se o motor estiver indisponível."""
-        if not self._engine_ready():
-            return 0
-        try:
-            fut = self.engine.submit(self._count_open_positions())
-            return fut.result(timeout=2.0)
-        except Exception as e:
-            logger.warning(f"count_open_positions falhou: {e}")
-            return 0
+        """Conta operações de copytrade abertas NESTA sessão, lendo o
+        position_map em memória.
 
-    async def _count_open_positions(self) -> int:
-        try:
-            row = self.db.execute(
-                "SELECT COUNT(*) FROM master_positions WHERE status = 'OPEN'"
-            ).fetchone()
-            master_open = row[0] if row else 0
-            if master_open > 0:
-                return master_open
-            # Sem master rastreado — conta posições de slave ainda abertas.
-            row = self.db.execute(
-                "SELECT COUNT(*) FROM open_positions "
-                "WHERE status IN ('OPEN', 'SYNCING', 'CLOSING')"
-            ).fetchone()
-            return row[0] if row else 0
-        except Exception as e:
-            logger.error(f"_count_open_positions falhou: {e}")
-            return 0
+        NÃO usa as tabelas persistidas master_positions/open_positions: elas
+        podem reter linhas com status OPEN obsoletas de uma sessão anterior
+        encerrada de forma anormal (crash, fechamento pelo broker não
+        reconciliado) — o que gerava alerta falso de 'operações abertas' no
+        fechamento, mesmo sem nenhuma posição real do copytrade aberta.
+
+        position_map só contém posições do copytrade (magic) abertas e ainda
+        não fechadas; posições alienígenas/manuais nunca entram nele.
+        len() de dict é atômico sob o GIL — seguro ler da thread da GUI."""
+        return len(self.position_map)
 
     def close(self):
         """Fecha a conexão SQLite. No Windows, conexão aberta mantém o
