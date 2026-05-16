@@ -278,10 +278,6 @@ class MainWindow(QMainWindow):
         self.tcp_message_handler.alien_trade_detected.connect(self._on_alien_trade_detected)
         # EA (.ex5) ausente — instrui o usuário a copiá-lo pra pasta correta
         self.broker_manager.ea_not_found.connect(self._on_ea_not_found)
-        # Estado das corretoras mudou (CRUD ou falha de start do MT5 no engine):
-        # re-renderiza as páginas. Emitido tanto da GUI quanto da engine thread —
-        # Qt usa QueuedConnection automaticamente no caso cross-thread.
-        self.broker_manager.brokers_updated.connect(self._on_brokers_updated)
 
     @Slot(str)
     def _handle_tcp_messages(self, message: str):
@@ -299,14 +295,6 @@ class MainWindow(QMainWindow):
             self.broker_status_updated.emit(self.broker_status, self.broker_modes)
             self.dashboard_page.refresh_brokers()
             self.brokers_page.refresh_brokers()
-
-    @Slot()
-    def _on_brokers_updated(self):
-        """Re-renderiza dashboard e corretoras quando o estado muda. Cobre o
-        caso em que o start do MT5 falha na engine thread e reverte
-        connected_brokers — sem isto a UI ficaria com o card 'Conectado' falso."""
-        self.dashboard_page.refresh_brokers()
-        self.brokers_page.refresh_brokers()
 
     @Slot(bool, str)
     def _on_emergency_completed(self, success: bool, message: str):
