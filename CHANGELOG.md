@@ -17,17 +17,36 @@ Tipos de mudança:
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-05-16
+
 ### Added
+- **Diálogos de confirmação ao encerrar**: o `closeEvent` da `MainWindow` agora pede confirmação antes de fechar o programa. Se há operações de copytrade abertas, o primeiro diálogo já informa a quantidade; ao confirmar, um segundo diálogo re-alerta e recomenda fechar as operações (ou usar o botão EMERGÊNCIA) antes de sair. Cancelar qualquer um dos diálogos mantém o app aberto (`event.ignore()`). `CopyTradeManager.count_open_positions()` fornece a contagem.
 - **Limpar histórico de copytrades**: botão "Limpar Historico" na página Histórico abre um diálogo (`ClearHistoryDialog`) com opção de apagar tudo ou apagar por intervalo de datas (De/Até). Backend: `CopyTradeManager.clear_trade_history(start_ts, end_ts)` + signal `history_cleared`, executando o `DELETE` no engine thread.
 
 ### Changed
-- **Tabela do Histórico com rolagem horizontal**: as colunas usavam `QHeaderView.Stretch` e encolhiam pra caber na largura — em monitores menores ficava ilegível. Trocado para `ResizeToContents` + `setStretchLastSection(False)`: as colunas mantêm a largura natural e surge barra de rolagem horizontal quando necessário.
+- **P/L do card atribuído por role (EA `SendAccountUpdate`)**: o P/L aberto e o P/L do dia eram somados sem distinção. Agora SLAVE conta apenas posições/deals do copytrade (`POSITION_MAGIC`/`DEAL_MAGIC == g_magic_number`) — operações manuais/alien do titular não entram; MASTER conta tudo (existe só para replicar). O P/L aberto passa a incluir `POSITION_SWAP`; o P/L do dia inclui `DEAL_FEE` e os deals de saída `OUT_BY`. **Requer recompilar o EA.**
+- **Tabela do Histórico com rolagem horizontal**: as colunas usavam `QHeaderView.Stretch` e encolhiam pra caber — ilegível em telas menores. Agora têm largura fixa confortável (`Interactive`), a tabela preenche a largura da página e surge barra de rolagem horizontal quando o conteúdo não cabe.
+- **EA: identificadores `zmq_*` renomeados para `tcp_*`**: resquícios de nome da era ZMQ na struct `PendingTradeRequest` e em variáveis locais. Sem mudança de comportamento.
+- **Comando de posições padronizado em `GET_POSITIONS`**: `_emergency_reconcile` usava `"POSITIONS"` e `_verify_position_closed` usava `"GET_POSITIONS"` (o EA aceita os dois aliases). Unificado em `GET_POSITIONS`.
+
+### Fixed
+- **P/L do dia somava os valores de ontem**: o EA calculava o início do dia a partir de `TimeCurrent()` (hora do último tick), que fica presa em ontem com o mercado fechado/pré-abertura. Trocado por `TimeTradeServer()` (hora atual calculada do servidor, avança sem ticks), com fallback para `TimeCurrent()` se o offset do servidor ainda não for conhecido. **Requer recompilar o EA.**
+- **Alerta falso de "operações abertas" ao encerrar**: a contagem lia as tabelas persistidas `master_positions`/`open_positions`, que retêm linhas com status `OPEN` obsoletas de sessões encerradas de forma anormal. Agora conta pelo `position_map` em memória — reinicia a cada sessão e só contém posições do copytrade (magic).
+- **Crash ao fechar pelo "X"**: `request_today_stats`/`request_trade_history`/`clear_trade_history` chamavam `engine.submit()` sem checar se o motor ainda rodava; um refresh enfileirado após o `engine.stop()` levantava `RuntimeError: EngineThread não está rodando`. Agora checam `_engine_ready()` (motor existe e está rodando) e viram no-op caso contrário.
+- **Preço do master encaminhado nas aberturas/ADD do slave**: `_send_open_command`/`_send_add_command` mandavam o preço de execução do master no payload. O slave é outra corretora, com cotação própria — ordem a mercado com preço estranho é rejeitada por desvio quando as cotações divergem, e o trade não replica. Agora enviam `price=0.0` e o EA usa a cotação local.
+- **`emergency_completed` era um sinal morto**: o `CopyTradeManager` emitia o resultado do fechamento de emergência (posições fechadas, avisos da reconciliação) mas nada escutava. Conectado a uma notificação + log — o operador agora recebe a confirmação.
+- **`request_id` colidente sob trades rápidos**: ids de request usavam `int(time.time())` (resolução de 1s); dois comandos do mesmo tipo no mesmo segundo geravam o mesmo id e a segunda resposta sobrescrevia o Future da primeira (timeout indevido). Trocado para `time.time_ns()` em `tcp_router` e `copytrade_manager`.
+- **Watchdog abortava todos os brokers em backoff**: `MT5ProcessMonitor.check_and_restart_processes` fazia `return` (em vez de `continue`) quando um broker estava em janela de backoff, pulando a verificação de todos os outros brokers naquela iteração.
+- **EA: resposta assíncrona perdida marcava trade bem-sucedido como falha**: quando `result.request_id` chega 0 (execução assíncrona de bolsa), o casamento da resposta falhava e o EA reportava "timeout 30s" para um trade que executou — divergência perigosa entre o estado real e o registrado. `VerifyPendingOutcome` agora confere o estado real no timeout (posição fechada por ticket / aberta no símbolo) antes de declarar falha. **Requer recompilar o EA.**
+- **EA: ADD do master não era detectado pelo `OnTrade`**: o snapshot diff só detectava redução de volume (partial close), nunca aumento. Quando `OnTradeTransaction` não resolvia o `position_id`, o ADD do master era perdido e não replicava. `OnTrade` agora emite `EmitSyntheticAddEvent` ao detectar aumento de volume numa posição rastreada. **Requer recompilar o EA.**
+- **Concorrência em dicts compartilhados entre threads**: `BrokerManager.brokers` era mutado pela GUI (CRUD) enquanto o watchdog o iterava via `get_brokers()` e o engine o lia — sem lock, podendo levantar `RuntimeError: dictionary changed size during iteration`. Agora as mutações e iterações usam `_state_lock`, `get_brokers()` retorna cópia rasa e há um acessor thread-safe `get_broker_config()`. `handle_tcp_message` deixou de iterar `tcp_router._clients` (varredura que comparava `str` com `bytes` e nunca casava, ainda sujeita a `RuntimeError`) — usa direto a `broker_key` da conexão.
+- **`send_command_to_broker` mais robusto**: verifica que está no engine loop antes de criar o Future de resposta (o Future seria resolvido no loop errado caso contrário) e aborta o envio se o lock da conexão sumiu, em vez de cair num lock descartável que não serializa nada.
+- **`_emergency_close_one` lia chave de erro inconsistente**: usava só `message`; agora checa `error_message` antes, como os demais pontos do `copytrade_manager`.
+- **`_master_event_dedup` recriado a cada evento**: o dict de dedup era reconstruído inteiro a cada evento do master (O(n) por evento). Agora a limpeza de entradas expiradas é amortizada — só roda quando o dict passa de 200 entradas.
+- **Linhas espúrias atrás dos QLabels (Dashboard, cards)**: a regra global `QWidget { background-color: surface }` pintava o fundo de todo `QLabel`, fazendo eles aparecerem como retângulos da cor `surface` sobre fundos de cor diferente (cards, stat-cards). Adicionada regra global `QLabel { background-color: transparent }` em `global_app_style()` — restaura a transparência natural do `QLabel`; widgets que precisam de fundo (badge, `card-role`) sobrescrevem por especificidade.
 
 ### Removed
 - **`copy_dlls` (resquício do ZMQ)**: o método copiava `.dll` de uma pasta `dlls/` que não existe mais — desde a migração ZMQ→TCP nenhuma DLL é necessária. Gerava `ERROR - Erro ao copiar DLLs: [WinError 3]` a cada nova instância criada. Método e a chamada em `setup_portable_instance` removidos.
-
-### Fixed
-- **Linhas espúrias atrás dos QLabels (Dashboard, cards)**: a regra global `QWidget { background-color: surface }` pintava o fundo de todo `QLabel`, fazendo eles aparecerem como retângulos da cor `surface` sobre fundos de cor diferente (cards, stat-cards). Adicionada regra global `QLabel { background-color: transparent }` em `global_app_style()` — restaura a transparência natural do `QLabel`; widgets que precisam de fundo (badge, `card-role`) sobrescrevem por especificidade.
 
 ## [0.2.0] — 2026-05-15
 
@@ -287,7 +306,8 @@ Tipos de mudança:
 - Monitor de processo MT5 (detecta crash e reinicia)
 - Monitor de internet (detecta queda de conexão)
 
-[Unreleased]: https://github.com/EPFILHO/EPCopyFlow2.0/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/EPFILHO/EPCopyFlow2.0/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/EPFILHO/EPCopyFlow2.0/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/EPFILHO/EPCopyFlow2.0/compare/v0.1.9...v0.2.0
 [0.1.9]: https://github.com/EPFILHO/EPCopyFlow2.0/compare/v0.1.8...v0.1.9
 [0.1.8]: https://github.com/EPFILHO/EPCopyFlow2.0/compare/v0.1.7...v0.1.8
