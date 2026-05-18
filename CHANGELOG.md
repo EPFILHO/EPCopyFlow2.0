@@ -17,6 +17,16 @@ Tipos de mudança:
 
 ## [Unreleased]
 
+### Changed
+- **EA: cotação via `SymbolInfoTick`**: as ordens a mercado (BUY/SELL e fechamento por ticket) liam o preço com `SymbolInfoDouble(SYMBOL_ASK/BID)`, que pode retornar 0 num símbolo recém-adicionado ao Market Watch (ex.: virada de contrato no B3). Novo helper `GetMarketPrice()` usa `SymbolInfoTick` + `NormalizeDouble`. **Requer recompilar o EA.**
+- **EA: `HandleSetMagicNumberCommand` usa `JSONNode.ToInteger()`** em vez de `StringToInteger(ToString())`, consistente com o resto do parsing JSON. **Requer recompilar o EA.**
+
+### Removed
+- **EA: handlers de trade mortos**: `HandleTradePositionPartialCommand` (`TRADE_POSITION_PARTIAL`) e `HandleTradePositionCloseSymbolCommand` (`TRADE_POSITION_CLOSE`) — o Python nunca envia esses comandos (parcial é convertida em ordem oposta; fechamento é sempre por ticket via `TRADE_POSITION_CLOSE_ID`). Removidos os handlers e suas entradas no dispatch. **Requer recompilar o EA.**
+
+### Fixed
+- **EA: saturação silenciosa do cache de posições**: `BuildPositionSnapshot` parava em 64 posições sem avisar — o diff do `OnTrade` perderia eventos das posições excedentes. Agora emite um `WARN` quando `PositionsTotal()` excede o limite. **Requer recompilar o EA.**
+
 ## [0.3.0] — 2026-05-16
 
 ### Added

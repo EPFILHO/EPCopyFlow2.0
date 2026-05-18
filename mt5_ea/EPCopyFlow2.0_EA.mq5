@@ -553,6 +553,22 @@ ENUM_ORDER_TYPE_FILLING GetSymbolFillingMode(string symbol)
 }
 
 //+------------------------------------------------------------------+
+//| Cotação atual de um símbolo (ASK p/ comprar, BID p/ vender).     |
+//| Usa SymbolInfoTick em vez de SymbolInfoDouble: num símbolo       |
+//| recém-adicionado ao Market Watch (ex.: virada de contrato no B3) |
+//| SYMBOL_ASK/SYMBOL_BID podem vir 0 até chegar o primeiro tick.    |
+//+------------------------------------------------------------------+
+double GetMarketPrice(const string symbol, bool want_ask)
+{
+   MqlTick tick;
+   if(!SymbolInfoTick(symbol, tick))
+      return 0.0;
+   double price = want_ask ? tick.ask : tick.bid;
+   int digits = (int)SymbolInfoInteger(symbol, SYMBOL_DIGITS);
+   return NormalizeDouble(price, digits);
+}
+
+//+------------------------------------------------------------------+
 //| Mensagens de Sistema                                            |
 //+------------------------------------------------------------------+
 bool SendRegisterMessage()
@@ -736,7 +752,7 @@ void HandleSetMagicNumberCommand(const string request_id, JSONNode &payload)
       return;
    }
 
-   long new_magic = StringToInteger(magic_node.ToString());
+   long new_magic = magic_node.ToInteger();
    if(new_magic < 0)
    {
       response["status"] = "ERROR";
@@ -1041,7 +1057,7 @@ void HandleTradeBuyCommand(const string request_id, JSONNode &payload)
    string comment = payload["comment"].ToString();
 
    if(price <= 0)
-      price = SymbolInfoDouble(symbol, SYMBOL_ASK);
+      price = GetMarketPrice(symbol, true);
 
    MqlTradeRequest req;
    MqlTradeResult res;
@@ -1102,7 +1118,7 @@ void HandleTradeSellCommand(const string request_id, JSONNode &payload)
    string comment = payload["comment"].ToString();
 
    if(price <= 0)
-      price = SymbolInfoDouble(symbol, SYMBOL_BID);
+      price = GetMarketPrice(symbol, false);
 
    MqlTradeRequest req;
    MqlTradeResult res;
@@ -1167,59 +1183,6 @@ void HandleTradePositionModifyCommand(const string request_id, JSONNode &payload
    SendJsonMessage(response, "Command");
 }
 
-void HandleTradePositionPartialCommand(const string request_id, JSONNode &payload)
-{
-   if(g_role == "MASTER")
-   {
-      SendErrorResponse(request_id, "MASTER não aceita comandos de trade");
-      return;
-   }
-
-   long ticket = payload["ticket"].ToInteger();
-   double volume = payload["volume"].ToDouble();
-
-   if(!PositionSelectByTicket(ticket))
-   {
-      SendErrorResponse(request_id, "Posição não encontrada");
-      return;
-   }
-
-   string symbol = PositionGetString(POSITION_SYMBOL);
-   ENUM_POSITION_TYPE pos_type = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
-
-   MqlTradeRequest req;
-   MqlTradeResult res;
-   ZeroMemory(req);
-   ZeroMemory(res);
-
-   req.action = TRADE_ACTION_DEAL;
-   req.symbol = symbol;
-   req.volume = volume;
-   req.position = (ulong)ticket;
-   req.type = (pos_type == POSITION_TYPE_BUY) ? ORDER_TYPE_SELL : ORDER_TYPE_BUY;
-   req.price = (pos_type == POSITION_TYPE_BUY) ? SymbolInfoDouble(symbol, SYMBOL_BID) : SymbolInfoDouble(symbol, SYMBOL_ASK);
-   req.deviation = 100;
-   req.magic = (ulong)g_magic_number;
-   req.type_filling = GetSymbolFillingMode(symbol);
-
-   if(!OrderSendAsync(req, res))
-   {
-      SendErrorResponse(request_id, StringFormat("OrderSendAsync PARTIAL falhou: retcode=%d, %s",
-                        res.retcode, res.comment));
-      return;
-   }
-
-   if(!AddPendingRequest((ulong)res.request_id, request_id, symbol, (ulong)ticket, 2))
-   {
-      SendErrorResponse(request_id, "Pending requests table full");
-      return;
-   }
-
-   if(InpDebugLog)
-      PrintFormat("OrderSendAsync PARTIAL: ticket=%lld, vol=%.2f, mql_req=%u, tcp_req=%s",
-                  ticket, volume, res.request_id, request_id);
-}
-
 void HandleTradePositionCloseIdCommand(const string request_id, JSONNode &payload)
 {
    // Emergency close bypassa proteção do MASTER
@@ -1256,7 +1219,7 @@ void HandleTradePositionCloseIdCommand(const string request_id, JSONNode &payloa
    req.volume = volume;
    req.position = (ulong)ticket;
    req.type = (pos_type == POSITION_TYPE_BUY) ? ORDER_TYPE_SELL : ORDER_TYPE_BUY;
-   req.price = (pos_type == POSITION_TYPE_BUY) ? SymbolInfoDouble(symbol, SYMBOL_BID) : SymbolInfoDouble(symbol, SYMBOL_ASK);
+   req.price = GetMarketPrice(symbol, pos_type != POSITION_TYPE_BUY);
    req.deviation = 100;
    req.magic = (ulong)g_magic_number;
    req.type_filling = GetSymbolFillingMode(symbol);
@@ -1277,64 +1240,6 @@ void HandleTradePositionCloseIdCommand(const string request_id, JSONNode &payloa
    if(InpDebugLog)
       PrintFormat("OrderSendAsync CLOSE: ticket=%lld, symbol=%s, mql_req=%u, tcp_req=%s",
                   ticket, symbol, res.request_id, request_id);
-}
-
-void HandleTradePositionCloseSymbolCommand(const string request_id, JSONNode &payload)
-{
-   if(g_role == "MASTER")
-   {
-      SendErrorResponse(request_id, "MASTER não aceita comandos de trade");
-      return;
-   }
-
-   string symbol = payload["symbol"].ToString();
-
-   if(!SymbolSelect(symbol, true))
-   {
-      SendErrorResponse(request_id, StringFormat("Símbolo %s não disponível no broker", symbol));
-      return;
-   }
-
-   int submitted = 0;
-
-   for(int i = PositionsTotal() - 1; i >= 0; i--)
-   {
-      ulong ticket = PositionGetTicket(i);
-      if(PositionSelectByTicket(ticket) && PositionGetString(POSITION_SYMBOL) == symbol)
-      {
-         double volume = PositionGetDouble(POSITION_VOLUME);
-         ENUM_POSITION_TYPE pos_type = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
-
-         MqlTradeRequest req;
-         MqlTradeResult res;
-         ZeroMemory(req);
-         ZeroMemory(res);
-
-         req.action = TRADE_ACTION_DEAL;
-         req.symbol = symbol;
-         req.volume = volume;
-         req.position = ticket;
-         req.type = (pos_type == POSITION_TYPE_BUY) ? ORDER_TYPE_SELL : ORDER_TYPE_BUY;
-         req.price = (pos_type == POSITION_TYPE_BUY) ? SymbolInfoDouble(symbol, SYMBOL_BID) : SymbolInfoDouble(symbol, SYMBOL_ASK);
-         req.deviation = 100;
-         req.magic = (ulong)g_magic_number;
-         req.type_filling = GetSymbolFillingMode(symbol);
-
-         if(OrderSendAsync(req, res))
-            submitted++;
-         else
-            PrintFormat("WARN: OrderSendAsync CLOSE falhou para ticket=%llu: %s", ticket, res.comment);
-      }
-   }
-
-   // Resposta imediata: ordens submetidas (resultados individuais via TRADE_EVENT)
-   JSONNode response;
-   response["type"] = "RESPONSE";
-   response["request_id"] = request_id;
-   response["status"] = "OK";
-   response["retcode"] = (long)TRADE_RETCODE_PLACED;
-   response["result"] = StringFormat("%d close requests submitted for %s", submitted, symbol);
-   SendJsonMessage(response, "Command");
 }
 
 //+------------------------------------------------------------------+
@@ -1623,17 +1528,9 @@ void ProcessCommand(JSONNode &json_command)
    {
       HandleTradePositionModifyCommand(request_id, payload);
    }
-   else if(command == "TRADE_POSITION_PARTIAL")
-   {
-      HandleTradePositionPartialCommand(request_id, payload);
-   }
    else if(command == "TRADE_POSITION_CLOSE_ID")
    {
       HandleTradePositionCloseIdCommand(request_id, payload);
-   }
-   else if(command == "TRADE_POSITION_CLOSE")
-   {
-      HandleTradePositionCloseSymbolCommand(request_id, payload);
    }
    else
    {
@@ -1671,6 +1568,11 @@ int BuildPositionSnapshot(CachedPosition &snap[])
       snap[count].magic       = magic;
       count++;
    }
+
+   if(PositionsTotal() > MAX_CACHED_POSITIONS)
+      PrintFormat("WARN: %d posições abertas excedem o cache (%d) — o diff de OnTrade pode perder eventos das posições excedentes",
+                  PositionsTotal(), MAX_CACHED_POSITIONS);
+
    return count;
 }
 
